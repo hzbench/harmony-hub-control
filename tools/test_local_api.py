@@ -311,6 +311,12 @@ def run():
             configuration["layouts"][device_id] = [{"slot": "volumeup", "label": "Volume", "command": "VolumeUp"}]
             configuration["activities"] = [{"id": "watch", "name": "Watch TV", "steps": [], "exitSteps": [], "screen": {"columns": 2, "cells": [{"deviceId": device_id, "command": "VolumeUp", "label": "Volume"}]}}]
             assert request("configuration", {"revision": 6, "configuration": configuration}, cookie, csrf)[0] == 200
+            # The custom-screen field is validated server-side, not just by the client UI.
+            bad_columns = json.loads(json.dumps(configuration)); bad_columns["activities"][0]["screen"]["columns"] = 0
+            assert request("configuration", {"revision": 7, "configuration": bad_columns}, cookie, csrf)[0] == 400
+            too_many_cells = json.loads(json.dumps(configuration)); too_many_cells["activities"][0]["screen"]["cells"] = [{"deviceId": device_id, "command": "VolumeUp"}] * 33
+            assert request("configuration", {"revision": 7, "configuration": too_many_cells}, cookie, csrf)[0] == 400
+            assert request("configuration", cookie=cookie)[1]["revision"] == 7
             assert request("commands/save", {"revision": 7, "deviceId": device_id, "oldName": "PowerOff", "name": "Off", "mode": "nec", "protocol": "2", "nec": "20DFA35C"}, cookie, csrf)[0] == 200
             assert request("devices", {"revision": 8, "deviceId": device_id, "action": "delete"}, cookie, csrf)[0] == 200
             assert request("devices", cookie=cookie)[1]["devices"] == []

@@ -91,13 +91,39 @@ const volumeContext=vm.createContext({state:volumeState,window:{},readLocal:key=
   api:async(path,body)=>{if(path.startsWith('operations?'))return {state:'completed'};volumeCalls.push({path,...body});return {id:'op-1'};}});
 vm.runInContext(volumeCode,volumeContext);
 vm.runInContext('window.harmonyHardwareVolume("up")',volumeContext);
-for(let i=0;i<6;i++)await Promise.resolve();
+for(let i=0;i<20;i++)await Promise.resolve();
 assert.equal(volumeCalls.length,1);assert.equal(volumeCalls[0].deviceId,'tv');assert.equal(volumeCalls[0].command,'VolumeUp');
 volumeCalls.length=0;
 vm.runInContext('window.harmonyHardwareVolume("down")',volumeContext);
-for(let i=0;i<6;i++)await Promise.resolve();
+for(let i=0;i<20;i++)await Promise.resolve();
 assert.equal(volumeCalls.length,1);assert.equal(volumeCalls[0].command,'VolumeDown');
 console.log('Hardware volume keys resolve the right command from an active activity\'s custom screen');
+
+// A saved custom layout that omits the volume slot must suppress the
+// hardware key too, same as it already suppresses the on-screen button —
+// previously only remoteButton() enforced this.
+const suppressedCalls=[];
+const suppressedState={online:true,config:{activities:[],layouts:{tv:[{slot:'ok',command:'Select'}]}},devices:[{id:'tv',transport:'ir',commands:[{name:'VolumeUp'},{name:'Select'}]}]};
+const suppressedContext=vm.createContext({state:suppressedState,window:{},readLocal:key=>key==='harmony-activity'?'':'tv',escape:String,icon:()=>'',
+  api:async(path,body)=>{if(path.startsWith('operations?'))return {state:'completed'};suppressedCalls.push({path,...body});return {id:'op-1'};}});
+vm.runInContext(volumeCode,suppressedContext);
+vm.runInContext('window.harmonyHardwareVolume("up")',suppressedContext);
+for(let i=0;i<20;i++)await Promise.resolve();
+assert.equal(suppressedCalls.length,0);
+console.log('Hardware volume key is suppressed by a custom layout the same way the on-screen button is');
+
+// A screen cell referencing a deleted device/command must be skipped in
+// favor of the next alias-matching cell, instead of silently sending to
+// a stale target (or sending nothing at all).
+const staleCalls=[];
+const staleState={online:true,config:{activities:[{id:'watch',screen:{cells:[{deviceId:'missing',command:'VolumeUp'},{deviceId:'tv',command:'VolumeUp'}]}}]},devices:[{id:'tv',transport:'ir',commands:[{name:'VolumeUp'}]}]};
+const staleContext=vm.createContext({state:staleState,window:{},readLocal:key=>key==='harmony-activity'?'watch':'tv',escape:String,icon:()=>'',
+  api:async(path,body)=>{if(path.startsWith('operations?'))return {state:'completed'};staleCalls.push({path,...body});return {id:'op-1'};}});
+vm.runInContext(volumeCode,staleContext);
+vm.runInContext('window.harmonyHardwareVolume("up")',staleContext);
+for(let i=0;i<20;i++)await Promise.resolve();
+assert.equal(staleCalls.length,1);assert.equal(staleCalls[0].deviceId,'tv');
+console.log('Hardware volume key skips a screen cell with a deleted device and uses the next matching one');
 vm.runInContext("state.config.activities=[];state.devices[0].commands=[{name:'Vol_dn'},{name:'Ch_next'},{name:'Ch_prev'}]",remote);
 for(const [slot,command] of [['volumedown','Vol_dn'],['channelup','Ch_next'],['channeldown','Ch_prev']]){
   assert.match(vm.runInContext(`remoteButton('${slot}',activeDevice())`,remote),new RegExp(`data-command="${command}"`));

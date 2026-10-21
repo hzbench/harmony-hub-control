@@ -610,6 +610,7 @@ static int local_validate_config(const cJSON *o) {
     }
     cJSON_ArrayForEach(a, activities) {
         cJSON *steps = lj_get(a, "steps"), *exits = lj_get(a, "exitSteps"), *buttons = lj_get(a, "buttons"); int total = 0, pass;
+        cJSON *screen = lj_get(a, "screen");
         if (!safe_run_id(lj_str(a, "id")) || strlen(lj_str(a, "id")) > 64 || !safe_label(lj_str(a, "name")) || strlen(lj_str(a, "name")) > 64) return 0;
         for (b = a->next; b; b = b->next) if (strcmp(lj_str(a, "id"), lj_str(b, "id")) == 0) return 0;
         if (!cJSON_IsArray(steps) || cJSON_GetArraySize(steps) > 64 || !cJSON_IsArray(exits) || cJSON_GetArraySize(exits) > 64) return 0;
@@ -620,6 +621,22 @@ static int local_validate_config(const cJSON *o) {
                 !safe_label(lj_str(b, "deviceId")) || strlen(lj_str(b, "deviceId")) > 64 ||
                 !safe_label(lj_str(b, "command")) || strlen(lj_str(b, "command")) > 127 || strlen(lj_str(b, "label")) > 64) return 0;
             for (other = b->next; other; other = other->next) if (!strcmp(lj_str(b, "slot"), lj_str(other, "slot"))) return 0;
+        }
+        /* The free-form per-activity remote screen (custom button grid).
+           Capped at 32 cells to match the `buttons` cap above and the
+           editor's own client-side limit, so a screen that fails to save
+           here can never reach local_activity_run()'s runtime size limit
+           after passing validation. */
+        if (screen) {
+            cJSON *cells = lj_get(screen, "cells"); int columns = lj_int(screen, "columns", 0);
+            if (!cJSON_IsObject(screen) || columns < 1 || columns > 4 ||
+                !cJSON_IsArray(cells) || cJSON_GetArraySize(cells) > 32) return 0;
+            cJSON_ArrayForEach(b, cells) {
+                if (!cJSON_IsObject(b) ||
+                    !safe_label(lj_str(b, "deviceId")) || strlen(lj_str(b, "deviceId")) > 64 ||
+                    !safe_label(lj_str(b, "command")) || strlen(lj_str(b, "command")) > 127 ||
+                    strlen(lj_str(b, "label")) > 64) return 0;
+            }
         }
         for (pass = 0; pass < 2; pass++) cJSON_ArrayForEach(b, (pass ? exits : steps)) {
             int delay = lj_int(b, "delayMs", 0);

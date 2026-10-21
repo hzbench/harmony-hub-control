@@ -55,14 +55,28 @@ function defaultLayout(commands) {
 }
 function activeDevice() {return state.devices.find(d=>d.id===readLocal('harmony-device'))||state.devices[0];}
 function activeActivity() {return state.config?.activities?.find(a=>a.id===readLocal('harmony-activity'));}
-function remoteButton(slot,device) {
-  const [key,label,image,aliases]=controls.find(c=>c[0]===slot);
-  const face=text=>image?icon(image)+(['power','poweron','poweroff','input'].includes(key)?`<span class="label">${escape(text===label?({poweron:'On',poweroff:'Off'}[key]||label):text)}</span>`:''):escape(text);
+// Shared by remoteButton() and window.harmonyHardwareVolume() so both
+// agree on what a device's slot resolves to, including a saved custom
+// layout suppressing a slot the owner removed (previously only
+// remoteButton enforced this — the hardware-key path could fire a
+// command for a button the owner had explicitly hidden).
+function resolveSlotCommand(device,key,aliases) {
   const custom=state.config?.layouts?.[device.id]?.find(c=>c.slot===key);
   const layout=state.config?.layouts?.[device.id];
   const command=custom?device.commands.find(c=>c.name===custom.command):layout?null:matchCommand(device.commands,aliases);
+  return {command,custom};
+}
+function remoteButton(slot,device) {
+  const [key,label,image,aliases]=controls.find(c=>c[0]===slot);
+  const face=text=>image?icon(image)+(['power','poweron','poweroff','input'].includes(key)?`<span class="label">${escape(text===label?({poweron:'On',poweroff:'Off'}[key]||label):text)}</span>`:''):escape(text);
+  const {command,custom}=resolveSlotCommand(device,key,aliases);
   if(!command) return '';
   return `<button class="${escape(key)}" data-command="${escape(command.name)}" data-device="${escape(device.id)}" aria-label="${escape(custom?.label||label)}" title="${escape(custom?.label||label)}">${face(custom?.label||label)}</button>`;
+}
+// Shared by renderRemote() and renderActivityScreen() — both render the
+// same #selected-device dropdown and must react to it identically.
+function bindSelectedDeviceChange() {
+  $('selected-device').addEventListener('change',e=>{if(e.target.value.startsWith('activity:'))writeLocal('harmony-activity',e.target.value.slice(9));else{writeLocal('harmony-activity','');writeLocal('harmony-device',e.target.value);}renderRemote();});
 }
 function renderRemote() {
   const activity=activeActivity();
@@ -78,7 +92,7 @@ function renderRemote() {
     <div class="remote-pairs"><div>${btn('volumeup')||btn('volumedown')?'<small>Volume</small>':''}${btn('volumeup')}${btn('volumedown')}</div><div>${btn('channelup')||btn('channeldown')?'<small>Channel</small>':''}${btn('channelup')}${btn('channeldown')}</div></div>
     <div class="playback">${['rewind','play','pause','stop','forward'].map(btn).join('')}</div>
     <div class="remote-footer"><button data-action="drawer">${icon('List')}<span class="label">All commands</span></button>${owner()?'<button data-action="layout" class="icon-button" aria-label="Edit remote buttons" title="Edit remote buttons">'+icon('SlidersHorizontal')+'</button>':''}</div></div>`);
-  $('selected-device').addEventListener('change',e=>{if(e.target.value.startsWith('activity:'))writeLocal('harmony-activity',e.target.value.slice(9));else{writeLocal('harmony-activity','');writeLocal('harmony-device',e.target.value);}renderRemote();});
+  bindSelectedDeviceChange();
   bindCommands($('content'));
 }
 function renderActivityScreen(activity) {
@@ -98,9 +112,9 @@ function renderActivityScreen(activity) {
   };
   const cells=(screen.cells||[]).map(cellButton).join('');
   mount(`<div class="remote"><label for="selected-device">Activity</label><select id="selected-device">${state.devices.length?'<optgroup label="Devices">'+deviceOptions('')+'</optgroup>':''}<optgroup label="Activities">${state.config.activities.map(a=>`<option value="activity:${escape(a.id)}" ${a.id===activity.id?'selected':''}>${escape(a.name)}</option>`).join('')}</optgroup></select>
-    ${cells?`<div class="screen-grid" data-columns="${escape(String(screen.columns||1))}">${cells}</div>`:`<div class="empty"><p>No buttons on this activity's screen yet.</p></div>`}
+    ${cells?`<div class="screen-grid" data-columns="${escape(String(screen.columns||2))}">${cells}</div>`:`<div class="empty"><p>No buttons on this activity's screen yet.</p></div>`}
     <div class="remote-footer"><button data-action="drawer">${icon('List')}<span class="label">All commands</span></button>${owner()?'<button data-action="edit-activity" data-id="'+escape(activity.id)+'" class="icon-button" aria-label="Edit remote buttons" title="Edit remote buttons">'+icon('SlidersHorizontal')+'</button>':''}</div></div>`);
-  $('selected-device').addEventListener('change',e=>{if(e.target.value.startsWith('activity:'))writeLocal('harmony-activity',e.target.value.slice(9));else{writeLocal('harmony-activity','');writeLocal('harmony-device',e.target.value);}renderRemote();});
+  bindSelectedDeviceChange();
   bindCommands($('content'));
 }
 async function operation(id, seconds=45) {
@@ -124,30 +138,40 @@ async function tap(button) {
 // Hardware volume-key support for the Android WebView wrapper (foreground
 // only - see that app's MainActivity.onKeyDown). Resolves the current
 // device/activity's volumeup/volumedown slot the same way remoteButton()
-// does, then sends through the same path tap() uses. Pure addition; no
-// existing function's signature changes.
+// does (via the shared resolveSlotCommand), then sends through the same
+// path tap() uses.
+let hardwareVolumeBusy = false;
 window.harmonyHardwareVolume = function(direction) {
-  if (!state.online || !state.config || !state.devices.length) return;
+  if (!state.online || !state.config || !state.devices.length || hardwareVolumeBusy) return;
   const slot = direction === 'up' ? 'volumeup' : 'volumedown';
   const [key,,,aliases] = controls.find(c => c[0] === slot);
   const activity = activeActivity();
   let deviceId, command;
   if (activity) {
-    // Same `buttons`-migration gap as renderActivityScreen() above.
-    const cell = (activity.screen?.cells||[]).find(c => aliases.includes(norm(c.command)));
-    if (!cell) return;
-    deviceId = cell.deviceId; command = cell.command;
+    // Same `buttons`-migration gap as renderActivityScreen() above. Also
+    // skips a cell whose device/command no longer exist (e.g. the device
+    // was deleted) instead of silently sending to a stale deviceId, same
+    // as cellButton()'s render-time check; keeps looking at the next
+    // alias-matching cell rather than giving up on the first stale one.
+    const resolved = (activity.screen?.cells||[])
+      .filter(c => aliases.includes(norm(c.command)))
+      .map(c => ({deviceId: c.deviceId, device: state.devices.find(d => d.id === c.deviceId), command: c.command}))
+      .find(r => r.device?.commands.some(cmd => cmd.name === r.command));
+    if (!resolved) return;
+    deviceId = resolved.deviceId; command = resolved.command;
   } else {
     const device = activeDevice();
     if (!device) return;
-    const custom = state.config.layouts?.[device.id]?.find(c => c.slot === key);
-    const resolved = custom ? device.commands.find(c => c.name === custom.command) : matchCommand(device.commands, aliases);
+    const {command: resolved} = resolveSlotCommand(device, key, aliases);
     if (!resolved) return;
     deviceId = device.id; command = resolved.name;
   }
   const device = state.devices.find(d => d.id === deviceId);
+  hardwareVolumeBusy = true;
   api('commands/send', {deviceId, command, transport: device?.transport || 'ir', mode: 'tap'})
-    .then(op => operation(op.id)).catch(() => {});
+    .then(op => operation(op.id))
+    .catch(error => notice(error.message, true))
+    .finally(() => { hardwareVolumeBusy = false; });
 };
 function stopHold(tapOnRelease=false) {
   const hold=state.hold;if(!hold)return;
@@ -442,7 +466,7 @@ function renderActivityEditor(activity=null) {
     section.querySelectorAll('[data-screen-wide]').forEach(e=>e.onchange=()=>{screen.cells[+e.dataset.screenWide].wide=e.target.checked;});
     section.querySelectorAll('[data-screen-move]').forEach(e=>e.onclick=()=>{const i=+e.dataset.screenMove,j=i+(+e.dataset.direction);[screen.cells[i],screen.cells[j]]=[screen.cells[j],screen.cells[i]];draw();});
     section.querySelectorAll('[data-screen-remove]').forEach(e=>e.onclick=()=>{screen.cells.splice(+e.dataset.screenRemove,1);draw();});
-    section.querySelectorAll('[data-screen-add]').forEach(e=>e.onclick=()=>{const {device,command}=available[+e.dataset.screenAdd];screen.cells.push({deviceId:device.id,command:command.name,label:'',wide:false});draw();});
+    section.querySelectorAll('[data-screen-add]').forEach(e=>e.onclick=()=>{if(screen.cells.length>=32)return notice('Custom screen has reached the button limit.',true);const {device,command}=available[+e.dataset.screenAdd];screen.cells.push({deviceId:device.id,command:command.name,label:'',wide:false});draw();});
     $('activity-name').oninput=e=>value.name=e.target.value;
     $('content').querySelectorAll('[data-step]').forEach(e=>e.onchange=()=>{const [group,index]=e.dataset.step.split(':'),step=value[group][+index];step[e.dataset.key]=e.dataset.key==='delayMs'?Number(e.value):e.value;if(e.dataset.key==='deviceId'){step.command='';step.transport=state.devices.find(d=>d.id===e.value)?.transport||'ir';step.kind=e.value?'command':'delay';draw();}});
     $('content').querySelectorAll('[data-remove]').forEach(e=>e.onclick=()=>{const [group,index]=e.dataset.remove.split(':');value[group].splice(+index,1);draw();});
