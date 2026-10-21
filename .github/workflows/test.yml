@@ -1,0 +1,55 @@
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install native test dependencies
+        run: sudo apt-get update && sudo apt-get install -y gcc lua5.1 lua-cjson lua-socket
+
+      - name: Install Python test dependencies
+        run: pip install cryptography
+
+      - name: JS control-runtime tests
+        run: node tools/test_local_controls.mjs
+
+      - name: IR profile encode/decode tests
+        run: node tools/test_profiles.mjs
+
+      - name: Asset consistency tests
+        run: python3 tools/test_assets.py
+
+      - name: Upload/backup logic tests
+        run: python3 tools/test_upload.py
+
+      - name: Boot/recovery tests
+        run: python3 tools/test_recovery.py
+
+      - name: Local hub API integration tests
+        run: python3 tools/test_local_api.py
+
+      - name: MQTT broker tests
+        run: python3 tools/test_mqtt_broker.py
+
+      # Not run in CI: tools/test_hub.py (needs a real physical hub),
+      # tools/ir_database_smoke_test.mjs (live third-party network calls,
+      # too flaky to gate PRs on), tools/chrome_ui_smoke.mjs (manual
+      # diagnostic tool — drives a live Chrome instance against a live hub),
+      # tools/test_home_assistant.py (needs the actual `homeassistant`
+      # package matching a specific deployed version — run manually when
+      # validating against a particular HA release, not on every PR).
