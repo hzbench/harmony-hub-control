@@ -82,6 +82,13 @@ function renderRemote() {
   bindCommands($('content'));
 }
 function renderActivityScreen(activity) {
+  // Known gap: activities saved under the pre-existing per-slot `buttons`
+  // assignment system have no `screen` field and are not migrated here —
+  // this just falls back to an empty screen, so their old button layout
+  // (and hardware-volume routing, which also only reads `screen.cells`)
+  // silently disappears after upgrading. No real activities exist on an
+  // unrooted hub yet, so this is deferred rather than fixed now; revisit
+  // before this ships to a hub that has `buttons`-based activities saved.
   const screen=activity.screen||{columns:2,cells:[]};
   const cellButton=c=>{
     const device=state.devices.find(d=>d.id===c.deviceId);
@@ -91,7 +98,7 @@ function renderActivityScreen(activity) {
   };
   const cells=(screen.cells||[]).map(cellButton).join('');
   mount(`<div class="remote"><label for="selected-device">Activity</label><select id="selected-device">${state.devices.length?'<optgroup label="Devices">'+deviceOptions('')+'</optgroup>':''}<optgroup label="Activities">${state.config.activities.map(a=>`<option value="activity:${escape(a.id)}" ${a.id===activity.id?'selected':''}>${escape(a.name)}</option>`).join('')}</optgroup></select>
-    ${cells?`<div class="screen-grid" style="grid-template-columns:repeat(${screen.columns||1},1fr)">${cells}</div>`:`<div class="empty"><p>No buttons on this activity's screen yet.</p></div>`}
+    ${cells?`<div class="screen-grid" data-columns="${escape(String(screen.columns||1))}">${cells}</div>`:`<div class="empty"><p>No buttons on this activity's screen yet.</p></div>`}
     <div class="remote-footer"><button data-action="drawer">${icon('List')}<span class="label">All commands</span></button>${owner()?'<button data-action="edit-activity" data-id="'+escape(activity.id)+'" class="icon-button" aria-label="Edit remote buttons" title="Edit remote buttons">'+icon('SlidersHorizontal')+'</button>':''}</div></div>`);
   $('selected-device').addEventListener('change',e=>{if(e.target.value.startsWith('activity:'))writeLocal('harmony-activity',e.target.value.slice(9));else{writeLocal('harmony-activity','');writeLocal('harmony-device',e.target.value);}renderRemote();});
   bindCommands($('content'));
@@ -126,6 +133,7 @@ window.harmonyHardwareVolume = function(direction) {
   const activity = activeActivity();
   let deviceId, command;
   if (activity) {
+    // Same `buttons`-migration gap as renderActivityScreen() above.
     const cell = (activity.screen?.cells||[]).find(c => aliases.includes(norm(c.command)));
     if (!cell) return;
     deviceId = cell.deviceId; command = cell.command;
