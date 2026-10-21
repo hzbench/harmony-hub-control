@@ -58,11 +58,6 @@ function activeActivity() {return state.config?.activities?.find(a=>a.id===readL
 function remoteButton(slot,device) {
   const [key,label,image,aliases]=controls.find(c=>c[0]===slot);
   const face=text=>image?icon(image)+(['power','poweron','poweroff','input'].includes(key)?`<span class="label">${escape(text===label?({poweron:'On',poweroff:'Off'}[key]||label):text)}</span>`:''):escape(text);
-  const assignment=activeActivity()?.buttons?.find(b=>b.slot===key);
-  if(activeActivity()) {
-    if(!assignment||!state.devices.find(d=>d.id===assignment.deviceId)?.commands.some(c=>c.name===assignment.command))return '';
-    return `<button class="${key}" data-command="${escape(assignment.command)}" data-device="${escape(assignment.deviceId)}" aria-label="${escape(assignment.label||label)}" title="${escape(assignment.label||label)}">${face(assignment.label||label)}</button>`;
-  }
   const custom=state.config?.layouts?.[device.id]?.find(c=>c.slot===key);
   const layout=state.config?.layouts?.[device.id];
   const command=custom?device.commands.find(c=>c.name===custom.command):layout?null:matchCommand(device.commands,aliases);
@@ -70,18 +65,34 @@ function remoteButton(slot,device) {
   return `<button class="${escape(key)}" data-command="${escape(command.name)}" data-device="${escape(device.id)}" aria-label="${escape(custom?.label||label)}" title="${escape(custom?.label||label)}">${face(custom?.label||label)}</button>`;
 }
 function renderRemote() {
+  const activity=activeActivity();
+  if(activity)return renderActivityScreen(activity);
   const device=activeDevice();
   if(!device){mount(`<div class="empty"><h2>No devices yet</h2>${owner()?'<button data-action="add-device" class="primary">Add a device</button>':'<p>The owner has not added any devices.</p>'}</div>`);return;}
   writeLocal('harmony-device',device.id);
   const btn=slot=>remoteButton(slot,device);
-  const activity=activeActivity();
-  mount(`<div class="remote"><label for="selected-device">${activity?'Activity':'Device'}</label><select id="selected-device"><optgroup label="Devices">${deviceOptions(activity?'':device.id)}</optgroup>${state.config.activities.length?'<optgroup label="Activities">'+state.config.activities.map(a=>`<option value="activity:${escape(a.id)}" ${a.id===activity?.id?'selected':''}>${escape(a.name)}</option>`).join('')+'</optgroup>':''}</select>
+  mount(`<div class="remote"><label for="selected-device">Device</label><select id="selected-device"><optgroup label="Devices">${deviceOptions(device.id)}</optgroup>${state.config.activities.length?'<optgroup label="Activities">'+state.config.activities.map(a=>`<option value="activity:${escape(a.id)}">${escape(a.name)}</option>`).join('')+'</optgroup>':''}</select>
     <div class="remote-top">${btn('poweron')||btn('power')}${btn('poweroff')}${btn('input')}</div>
     <div class="dpad">${['up','left','ok','right','down'].map(btn).join('')}</div>
     <div class="remote-group">${['back','home','menu','mute'].map(btn).join('')}</div>
     <div class="remote-pairs"><div>${btn('volumeup')||btn('volumedown')?'<small>Volume</small>':''}${btn('volumeup')}${btn('volumedown')}</div><div>${btn('channelup')||btn('channeldown')?'<small>Channel</small>':''}${btn('channelup')}${btn('channeldown')}</div></div>
     <div class="playback">${['rewind','play','pause','stop','forward'].map(btn).join('')}</div>
-    <div class="remote-footer"><button data-action="drawer">${icon('List')}<span class="label">All commands</span></button>${owner()?'<button data-action="'+(activity?'edit-activity':'layout')+'" data-id="'+escape(activity?.id||'')+'" class="icon-button" aria-label="Edit remote buttons" title="Edit remote buttons">'+icon('SlidersHorizontal')+'</button>':''}</div></div>`);
+    <div class="remote-footer"><button data-action="drawer">${icon('List')}<span class="label">All commands</span></button>${owner()?'<button data-action="layout" class="icon-button" aria-label="Edit remote buttons" title="Edit remote buttons">'+icon('SlidersHorizontal')+'</button>':''}</div></div>`);
+  $('selected-device').addEventListener('change',e=>{if(e.target.value.startsWith('activity:'))writeLocal('harmony-activity',e.target.value.slice(9));else{writeLocal('harmony-activity','');writeLocal('harmony-device',e.target.value);}renderRemote();});
+  bindCommands($('content'));
+}
+function renderActivityScreen(activity) {
+  const screen=activity.screen||{columns:2,cells:[]};
+  const cellButton=c=>{
+    const device=state.devices.find(d=>d.id===c.deviceId);
+    const command=device?.commands.find(cmd=>cmd.name===c.command);
+    if(!command)return '';
+    return `<button class="screen-cell${c.wide?' wide':''}" data-command="${escape(c.command)}" data-device="${escape(c.deviceId)}" aria-label="${escape(c.label||c.command)}" title="${escape(c.label||c.command)}">${escape(c.label||c.command)}</button>`;
+  };
+  const cells=(screen.cells||[]).map(cellButton).join('');
+  mount(`<div class="remote"><label for="selected-device">Activity</label><select id="selected-device">${state.devices.length?'<optgroup label="Devices">'+deviceOptions('')+'</optgroup>':''}<optgroup label="Activities">${state.config.activities.map(a=>`<option value="activity:${escape(a.id)}" ${a.id===activity.id?'selected':''}>${escape(a.name)}</option>`).join('')}</optgroup></select>
+    ${cells?`<div class="screen-grid" style="grid-template-columns:repeat(${screen.columns||1},1fr)">${cells}</div>`:`<div class="empty"><p>No buttons on this activity's screen yet.</p></div>`}
+    <div class="remote-footer"><button data-action="drawer">${icon('List')}<span class="label">All commands</span></button>${owner()?'<button data-action="edit-activity" data-id="'+escape(activity.id)+'" class="icon-button" aria-label="Edit remote buttons" title="Edit remote buttons">'+icon('SlidersHorizontal')+'</button>':''}</div></div>`);
   $('selected-device').addEventListener('change',e=>{if(e.target.value.startsWith('activity:'))writeLocal('harmony-activity',e.target.value.slice(9));else{writeLocal('harmony-activity','');writeLocal('harmony-device',e.target.value);}renderRemote();});
   bindCommands($('content'));
 }
@@ -115,9 +126,9 @@ window.harmonyHardwareVolume = function(direction) {
   const activity = activeActivity();
   let deviceId, command;
   if (activity) {
-    const assignment = activity.buttons?.find(b => b.slot === key);
-    if (!assignment) return;
-    deviceId = assignment.deviceId; command = assignment.command;
+    const cell = (activity.screen?.cells||[]).find(c => aliases.includes(norm(c.command)));
+    if (!cell) return;
+    deviceId = cell.deviceId; command = cell.command;
   } else {
     const device = activeDevice();
     if (!device) return;
@@ -172,7 +183,7 @@ function bindCommands(root) {
 document.addEventListener('visibilitychange',()=>{if(document.hidden)stopHold(false);});
 function drawer() {
   const activity=activeActivity();
-  if(activity){const draw=()=>{stopHold(false);$('extra-commands').innerHTML=(activity.buttons||[]).filter(b=>(b.label||b.command).toLowerCase().includes($('command-search').value.toLowerCase())).map(b=>`<button data-device="${escape(b.deviceId)}" data-command="${escape(b.command)}">${escape(b.label||b.command)}</button>`).join('')||'<p class="no-results">No matching commands.</p>';bindCommands($('extra-commands'));};$('command-search').value='';$('command-search').oninput=draw;draw();$('drawer').showModal();$('command-search').focus();return;}
+  if(activity){const draw=()=>{stopHold(false);$('extra-commands').innerHTML=(activity.screen?.cells||[]).filter(b=>(b.label||b.command).toLowerCase().includes($('command-search').value.toLowerCase())).map(b=>`<button data-device="${escape(b.deviceId)}" data-command="${escape(b.command)}">${escape(b.label||b.command)}</button>`).join('')||'<p class="no-results">No matching commands.</p>';bindCommands($('extra-commands'));};$('command-search').value='';$('command-search').oninput=draw;draw();$('drawer').showModal();$('command-search').focus();return;}
   const device=activeDevice();if(!device)return;
   const priority=(state.config.layouts[device.id]||[]).map(c=>c.command);
   const ordered=[...device.commands].sort((a,b)=>{const ai=priority.indexOf(a.name),bi=priority.indexOf(b.name);return (ai<0?1000:ai)-(bi<0?1000:bi);});
@@ -407,16 +418,23 @@ function activityStep(step,group,index) {
   return `<div class="activity-step"><div class="step-row"><div><label for="${id}-device">Device</label><select id="${id}-device" data-step="${ref}" data-key="deviceId"><option value="">Delay only</option>${deviceOptions(step.deviceId)}</select></div><div><label for="${id}-delay">${step.deviceId?'Delay after (ms)':'Delay (ms)'}</label><input id="${id}-delay" type="number" min="0" max="30000" step="100" data-step="${ref}" data-key="delayMs" value="${step.delayMs||0}"></div><button type="button" data-remove="${ref}" class="icon-button" title="Remove action">${icon('Minus')}</button></div>${step.deviceId?`<div class="fields"><div><label for="${id}-command">Command</label><select id="${id}-command" data-step="${ref}" data-key="command">${commandOptions(step.deviceId,step.command)}</select></div><div><label for="${id}-role">Action type</label><select id="${id}-role" data-step="${ref}" data-key="role"><option value="command">Command</option><option value="power-on" ${step.role==='power-on'?'selected':''}>Discrete power on</option><option value="power-off" ${step.role==='power-off'?'selected':''}>Power off</option><option value="input" ${step.role==='input'?'selected':''}>Input</option></select></div></div>`:''}</div>`;
 }
 function renderActivityEditor(activity=null) {
-  const value=structuredClone(activity||{id:'activity-'+Date.now().toString(36),name:'',steps:[],exitSteps:[],buttons:[]});
-  value.buttons ||= [];
+  const value=structuredClone(activity||{id:'activity-'+Date.now().toString(36),name:'',steps:[],exitSteps:[],screen:{columns:2,cells:[]}});
+  value.screen ||= {columns:2,cells:[]};
+  value.screen.cells ||= [];
   const draw=()=>{
     mount(`<div class="editor"><h2>${activity?'Edit activity':'Add activity'}</h2><form id="activity-form">${field('Name','activity-name',value.name,'text','required maxlength="64"')}${['steps','exitSteps'].map(group=>`<section class="section"><h3>${group==='steps'?'Start actions':'Power-off actions'}</h3>${value[group].map((step,i)=>activityStep(step,group,i)).join('')}<button type="button" data-add-step="${group}">${icon('Plus')} Add action</button></section>`).join('')}<div class="toolbar"><button class="primary">Save activity</button><button type="button" data-action="activities">Cancel</button>${activity?'<button type="button" data-action="delete-activity" data-id="'+escape(activity.id)+'" class="danger">Delete activity</button>':''}</div></form></div>`);
     const section=document.createElement('section');section.className='section';
-    section.innerHTML=`<h3>Remote buttons</h3>${value.buttons.map((b,i)=>`<div class="button-assignment"><label for="activity-slot-${i}">Control</label><select id="activity-slot-${i}" data-activity-button="${i}" data-key="slot">${controls.map(([slot,label])=>`<option value="${slot}" ${slot===b.slot?'selected':''}>${label}</option>`).join('')}</select><div class="fields"><div><label for="activity-device-${i}">Device</label><select id="activity-device-${i}" data-activity-button="${i}" data-key="deviceId">${deviceOptions(b.deviceId)}</select></div><div><label for="activity-command-${i}">Command</label><select id="activity-command-${i}" data-activity-button="${i}" data-key="command">${commandOptions(b.deviceId,b.command)}</select></div></div><label for="activity-label-${i}">Label</label><input id="activity-label-${i}" value="${escape(b.label||'')}" maxlength="64" data-activity-button="${i}" data-key="label"><button type="button" data-remove-activity-button="${i}" class="icon-button" title="Remove button">${icon('Minus')}</button></div>`).join('')}<button type="button" id="add-activity-button">${icon('Plus')} Assign button</button>`;
+    const screen=value.screen;
+    const screenDevices=[...new Set(value.steps.map(s=>s.deviceId).filter(Boolean))].map(id=>state.devices.find(d=>d.id===id)).filter(Boolean);
+    const available=screenDevices.flatMap(d=>d.commands.filter(c=>!screen.cells.some(cell=>cell.deviceId===d.id&&cell.command===c.name)).map(c=>({device:d,command:c})));
+    section.innerHTML=`<h3>Custom remote screen</h3><p>Buttons are built from the devices used in this activity's start actions above.</p><label for="screen-columns">Columns</label><select id="screen-columns">${[1,2,3,4].map(n=>`<option value="${n}" ${n===(screen.columns||2)?'selected':''}>${n}</option>`).join('')}</select>${screen.cells.map((c,i)=>`<div class="button-assignment"><small>${escape(state.devices.find(d=>d.id===c.deviceId)?.name||'Unknown device')}: ${escape(c.command)}</small><div class="reorder"><input aria-label="Button label" placeholder="${escape(c.command)}" value="${escape(c.label||'')}" data-screen-label="${i}" maxlength="64"><label class="check-label"><input type="checkbox" data-screen-wide="${i}" ${c.wide?'checked':''}> Full width</label><button type="button" data-screen-move="${i}" data-direction="-1" class="icon-button" title="Move up" ${!i?'disabled':''}>${icon('ChevronUp')}</button><button type="button" data-screen-move="${i}" data-direction="1" class="icon-button" title="Move down" ${i===screen.cells.length-1?'disabled':''}>${icon('ChevronDown')}</button></div><button type="button" data-screen-remove="${i}" class="icon-button" title="Remove button">${icon('Minus')}</button></div>`).join('')||'<p>No buttons placed yet.</p>'}<div class="toolbar">${screenDevices.length?(available.length?available.map(({device,command},i)=>`<button type="button" data-screen-add="${i}">${icon('Plus')} ${escape(device.name)}: ${escape(command.name)}</button>`).join(''):'<p>All commands from this activity’s devices are already on the screen.</p>'):'<p>Add a device to this activity’s start actions to choose buttons.</p>'}</div>`;
     $('activity-form').insertBefore(section,$('activity-form').lastElementChild);
-    section.querySelectorAll('[data-activity-button]').forEach(e=>e.onchange=()=>{const b=value.buttons[+e.dataset.activityButton];b[e.dataset.key]=e.value;if(e.dataset.key==='deviceId'){b.command='';draw();}});
-    section.querySelectorAll('[data-remove-activity-button]').forEach(e=>e.onclick=()=>{value.buttons.splice(+e.dataset.removeActivityButton,1);draw();});
-    $('add-activity-button').onclick=()=>{const slot=controls.find(([s])=>!value.buttons.some(b=>b.slot===s)),device=state.devices[0];if(!slot||!device)return;value.buttons.push({slot:slot[0],label:slot[1],deviceId:device.id,command:''});draw();};
+    $('screen-columns').onchange=()=>{screen.columns=+$('screen-columns').value;};
+    section.querySelectorAll('[data-screen-label]').forEach(e=>e.oninput=()=>{screen.cells[+e.dataset.screenLabel].label=e.value;});
+    section.querySelectorAll('[data-screen-wide]').forEach(e=>e.onchange=()=>{screen.cells[+e.dataset.screenWide].wide=e.target.checked;});
+    section.querySelectorAll('[data-screen-move]').forEach(e=>e.onclick=()=>{const i=+e.dataset.screenMove,j=i+(+e.dataset.direction);[screen.cells[i],screen.cells[j]]=[screen.cells[j],screen.cells[i]];draw();});
+    section.querySelectorAll('[data-screen-remove]').forEach(e=>e.onclick=()=>{screen.cells.splice(+e.dataset.screenRemove,1);draw();});
+    section.querySelectorAll('[data-screen-add]').forEach(e=>e.onclick=()=>{const {device,command}=available[+e.dataset.screenAdd];screen.cells.push({deviceId:device.id,command:command.name,label:'',wide:false});draw();});
     $('activity-name').oninput=e=>value.name=e.target.value;
     $('content').querySelectorAll('[data-step]').forEach(e=>e.onchange=()=>{const [group,index]=e.dataset.step.split(':'),step=value[group][+index];step[e.dataset.key]=e.dataset.key==='delayMs'?Number(e.value):e.value;if(e.dataset.key==='deviceId'){step.command='';step.transport=state.devices.find(d=>d.id===e.value)?.transport||'ir';step.kind=e.value?'command':'delay';draw();}});
     $('content').querySelectorAll('[data-remove]').forEach(e=>e.onclick=()=>{const [group,index]=e.dataset.remove.split(':');value[group].splice(+index,1);draw();});

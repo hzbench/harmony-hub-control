@@ -78,11 +78,26 @@ assert.equal(t.calls.length,0);
 console.log('Hold renewal failure, queued-release race, hidden pages, completion/failure and offline controls passed');
 
 const remoteCode=source.slice(source.indexOf('const norm ='),source.indexOf('function renderRemote()'));
-const remote=vm.createContext({state:{devices:[{id:'tv',commands:[{name:'VolumeUp'}]}],config:{activities:[{id:'watch',buttons:[{slot:'volumeup',deviceId:'tv',command:'VolumeUp',label:'Volume'}]}]}},readLocal:key=>key==='harmony-activity'?'watch':'tv',escape:s=>String(s),icon:s=>s});
+const remote=vm.createContext({state:{devices:[{id:'tv',commands:[{name:'VolumeUp'}]}],config:{activities:[]}},readLocal:key=>key==='harmony-activity'?'watch':'tv',escape:s=>String(s),icon:s=>s});
 vm.runInContext(remoteCode,remote);
 assert.match(vm.runInContext('remoteButton("volumeup",activeDevice())',remote),/data-command="VolumeUp" data-device="tv"/);
 assert.equal(vm.runInContext('remoteButton("ok",activeDevice())',remote),'');
-console.log('Activity remote assignments target the saved device and hide unassigned controls');
+console.log('Remote buttons resolve commands via device aliases and hide unmatched controls');
+
+const volumeCalls=[];
+const volumeState={online:true,config:{activities:[{id:'watch',screen:{cells:[{deviceId:'tv',command:'VolumeUp',label:'Volume'},{deviceId:'tv',command:'VolumeDown',label:'Volume'}]}}]},devices:[{id:'tv',transport:'ir',commands:[{name:'VolumeUp'},{name:'VolumeDown'}]}]};
+const volumeCode=source.slice(source.indexOf('const norm ='),source.indexOf('function stopHold('));
+const volumeContext=vm.createContext({state:volumeState,window:{},readLocal:key=>key==='harmony-activity'?'watch':'tv',escape:String,icon:()=>'',
+  api:async(path,body)=>{if(path.startsWith('operations?'))return {state:'completed'};volumeCalls.push({path,...body});return {id:'op-1'};}});
+vm.runInContext(volumeCode,volumeContext);
+vm.runInContext('window.harmonyHardwareVolume("up")',volumeContext);
+for(let i=0;i<6;i++)await Promise.resolve();
+assert.equal(volumeCalls.length,1);assert.equal(volumeCalls[0].deviceId,'tv');assert.equal(volumeCalls[0].command,'VolumeUp');
+volumeCalls.length=0;
+vm.runInContext('window.harmonyHardwareVolume("down")',volumeContext);
+for(let i=0;i<6;i++)await Promise.resolve();
+assert.equal(volumeCalls.length,1);assert.equal(volumeCalls[0].command,'VolumeDown');
+console.log('Hardware volume keys resolve the right command from an active activity\'s custom screen');
 vm.runInContext("state.config.activities=[];state.devices[0].commands=[{name:'Vol_dn'},{name:'Ch_next'},{name:'Ch_prev'}]",remote);
 for(const [slot,command] of [['volumedown','Vol_dn'],['channelup','Ch_next'],['channeldown','Ch_prev']]){
   assert.match(vm.runInContext(`remoteButton('${slot}',activeDevice())`,remote),new RegExp(`data-command="${command}"`));

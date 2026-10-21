@@ -309,7 +309,7 @@ def run():
             assert request("devices", cookie=cookie)[1]["devices"][0]["commands"][0]["name"] == "PowerOff"
             configuration = request("configuration", cookie=cookie)[1]
             configuration["layouts"][device_id] = [{"slot": "volumeup", "label": "Volume", "command": "VolumeUp"}]
-            configuration["activities"] = [{"id": "watch", "name": "Watch TV", "steps": [], "exitSteps": [], "buttons": [{"slot": "volumeup", "deviceId": device_id, "command": "VolumeUp", "label": "Volume"}]}]
+            configuration["activities"] = [{"id": "watch", "name": "Watch TV", "steps": [], "exitSteps": [], "screen": {"columns": 2, "cells": [{"deviceId": device_id, "command": "VolumeUp", "label": "Volume"}]}}]
             assert request("configuration", {"revision": 6, "configuration": configuration}, cookie, csrf)[0] == 200
             assert request("commands/save", {"revision": 7, "deviceId": device_id, "oldName": "PowerOff", "name": "Off", "mode": "nec", "protocol": "2", "nec": "20DFA35C"}, cookie, csrf)[0] == 200
             assert request("devices", {"revision": 8, "deviceId": device_id, "action": "delete"}, cookie, csrf)[0] == 200
