@@ -1,0 +1,86 @@
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install native test dependencies
+        run: sudo apt-get update && sudo apt-get install -y gcc lua5.1 lua-cjson lua-socket
+
+      - name: Install Python test dependencies
+        run: pip install cryptography==50.0.2
+
+      - name: IR runtime tests (C)
+        run: |
+          gcc -O0 tools/test_ir_runtime.c payload/source/vendor/cJSON.c payload/source/vendor/monocypher.c payload/source/vendor/monocypher-ed25519.c -o /tmp/test-ir
+          /tmp/test-ir
+
+      - name: HBus hold/release tests (C)
+        run: |
+          gcc -O0 tools/test_hbus_hold.c -o /tmp/test-hold
+          /tmp/test-hold
+
+      - name: MQTT runtime tests (Lua)
+        run: lua5.1 tools/test_mqtt_runtime.lua
+
+      - name: MQTT protocol tests (Lua)
+        run: lua5.1 tools/test_mqtt_protocol.lua
+
+      - name: JS control-runtime tests
+        run: node tools/test_local_controls.mjs
+
+      - name: IR profile encode/decode tests
+        run: node tools/test_profiles.mjs
+
+      - name: Asset consistency tests
+        run: python3 tools/test_assets.py
+
+      - name: Upload/backup logic tests
+        run: python3 tools/test_upload.py
+
+      - name: Boot/recovery tests
+        run: python3 tools/test_recovery.py
+
+      - name: Local hub API integration tests
+        run: python3 tools/test_local_api.py
+
+      # Pulls eclipse-mosquitto:2 from Docker Hub and asserts on wall-clock
+      # keepalive/reconnect timing, so it's more prone to transient
+      # network/scheduling flakiness than the rest of this suite. Retried
+      # once before failing the job, so one bad pull/timing blip doesn't
+      # block an unrelated PR.
+      - name: MQTT broker tests
+        run: |
+          for attempt in 1 2; do
+            if python3 tools/test_mqtt_broker.py; then exit 0; fi
+            echo "Attempt $attempt failed" >&2
+          done
+          exit 1
+
+      # Not run in CI: tools/test_hub.py (needs a real physical hub),
+      # tools/ir_database_smoke_test.mjs (live third-party network calls,
+      # too flaky to gate PRs on), tools/chrome_ui_smoke.mjs (manual
+      # diagnostic tool — drives a live Chrome instance against a live hub),
+      # tools/test_home_assistant.py (needs the actual `homeassistant`
+      # package matching a specific deployed version — run manually when
+      # validating against a particular HA release, not on every PR).
