@@ -103,6 +103,33 @@ async function tap(button) {
   try {notice('Sending...');const op=await api('commands/send',{deviceId:device.id,command:button.dataset.command,transport:device.transport,mode:'tap'});const result=await operation(op.id);notice(result.state==='completed'?'Sent to the hub.':'Command cancelled.');}
   catch(error){notice(error.message,true);}
 }
+// Hardware volume-key support for the Android WebView wrapper (foreground
+// only - see that app's MainActivity.onKeyDown). Resolves the current
+// device/activity's volumeup/volumedown slot the same way remoteButton()
+// does, then sends through the same path tap() uses. Pure addition; no
+// existing function's signature changes.
+window.harmonyHardwareVolume = function(direction) {
+  if (!state.online || !state.config || !state.devices.length) return;
+  const slot = direction === 'up' ? 'volumeup' : 'volumedown';
+  const [key,,,aliases] = controls.find(c => c[0] === slot);
+  const activity = activeActivity();
+  let deviceId, command;
+  if (activity) {
+    const assignment = activity.buttons?.find(b => b.slot === key);
+    if (!assignment) return;
+    deviceId = assignment.deviceId; command = assignment.command;
+  } else {
+    const device = activeDevice();
+    if (!device) return;
+    const custom = state.config.layouts?.[device.id]?.find(c => c.slot === key);
+    const resolved = custom ? device.commands.find(c => c.name === custom.command) : matchCommand(device.commands, aliases);
+    if (!resolved) return;
+    deviceId = device.id; command = resolved.name;
+  }
+  const device = state.devices.find(d => d.id === deviceId);
+  api('commands/send', {deviceId, command, transport: device?.transport || 'ir', mode: 'tap'})
+    .then(op => operation(op.id)).catch(() => {});
+};
 function stopHold(tapOnRelease=false) {
   const hold=state.hold;if(!hold)return;
   state.hold=null;hold.stopped=true;clearTimeout(hold.timer);clearInterval(hold.renew);
