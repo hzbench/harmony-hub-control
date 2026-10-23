@@ -73,7 +73,7 @@ const screens = {
   }},
   activity: {title:'Activity', parent:'activities', reserveNotice:true, render:renderActivityRemote},
   edit: {title:'Edit remote', parent:'activity', parentParams:params=>params.slice(0,1), render:ctx=>placeholder(ctx,'The layout editor is built in a later step.')},
-  device: {title:'Device', parent:'devices', render:ctx=>placeholder(ctx,'The device remote is built in a later step.')},
+  device: {title:'Device', parent:'devices', reserveNotice:true, render:renderDeviceRemote},
 };
 // There is no hub-side "running" activity: like the original UI, the client
 // remembers the last one it started in localStorage.
@@ -185,6 +185,9 @@ function resolveCell(c) {
 // longer exist are skipped.
 const CROSS = ['up','left','ok','right','down'];
 const HARDWARE_ONLY = ['volumeup','volumedown'];
+// Icons that read as something else out of context (a bare chevron, +, -): the
+// exhaustive device list names these instead.
+const NAMED_IN_LIST = ['volumeup','volumedown','channelup','channeldown'];
 const visibleEntries = cells => (cells||[]).map(cell=>({cell,control:controlFor(cell.command)}))
   .filter(e=>resolveCell(e.cell)&&!HARDWARE_ONLY.includes(e.control?.[0]));
 function remoteBlocks(cells) {
@@ -201,20 +204,39 @@ function remoteBlocks(cells) {
   }
   return blocks;
 }
-function cellButton({cell,control}, extra='') {
+function cellButton({cell,control}, extra='', customFace='') {
   const label = control?.[1] || cell.command;
   // A command with no known icon shows its own name instead of a generic glyph.
-  const face = control?.[2] ? icon(control[2]) : `<span class="cell-text">${escape(cell.command)}</span>`;
+  const face = customFace || (control?.[2] ? icon(control[2]) : `<span class="cell-text">${escape(cell.command)}</span>`);
   return `<button class="cell ${extra}" type="button" data-command="${escape(cell.command)}" data-device="${escape(cell.deviceId)}" aria-label="${escape(label)}" title="${escape(label)}">${face}</button>`;
 }
+const crossHtml = pick => `<div class="dpad">${CROSS.map(slot=>pick[slot]?cellButton(pick[slot],slot):'<span></span>').join('')}</div>`;
 function remoteHtml(screen) {
   const columns = screen?.columns || 4;
   const body = remoteBlocks(screen?.cells).map(block=>block.kind==='cross'
-    ? `<div class="dpad">${CROSS.map(slot=>block.pick[slot]?cellButton(block.pick[slot],slot):'<span></span>').join('')}</div>`
+    ? crossHtml(block.pick)
     : `<div class="cells" data-columns="${escape(String(columns))}">${block.entries.map(e=>cellButton(e)).join('')}</div>`).join('');
   // The pinned footer is a plain row in the order it was set: no cross.
   const pinned = visibleEntries(screen?.pinned);
   return {body, pinned: pinned.length ? `<div class="cells" data-columns="${escape(String(columns))}">${pinned.map(e=>cellButton(e)).join('')}</div>` : ''};
+}
+
+// A device remote shows every command the device has, exactly once: the usual
+// controls first (power, cross, back/input/mute), everything else in "All commands".
+function deviceRemoteHtml(device) {
+  const entry = name => ({cell:{deviceId:device.id,command:name},control:controlFor(name)});
+  const slot = key => {const cmd=matchCommand(device.commands||[],CONTROLS.find(c=>c[0]===key)[3]);return cmd&&entry(cmd.name);};
+  const shown = new Set(), use = e => {if(e)shown.add(e.cell.command);return e;};
+  const on = slot('poweron')||slot('power'), off = slot('poweroff');
+  const power = [on&&[on,on.control[0]==='power'?'Power':'On'], off&&[off,'Off']].filter(Boolean);
+  let html = power.length ? `<div class="cells power" data-columns="${power.length}">${power.map(([e,text])=>cellButton(use(e),'',`${icon('Power')}<span class="cell-label">${text}</span>`)).join('')}</div>` : '';
+  const pick = Object.fromEntries(CROSS.map(key=>[key,slot(key)]));
+  if(['up','down','left','right'].every(key=>pick[key])) html += crossHtml(Object.fromEntries(Object.entries(pick).map(([key,e])=>[key,use(e)])));
+  const row = ['back','input','mute'].map(slot).filter(Boolean);
+  if(row.length) html += `<div class="cells" data-columns="3">${row.map(e=>cellButton(use(e))).join('')}</div>`;
+  const rest = (device.commands||[]).filter(c=>!shown.has(c.name));
+  if(rest.length) html += `<div class="section-label">All commands</div><div class="cells all" data-columns="4">${rest.map(c=>{const e=entry(c.name);return cellButton(e,'',NAMED_IN_LIST.includes(e.control?.[0])?`<span class="cell-text">${escape(e.control[1])}</span>`:'');}).join('')}</div>`;
+  return html;
 }
 
 // --- command sending (same tap / press-and-hold behaviour as app.js) ---
@@ -284,8 +306,12 @@ function volumeTarget(activity, slot) {
 }
 window.harmonyHardwareVolume = function(direction) {
   if(!state.online||!state.config||!state.devices.length||hardwareVolumeBusy)return;
-  const activity=activeActivity();if(!activity)return;
-  const target=volumeTarget(activity,direction==='up'?'volumeup':'volumedown');if(!target)return;
+  const slot=direction==='up'?'volumeup':'volumedown', route=parseRoute(location.hash);
+  // On a device remote the keys drive that device, if it has a volume command;
+  // otherwise (or elsewhere) they drive the running activity.
+  const device=route.name==='device'&&state.devices.find(d=>d.id===route.params[0]);
+  const target=(device&&volumeTarget({steps:[{deviceId:device.id}]},slot))||(activeActivity()&&volumeTarget(activeActivity(),slot));
+  if(!target)return;
   hardwareVolumeBusy=true;
   api('commands/send',{deviceId:target.device.id,command:target.command,transport:target.device.transport||'ir',mode:'tap'})
     .then(op=>operation(op.id))
@@ -293,6 +319,14 @@ window.harmonyHardwareVolume = function(direction) {
     .finally(()=>{hardwareVolumeBusy=false;});
 };
 
+function renderDeviceRemote(ctx) {
+  const device=state.devices.find(d=>d.id===ctx.params[0]);
+  if(!device){ctx.setTitle('Device');return placeholder(ctx,'This device no longer exists.');}
+  ctx.setTitle(device.name);
+  const html=deviceRemoteHtml(device);
+  ctx.content.innerHTML=`<div class="remote">${html||'<div class="placeholder"><p>This device has no commands yet.</p></div>'}</div>`;
+  bindCommands(ctx.content);
+}
 function renderActivityRemote(ctx) {
   const activity=(state.config.activities||[]).find(a=>a.id===ctx.params[0]);
   if(!activity){ctx.setTitle('Activity');return placeholder(ctx,'This activity no longer exists.');}

@@ -18,7 +18,7 @@ const el=id=>elements[id]||=({id,dataset:{},classList:{add(){},remove(){}},hidde
 const context=vm.createContext({document:{getElementById:el,title:'',body:{dataset:{}},addEventListener(){},hidden:false},window:{addEventListener(){},scrollTo(){}},location:{hash:'',replace(url){context.replaced=url;}},history:{replaceState(){}},
   localStorage:{getItem:k=>store.get(k)??null,setItem:(k,v)=>store.set(k,v)},setTimeout:()=>0,clearTimeout(){},fetch:async()=>{throw new TypeError('offline');},AbortController,URL});
 const inert=source.replace(/\n  boot\(\);\n\}\s*$/,'\n}');assert.notEqual(inert,source,'boot() auto-run not found');
-vm.runInContext(inert.replace('const state =','var state =')+'\nthis.exports={parseRoute,routeHash,connection,state,needsFullUi,api,show,screens,renderActivities,renderDevices,remoteBlocks,remoteHtml,renderActivityRemote,CONTROLS,controlFor,volumeTarget};',context);
+vm.runInContext(inert.replace('const state =','var state =')+'\nthis.exports={parseRoute,routeHash,connection,state,needsFullUi,api,show,screens,renderActivities,renderDevices,deviceRemoteHtml,renderDeviceRemote,remoteBlocks,remoteHtml,renderActivityRemote,CONTROLS,controlFor,volumeTarget};',context);
 const {parseRoute,routeHash,connection,state,needsFullUi,api,show}=context.exports;
 
 assert.deepEqual(JSON.parse(JSON.stringify(parseRoute(''))),{name:'activities',params:[]});
@@ -276,3 +276,74 @@ console.log('Hardware volume uses a screen volume cell, else the start-step devi
 assert.match(css,/body\[data-reserve-notice=true\] #notice\{min-height:\d+px\}/);
 assert.match(css,/body\[data-reserve-notice=true\] #notice\[hidden\]\{display:block!important;visibility:hidden\}/);
 console.log('Remote screens reserve space for the send status so a press cannot shift the buttons');
+
+// ---- Device remote ----
+const names=html=>[...html.matchAll(/data-command="([^"]*)"/g)].map(m=>m[1].replace(/&quot;/g,'"').replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>'));
+const dev=(id,commands,extra={})=>({id,name:id,transport:'ir',commands:commands.map(name=>({name})),...extra});
+const full=dev('full',['PowerOn','PowerOff','Up','Down','Left','Right','OK','Back','Input','Mute','VolumeUp','VolumeDown','Home','Play','Pause','Stop','Guide','HDMI 1','Sleep Timer','Zoom']);
+let h=context.exports.deviceRemoteHtml(full);
+// Every command appears exactly once: nothing hidden, nothing duplicated.
+assert.deepEqual(names(h).sort(),full.commands.map(c=>c.name).sort());
+assert.match(h,/<span class="cell-label">On<\/span>/);assert.match(h,/<span class="cell-label">Off<\/span>/);
+assert.match(h,/class="dpad"/);
+// The cross sits between the power row and the back/input/mute row; the rest follows "All commands".
+const at=re=>h.search(re);
+assert.ok(at(/cells power/)<at(/class="dpad"/)&&at(/class="dpad"/)<at(/data-columns="3"/)&&at(/data-columns="3"/)<at(/All commands/));
+const listed=names(h.slice(at(/All commands/)));
+assert.ok(listed.includes('VolumeUp')&&listed.includes('VolumeDown'),'volume stays reachable on a device remote');
+assert.ok(!listed.includes('Up')&&!listed.includes('Mute'));
+assert.match(h,/<span class="cell-text">Volume up<\/span>/);assert.doesNotMatch(h,/icon-Plus|icon-Minus/);
+assert.match(context.exports.deviceRemoteHtml(dev('ch',['ChannelUp','ChannelDown'])),/<span class="cell-text">Channel up<\/span>/);
+assert.match(h,/<span class="cell-text">HDMI 1<\/span>/);
+console.log('Device remote shows power, cross and back/input/mute first, then every other command, each exactly once');
+
+// A toggle-only power button, no arrows: Power alone, arrows fall into the list.
+h=context.exports.deviceRemoteHtml(dev('tog',['Power','Up','Down','Mute','Source']));
+assert.deepEqual(names(h).sort(),['Down','Mute','Power','Source','Up']);
+assert.match(h,/data-columns="1"/);assert.match(h,/<span class="cell-label">Power<\/span>/);assert.doesNotMatch(h,/class="dpad"/);
+// Missing OK still gets a cross; missing a whole arrow does not.
+assert.match(context.exports.deviceRemoteHtml(dev('d',['Up','Down','Left','Right'])),/class="dpad"/);
+assert.doesNotMatch(context.exports.deviceRemoteHtml(dev('d',['Up','Down','Left','OK'])),/class="dpad"/);
+// Nothing to curate: a saved custom layout does not hide or relabel anything here.
+state.config={layouts:{lay:[{slot:'mute',label:'Shh',command:'Mute'}]},activities:[]};
+h=context.exports.deviceRemoteHtml(dev('lay',['Mute','Up']));
+assert.deepEqual(names(h).sort(),['Mute','Up']);assert.doesNotMatch(h,/Shh/);
+assert.equal(context.exports.deviceRemoteHtml(dev('empty',[])),'');
+assert.equal(context.exports.deviceRemoteHtml({id:'nocmds',name:'x'}),'');
+assert.doesNotMatch(context.exports.deviceRemoteHtml(dev('x',['<img src=x>"'])),/<img/);
+console.log('Device remote handles toggle-only power, partial arrows, saved layouts, empty devices and escapes names');
+
+// Invariant: a device carrying every alias of every control still shows each command once.
+const everything=dev('all',[...new Set(context.exports.CONTROLS.flatMap(c=>c[3]))]);
+const everyHtml=context.exports.deviceRemoteHtml(everything);
+assert.deepEqual(names(everyHtml).sort(),everything.commands.map(c=>c.name).sort());
+console.log('Every control alias on one device still renders each command exactly once');
+
+// Screen: no edit link, send-status space reserved, missing device handled.
+state.devices=[full];state.session={role:'owner'};
+const dc={content:{innerHTML:'',querySelectorAll:()=>[]},actions:{innerHTML:''},params:['full'],setTitle(t){this.title=t;}};
+context.exports.renderDeviceRemote(dc);
+assert.equal(dc.title,'full');assert.equal(dc.actions.innerHTML,'');assert.doesNotMatch(dc.content.innerHTML,/pinned|edit/i);
+dc.params=['nope'];context.exports.renderDeviceRemote(dc);assert.match(dc.content.innerHTML,/no longer exists/);
+context.location.hash='#/device/full';show();
+assert.equal(el('back').dataset.href,'#/devices');assert.equal(context.document.body.dataset.reserveNotice,'true');
+console.log('Device remote has no edit link, goes back to Devices and reserves space for send status');
+
+// Hardware volume follows the device remote while it is open, the running activity otherwise.
+const bar2=dev('bar2',['VolUp','VolDn']);state.devices=[full,bar2];
+state.config={activities:[{id:'a',steps:[{deviceId:'bar2'}]}]};store.set('harmony-activity','a');state.online=true;
+context.location.hash='#/device/full';
+assert.deepEqual(J(await press('up')),[['full','VolumeUp']]);
+context.location.hash='#/activities';
+assert.deepEqual(J(await press('up')),[['bar2','VolUp']]);
+context.location.hash='#/device/nope';
+assert.deepEqual(J(await press('up')),[['bar2','VolUp']],'an unknown device route falls back to the running activity');
+context.location.hash='#/device/'+encodeURIComponent('bar2');store.set('harmony-activity','');
+assert.deepEqual(J(await press('down')),[['bar2','VolDn']],'works with no running activity too');
+context.location.hash='#/activities';assert.deepEqual(J(await press('down')),[]);
+// A device remote with no volume command falls back to the running activity.
+state.devices=[full,bar2,dev('roku',['Home','Play'])];store.set('harmony-activity','a');
+context.location.hash='#/device/roku';
+assert.deepEqual(J(await press('up')),[['bar2','VolUp']]);
+store.set('harmony-activity','');assert.deepEqual(J(await press('up')),[]);
+console.log('Hardware volume drives the open device remote, else the running activity');
