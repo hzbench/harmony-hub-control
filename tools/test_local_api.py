@@ -314,6 +314,12 @@ def run():
             # The custom-screen field is validated server-side, not just by the client UI.
             bad_columns = json.loads(json.dumps(configuration)); bad_columns["activities"][0]["screen"]["columns"] = 0
             assert request("configuration", {"revision": 7, "configuration": bad_columns}, cookie, csrf)[0] == 400
+            # `pinned` holds at most `columns` cells of the same shape as `cells`.
+            pinned_cell = {"deviceId": device_id, "command": "VolumeUp"}
+            too_many_pinned = json.loads(json.dumps(configuration)); too_many_pinned["activities"][0]["screen"]["pinned"] = [pinned_cell] * 3
+            assert request("configuration", {"revision": 7, "configuration": too_many_pinned}, cookie, csrf)[0] == 400
+            bad_pinned = json.loads(json.dumps(configuration)); bad_pinned["activities"][0]["screen"]["pinned"] = "nope"
+            assert request("configuration", {"revision": 7, "configuration": bad_pinned}, cookie, csrf)[0] == 400
             too_many_cells = json.loads(json.dumps(configuration)); too_many_cells["activities"][0]["screen"]["cells"] = [{"deviceId": device_id, "command": "VolumeUp"}] * 33
             assert request("configuration", {"revision": 7, "configuration": too_many_cells}, cookie, csrf)[0] == 400
             # Each individual cell is within the per-field length limits and the array
@@ -326,10 +332,15 @@ def run():
             assert len(json.dumps(oversized_cells["activities"][0])) > 7000
             assert request("configuration", {"revision": 7, "configuration": oversized_cells}, cookie, csrf)[0] == 400
             assert request("configuration", cookie=cookie)[1]["revision"] == 7
-            assert request("commands/save", {"revision": 7, "deviceId": device_id, "oldName": "PowerOff", "name": "Off", "mode": "nec", "protocol": "2", "nec": "20DFA35C"}, cookie, csrf)[0] == 200
-            assert request("devices", {"revision": 8, "deviceId": device_id, "action": "delete"}, cookie, csrf)[0] == 200
+            # A full pinned row (plus legacy label/wide on cells) saves and round-trips.
+            with_pinned = json.loads(json.dumps(configuration)); with_pinned["activities"][0]["screen"]["pinned"] = [pinned_cell] * 2
+            with_pinned["activities"][0]["screen"]["cells"][0]["wide"] = True
+            assert request("configuration", {"revision": 7, "configuration": with_pinned}, cookie, csrf)[0] == 200
+            assert request("configuration", cookie=cookie)[1]["activities"][0]["screen"]["pinned"] == [pinned_cell] * 2
+            assert request("commands/save", {"revision": 8, "deviceId": device_id, "oldName": "PowerOff", "name": "Off", "mode": "nec", "protocol": "2", "nec": "20DFA35C"}, cookie, csrf)[0] == 200
+            assert request("devices", {"revision": 9, "deviceId": device_id, "action": "delete"}, cookie, csrf)[0] == 200
             assert request("devices", cookie=cookie)[1]["devices"] == []
-            assert request("backups/restore", {"revision": 9, "backup": backup}, cookie, csrf)[0] == 200
+            assert request("backups/restore", {"revision": 10, "backup": backup}, cookie, csrf)[0] == 200
             command = {"deviceId": "123", "command": "VolumeUp", "mode": "hold", "transport": "ir"}
             status, op, _ = request("commands/send", command, second, pending["csrf"])
             assert status == 202
