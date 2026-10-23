@@ -17,7 +17,7 @@ const CONNECTION_LABEL = {connecting:'Connecting to the hub',online:'Connected t
 function parseRoute(hash) {
   const parts = String(hash||'').replace(/^#\/?/,'').split('/').filter(Boolean);
   try {
-    const name = parts[0] && screens[parts[0]] ? parts[0] : 'activities';
+    const name = Object.hasOwn(screens, parts[0]) ? parts[0] : 'activities';
     return {name, params: name===parts[0] ? parts.slice(1).map(decodeURIComponent) : []};
   } catch {return {name:'activities', params:[]};}
 }
@@ -36,7 +36,7 @@ async function api(path, body) {
     const response=await fetch('/api/v1/'+path,{credentials:'same-origin',cache:'no-store',signal:controller.signal,
       method:body?'POST':'GET',headers:body?{'Content-Type':'application/json','X-Harmony-CSRF':state.session?.csrf||''}:{},body:body?JSON.stringify(body):undefined});
     const result=await response.json();connection(true);
-    if(!response.ok || result.ok===false) {if(response.status===401)state.session=null;throw Error(result.error||`Request failed (${response.status})`);}
+    if(!response.ok || result.ok===false) {throw Object.assign(Error(result.error||`Request failed (${response.status})`),{status:response.status});}
     return result;
   } catch(error) {if(error.name==='AbortError'||error instanceof TypeError)connection(false);throw error;}
   finally {clearTimeout(timeout);}
@@ -91,7 +91,7 @@ async function boot() {
     if(!location.hash)history.replaceState(null,'',routeHash('activities'));
     show();
   } catch(error) {
-    if(state.session===null&&state.online)return location.replace('/');
+    if(error.status===401)return location.replace('/');
     // A dead connection is already shown by the status icon, and pollSession() keeps retrying.
     if(state.online!==false)notice(error.message,true);
     $('content').setAttribute('aria-busy','false');
