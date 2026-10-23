@@ -307,10 +307,11 @@ function volumeTarget(activity, slot) {
 window.harmonyHardwareVolume = function(direction) {
   if(!state.online||!state.config||!state.devices.length||hardwareVolumeBusy)return;
   const slot=direction==='up'?'volumeup':'volumedown', route=parseRoute(location.hash);
-  // On a device remote the keys drive that device; otherwise the running activity.
+  // On a device remote the keys drive that device, if it has a volume command;
+  // otherwise (or elsewhere) they drive the running activity.
   const device=route.name==='device'&&state.devices.find(d=>d.id===route.params[0]);
-  const activity=device?{steps:[{deviceId:device.id}]}:activeActivity();if(!activity)return;
-  const target=volumeTarget(activity,slot);if(!target)return;
+  const target=(device&&volumeTarget({steps:[{deviceId:device.id}]},slot))||(activeActivity()&&volumeTarget(activeActivity(),slot));
+  if(!target)return;
   hardwareVolumeBusy=true;
   api('commands/send',{deviceId:target.device.id,command:target.command,transport:target.device.transport||'ir',mode:'tap'})
     .then(op=>operation(op.id))

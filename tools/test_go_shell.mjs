@@ -313,6 +313,12 @@ assert.equal(context.exports.deviceRemoteHtml({id:'nocmds',name:'x'}),'');
 assert.doesNotMatch(context.exports.deviceRemoteHtml(dev('x',['<img src=x>"'])),/<img/);
 console.log('Device remote handles toggle-only power, partial arrows, saved layouts, empty devices and escapes names');
 
+// Invariant: a device carrying every alias of every control still shows each command once.
+const everything=dev('all',[...new Set(context.exports.CONTROLS.flatMap(c=>c[3]))]);
+const everyHtml=context.exports.deviceRemoteHtml(everything);
+assert.deepEqual(names(everyHtml).sort(),everything.commands.map(c=>c.name).sort());
+console.log('Every control alias on one device still renders each command exactly once');
+
 // Screen: no edit link, send-status space reserved, missing device handled.
 state.devices=[full];state.session={role:'owner'};
 const dc={content:{innerHTML:'',querySelectorAll:()=>[]},actions:{innerHTML:''},params:['full'],setTitle(t){this.title=t;}};
@@ -335,4 +341,9 @@ assert.deepEqual(J(await press('up')),[['bar2','VolUp']],'an unknown device rout
 context.location.hash='#/device/'+encodeURIComponent('bar2');store.set('harmony-activity','');
 assert.deepEqual(J(await press('down')),[['bar2','VolDn']],'works with no running activity too');
 context.location.hash='#/activities';assert.deepEqual(J(await press('down')),[]);
+// A device remote with no volume command falls back to the running activity.
+state.devices=[full,bar2,dev('roku',['Home','Play'])];store.set('harmony-activity','a');
+context.location.hash='#/device/roku';
+assert.deepEqual(J(await press('up')),[['bar2','VolUp']]);
+store.set('harmony-activity','');assert.deepEqual(J(await press('up')),[]);
 console.log('Hardware volume drives the open device remote, else the running activity');
