@@ -9,6 +9,7 @@ import socket
 import struct
 import subprocess
 import tempfile
+import termios
 import time
 import fcntl
 
@@ -190,7 +191,14 @@ def run():
         def button_event(value, code=30, stamp=None, event_type=1):
             stamp = time.time() if stamp is None else stamp
             os.write(button_fd, struct.pack("llHHi", int(stamp), int(stamp % 1 * 1000000), event_type, code, value))
-            time.sleep(.03)
+            # The server reads these asynchronously. Wait until it has taken them off
+            # the FIFO, then a beat for it to finish handling the last one, so that
+            # "this press must NOT change anything" assertions can't pass just because
+            # the event hadn't been processed yet.
+            deadline = time.time() + 5
+            while struct.unpack("i", fcntl.ioctl(button_fd, termios.FIONREAD, b"\0\0\0\0"))[0] and time.time() < deadline:
+                time.sleep(.005)
+            time.sleep(.05)
 
         def press(duration=.15):
             stamp = time.time()
@@ -199,6 +207,13 @@ def run():
 
         def role(cookie):
             return request("session", cookie=cookie)[1]["role"]
+
+        def wait_role(cookie, expected, timeout=5):
+            # For assertions that a press DID change the role: poll rather than race the server.
+            deadline = time.time() + timeout
+            while role(cookie) != expected and time.time() < deadline:
+                time.sleep(.05)
+            return role(cookie)
 
         try:
             for _ in range(100):
@@ -227,7 +242,7 @@ def run():
             assert status == 200 and role(first_cookie) == "pending"
             assert not request("session")[1]["claimed"]
             press()
-            assert role(first_cookie) == "owner"
+            assert wait_role(first_cookie, "owner") == "owner"
             assert not (local / "claim.hash").exists()
             # Only disposable state: reset the test registry to exercise code claiming too.
             (local / "controllers.json").unlink()
@@ -267,11 +282,11 @@ def run():
             button_event(0, stamp=time.time() + .15)
             assert role(physical_cookie) == "pending", "an old press must not approve a new request"
             press()
-            assert role(physical_cookie) == "owner"
+            assert wait_role(physical_cookie, "owner") == "owner"
             assert request("controllers", cookie=physical_cookie)[0] == 200
             assert request("backups/full", cookie=physical_cookie)[0] == 200
             assert request("controllers", {"id": physical["id"], "action": "revoke"}, cookie, csrf)[0] == 200
-            press(); assert role(physical_cookie) == "unpaired"
+            press(); assert wait_role(physical_cookie, "unpaired") == "unpaired"
             print("Physical pairing: full ownership, one request, expiry, cancel, stale/long/wrong/dropped events and revocation passed")
             assert request("controllers/claim", {"name": "Second", "code": code})[0] == 409
             status, pending, second = request("controllers/request", {"name": "Phone"})
@@ -291,7 +306,7 @@ def run():
             assert request("controllers/cancel", {}, upgrade_cookie, upgrade["csrf"])[0] == 200
             press(); assert role(upgrade_cookie) == "control"
             assert request("controllers/upgrade", {}, upgrade_cookie, upgrade["csrf"])[0] == 200
-            press(); assert role(upgrade_cookie) == "owner"
+            press(); assert wait_role(upgrade_cookie, "owner") == "owner"
             assert request("controllers", cookie=upgrade_cookie)[0] == 200
             assert request("controllers", {"id": upgrade["id"], "action": "revoke"}, cookie, csrf)[0] == 200
             assert request("setup", {"revision": 1, "mode": "keep"}, cookie)[0] == 403
