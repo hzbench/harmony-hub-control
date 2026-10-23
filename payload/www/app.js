@@ -153,6 +153,11 @@ window.harmonyHardwareVolume = function(direction) {
     // was deleted) instead of silently sending to a stale deviceId, same
     // as cellButton()'s render-time check; keeps looking at the next
     // alias-matching cell rather than giving up on the first stale one.
+    // Known, accepted limitation: if an activity's screen has volume
+    // cells for two different devices (e.g. a TV and a soundbar both
+    // have one), this always picks whichever appears first in `cells` -
+    // there's no UI for the owner to say which one the hardware key
+    // should control.
     const resolved = (activity.screen?.cells||[])
       .filter(c => aliases.includes(norm(c.command)))
       .map(c => ({deviceId: c.deviceId, device: state.devices.find(d => d.id === c.deviceId), command: c.command}))
