@@ -64,6 +64,7 @@ lua5.1 tools/test_mqtt_protocol.lua
 python3 tools/test_mqtt_broker.py
 node tools/test_profiles.mjs
 node tools/test_local_controls.mjs
+node tools/test_go_shell.mjs
 python3 tools/test_local_api.py
 python3 tools/test_recovery.py
 python3 tools/test_assets.py

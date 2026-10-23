@@ -57,6 +57,8 @@ jobs:
 
       - name: JS control-runtime tests
         run: node tools/test_local_controls.mjs
+      - name: Daily-use UI shell tests
+        run: node tools/test_go_shell.mjs
 
       - name: IR profile encode/decode tests
         run: node tools/test_profiles.mjs

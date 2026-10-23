@@ -27,6 +27,9 @@ static const struct local_release_file local_release_files[] = {
     {"app.js", LOCAL_WWW "/app.js", 0644},
     {"icons.svg", LOCAL_WWW "/icons.svg", 0644},
     {"profiles.js", LOCAL_WWW "/profiles.js", 0644},
+    {"go.html", LOCAL_WWW "/go.html", 0644},
+    {"go.css", LOCAL_WWW "/go.css", 0644},
+    {"go.js", LOCAL_WWW "/go.js", 0644},
     {"init.sh", LOCAL_INIT_FILE, 0755},
     {"maintenance.sh", LOCAL_MAINTENANCE_FILE, 0755},
     {"migrations.json", LOCAL_ROOT "/migrations.json", 0600}

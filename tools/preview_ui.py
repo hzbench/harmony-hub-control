@@ -27,8 +27,8 @@ class Preview(BaseHTTPRequestHandler):
                      "/api/v1/bluetooth/devices": {"devices": []}, "/api/v1/operations": {"state": "completed"}}
         if path in responses:
             return self.reply(responses[path])
-        name = "index.html" if path == "/" else path[1:]
-        if name not in {"index.html", "app.js", "app.css", "profiles.js", "icons.svg"}:
+        name = {"/": "index.html", "/go": "go.html", "/go/": "go.html"}.get(path) or (path[4:] if path.startswith("/go/") else path[1:])
+        if name not in {"index.html", "app.js", "app.css", "profiles.js", "icons.svg", "go.html", "go.js", "go.css"}:
             return self.reply({"error": "Fixture route not implemented"}, 404)
         body = (ROOT / name).read_bytes()
         self.send_response(200)
