@@ -201,6 +201,13 @@ def run():
             time.sleep(.05)
 
         def press(duration=.15):
+            # The hub only counts a press stamped strictly after the pairing window
+            # opened, at millisecond resolution. A press sent straight after the
+            # request that opened the window can land in the same millisecond and be
+            # (correctly) ignored, so step past it first.
+            try: opened = json.loads((ops / "pair-window").read_text())["wall"] / 1000
+            except (OSError, ValueError, KeyError): opened = 0
+            time.sleep(max(0, opened + .01 - time.time()))
             stamp = time.time()
             button_event(1, stamp=stamp)
             button_event(0, stamp=stamp + duration)
