@@ -647,10 +647,17 @@ static int local_validate_config(const cJSON *o) {
            at the end of this loop, which mirrors that runtime check
            exactly. */
         if (screen) {
-            cJSON *cells = lj_get(screen, "cells"); int columns = lj_int(screen, "columns", 0);
+            cJSON *cells = lj_get(screen, "cells"), *pinned = lj_get(screen, "pinned"); int columns = lj_int(screen, "columns", 0);
             if (!cJSON_IsObject(screen) || columns < 1 || columns > 4 ||
                 !cJSON_IsArray(cells) || cJSON_GetArraySize(cells) > 32) return 0;
             cJSON_ArrayForEach(b, cells) if (!local_validate_cell(b)) return 0;
+            /* `pinned` is the fixed one-row quick-access footer: at most
+               `columns` slots, same cell shape as `cells`. Covered by the
+               whole-activity size check below like everything else. */
+            if (pinned) {
+                if (!cJSON_IsArray(pinned) || cJSON_GetArraySize(pinned) > columns) return 0;
+                cJSON_ArrayForEach(b, pinned) if (!local_validate_cell(b)) return 0;
+            }
         }
         for (pass = 0; pass < 2; pass++) cJSON_ArrayForEach(b, (pass ? exits : steps)) {
             int delay = lj_int(b, "delayMs", 0);

@@ -36,6 +36,8 @@ function deviceTypeOptions(selected='Television') {
   if(!types.includes(selected))types.unshift(selected);
   return types.map(type=>`<option ${type===selected?'selected':''}>${escape(type)}</option>`).join('');
 }
+// Glyph for a placed command no `controls` alias recognises.
+const FALLBACK_ICON = 'Circle';
 const norm = name => String(name).toLowerCase().replace(/\+/g,'up').replace(/-\s*$/,'down').replace(/[^a-z0-9]/g,'');
 const controls = [
   ['power','Power','Power',['power','powertoggle','onoff']],['poweron','Power on','Power',['poweron','on']],['poweroff','Power off','Power',['poweroff','off']],
@@ -44,7 +46,7 @@ const controls = [
   ['back','Back','Undo2',['back','return']],['home','Home','House',['home','smarthome']],['menu','Menu','Menu',['menu','settings','homemenu']],
   ['volumeup','Volume up','Plus',['volumeup','volup']],['volumedown','Volume down','Minus',['volumedown','voldown','voldn']],['mute','Mute','VolumeX',['mute']],
   ['channelup','Channel up','ChevronUp',['channelup','programup','pageup','chnext']],['channeldown','Channel down','ChevronDown',['channeldown','programdown','pagedown','chprev']],
-  ['rewind','Rewind','Rewind',['rewind','rew']],['play','Play','Play',['play','playpause']],['pause','Pause','Pause',['pause']],['stop','Stop','Square',['stop']],['forward','Fast forward','FastForward',['fastforward','forward']]
+  ['rewind','Rewind','Rewind',['rewind','rew']],['play','Play','Play',['play','playpause']],['pause','Pause','Pause',['pause']],['stop','Stop','Square',['stop']],['guide','Guide','LayoutGrid',['guide','tvguide','epg']],['forward','Fast forward','FastForward',['fastforward','forward']]
 ];
 // Named so a caller that already has a command name in hand (rather than
 // a device's command list to search, like matchCommand() below) doesn't
