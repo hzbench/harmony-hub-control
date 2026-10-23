@@ -69,6 +69,7 @@ body[data-reserve-notice=true] #notice[hidden]{display:block!important;visibilit
 .dpad{display:grid;grid-template-columns:repeat(3,76px);grid-template-rows:repeat(3,50px);gap:8px;justify-content:center}
 .dpad .up{grid-column:2;grid-row:1}.dpad .left{grid-column:1;grid-row:2}.dpad .ok{grid-column:2;grid-row:2}
 .dpad .right{grid-column:3;grid-row:2}.dpad .down{grid-column:2;grid-row:3}
+.dpad .tl{grid-column:1;grid-row:1}.dpad .tr{grid-column:3;grid-row:1}.dpad .bl{grid-column:1;grid-row:3}.dpad .br{grid-column:3;grid-row:3}
 .pinned{position:sticky;bottom:0;margin:auto -16px -24px;padding:10px 20px;padding-bottom:max(20px,env(safe-area-inset-bottom));background:var(--surface);border-top:1px solid var(--line);display:flex;flex-direction:column;gap:10px}
 .pinned .cell{background:var(--control);min-height:52px}
 .section-label{font-size:11px;font-weight:700;letter-spacing:.02em;text-transform:uppercase;color:var(--muted);margin-top:2px}

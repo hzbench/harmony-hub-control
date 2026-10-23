@@ -185,6 +185,8 @@ function resolveCell(c) {
 // Volume is left to the hardware keys, and cells whose device or command no
 // longer exist are skipped.
 const CROSS = ['up','left','ok','right','down'];
+const CORNERS = ['tl','tr','bl','br'];
+const CROSS_SQUARES = ['tl','up','tr','left','ok','right','bl','down','br'];   // the 3x3 block, in reading order
 const HARDWARE_ONLY = ['volumeup','volumedown'];
 // Icons that read as something else out of context (a bare chevron, +, -): the
 // exhaustive device list names these instead.
@@ -209,23 +211,33 @@ const visibleEntries = (cells, capacity) => withSlots(cells,capacity).map(cell=>
 // its place in the grid, so gaps left on purpose stay gaps; the squares the
 // cross's own buttons occupied are not gaps, so they are closed up.
 // The editor draws the same split, so what it shows is what the remote shows.
-// A complete cross always has a centre. Without an OK button, that square
-// reserves the lowest unused slot (`okSlot`, where the editor adds OK), so the
-// empty centre doesn't also leave a gap in the grid.
+// A complete cross is a 3x3 block: the five cross buttons plus up to four
+// corner buttons (cells marked `corner`, which keep a grid slot of their own so
+// they return to the grid if the cross breaks up). A square with no button
+// reserves the highest unused slot (`spare`, where the editor adds one), at the
+// far end of the grid so it never swallows a gap left on purpose.
 function crossSplit(entries, occupied) {
   const pick = {};
   for(const key of CROSS)pick[key]=entries.find(e=>e.control?.[0]===key);
   const crossed = ['up','down','left','right'].every(key=>pick[key]);
   const members = crossed ? new Set(Object.values(pick).filter(Boolean)) : new Set();
-  const vacated = [...members].map(e=>e.slot);
-  const okSlot = crossed&&!pick.ok ? Array.from({length:GRID_SLOTS},(_,slot)=>slot).find(slot=>!occupied.has(slot)) : undefined;
-  if(okSlot!==undefined)vacated.push(okSlot);
+  const corner = {};
+  if(crossed)for(const key of CORNERS){const e=entries.find(x=>!members.has(x)&&x.cell.corner===key);if(e){corner[key]=e;members.add(e);}}
+  const vacated = [...members].map(e=>e.slot), spare = {};
+  if(crossed){
+    const taken = new Set(occupied);
+    for(const key of ['ok',...CORNERS]){
+      if(pick[key]||corner[key])continue;
+      const slot = Array.from({length:GRID_SLOTS},(_,n)=>GRID_SLOTS-1-n).find(n=>!taken.has(n));
+      if(slot!==undefined){spare[key]=slot;taken.add(slot);vacated.push(slot);}
+    }
+  }
   const rest = entries.filter(e=>!members.has(e)).map(e=>({...e, slot:e.slot-vacated.filter(v=>v<e.slot).length}));
-  return {crossed, pick, okSlot, vacated, rest};
+  return {crossed, pick, corner, spare, vacated, rest};
 }
 function remoteBlocks(cells) {
-  const {crossed, pick, rest} = crossSplit(visibleEntries(cells, GRID_SLOTS), new Set(withSlots(cells,GRID_SLOTS).map(c=>c.slot)));
-  return [...(crossed?[{kind:'cross',pick}]:[]), ...(rest.length?[{kind:'grid',entries:rest}]:[])];
+  const {crossed, pick, corner, rest} = crossSplit(visibleEntries(cells, GRID_SLOTS), new Set(withSlots(cells,GRID_SLOTS).map(c=>c.slot)));
+  return [...(crossed?[{kind:'cross',pick,corner}]:[]), ...(rest.length?[{kind:'grid',entries:rest}]:[])];
 }
 function cellButton({cell,control}, extra='', customFace='') {
   const label = control?.[1] || cell.command;
@@ -233,7 +245,7 @@ function cellButton({cell,control}, extra='', customFace='') {
   const face = customFace || (control?.[2] ? icon(control[2]) : `<span class="cell-text">${escape(cell.command)}</span>`);
   return `<button class="cell ${extra}" type="button" data-command="${escape(cell.command)}" data-device="${escape(cell.deviceId)}" aria-label="${escape(label)}" title="${escape(label)}">${face}</button>`;
 }
-const crossHtml = pick => `<div class="dpad">${CROSS.map(key=>pick[key]?cellButton(pick[key],key):'<span></span>').join('')}</div>`;
+const crossHtml = (pick, corner={}) => `<div class="dpad">${CROSS_SQUARES.map(key=>{const e=pick[key]||corner[key];return e?cellButton(e,key):'<span></span>';}).join('')}</div>`;
 // Rows of `columns` slots; a row with no buttons is dropped, gaps inside one stay.
 function gridHtml(entries, columns) {
   const rows = new Map();
@@ -244,7 +256,7 @@ function gridHtml(entries, columns) {
 }
 function remoteHtml(screen) {
   const columns = screen?.columns || 4;
-  const body = remoteBlocks(screen?.cells).map(block=>block.kind==='cross'?crossHtml(block.pick):gridHtml(block.entries,columns)).join('');
+  const body = remoteBlocks(screen?.cells).map(block=>block.kind==='cross'?crossHtml(block.pick,block.corner):gridHtml(block.entries,columns)).join('');
   // The pinned footer is one row of `columns` slots, in the order set: no cross.
   const pinned = visibleEntries(screen?.pinned, columns);
   return {body, pinned: pinned.length ? gridHtml(pinned,columns) : ''};
@@ -392,17 +404,28 @@ function availableCommands(activity) {
       .map(c=>({device, command:c.name, control:controlFor(c.name)}));
   });
 }
-function addButton(activity, zone, slot, deviceId, command) {
+function addButton(activity, zone, slot, deviceId, command, corner) {
   const list = zoneList(activity, zone);
   if(!(Number.isInteger(slot)&&slot>=0&&slot<zoneCapacity(activity,zone))||list.some(c=>c.slot===slot)||isPlaced(activity,deviceId,command))return false;
-  list.push({deviceId, command, slot});
+  list.push({deviceId, command, slot, ...(CORNERS.includes(corner)?{corner}:{})});
   list.sort((a,b)=>a.slot-b.slot);return true;
 }
 // Removing leaves the slot empty; nothing else moves.
+// Taking OK or a corner button out of a complete cross leaves its square empty
+// but still part of the cross, so the slots after it close up: the grid below
+// looks exactly as it did.
 function removeButton(activity, zone, slot) {
   const list = zoneList(activity, zone), at = list.findIndex(c=>c.slot===slot);
   if(at<0)return false;
-  list.splice(at,1);return true;
+  let closeUp = false;
+  if(zone==='cells'){
+    const all = list.map(cell=>({cell,control:controlFor(cell.command),slot:cell.slot}));
+    const {crossed, pick, corner} = crossSplit(all, new Set(all.map(e=>e.slot)));
+    closeUp = crossed && [pick.ok,...Object.values(corner)].some(e=>e?.cell===list[at]);
+  }
+  list.splice(at,1);
+  if(closeUp)for(const c of list)if(c.slot>slot)c.slot--;
+  return true;
 }
 // How many slots to draw: out to a full row beyond the last used slot (so there
 // is always somewhere to add), plus any "Add row" rows. `extent` is the highest
@@ -440,7 +463,7 @@ async function submitLayout(id, draft, base, confirmReplace) {
 }
 
 function editCellHtml(entry, zone, slot, extra='') {
-  if(!entry)return `<button class="cell empty${extra?' '+extra:''}" type="button" data-zone="${zone}" data-slot="${slot}" aria-label="Empty slot. Tap to add a button."><svg aria-hidden="true"><use href="/icons.svg#icon-Plus"></use></svg></button>`;
+  if(!entry)return `<button class="cell empty${extra?' '+extra:''}" type="button" data-zone="${zone}" data-slot="${slot}"${CORNERS.includes(extra)?` data-corner="${extra}"`:''} aria-label="Empty slot. Tap to add a button."><svg aria-hidden="true"><use href="/icons.svg#icon-Plus"></use></svg></button>`;
   const control = controlFor(entry.command), live = resolveCell(entry);
   const label = control?.[1] || entry.command;
   const face = control?.[2] ? icon(control[2]) : `<span class="cell-text">${escape(entry.command)}</span>`;
@@ -453,13 +476,13 @@ function editCellHtml(entry, zone, slot, extra='') {
 function editGridHtml(activity, ui) {
   const columns = screenOf(activity).columns||4;
   const all = withSlots(zoneList(activity,'cells'),MAX_CELLS).map(cell=>({cell,control:controlFor(cell.command),slot:cell.slot}));
-  const {crossed, pick, okSlot, vacated, rest} = crossSplit(all, new Set(all.map(e=>e.slot)));
+  const {crossed, pick, corner, spare, vacated, rest} = crossSplit(all, new Set(all.map(e=>e.slot)));
   const free = Array.from({length:MAX_CELLS},(_,slot)=>slot).filter(slot=>!vacated.includes(slot));
   const extent = rest.reduce((most,e)=>Math.max(most,e.slot+1),0);
   const slots = editorSlots('cells', extent, columns, ui.extraRows, free.length);
   const cells = Array.from({length:slots},(_,at)=>{const e=rest.find(x=>x.slot===at);return e?editCellHtml(e.cell,'cells',e.cell.slot):editCellHtml(null,'cells',free[at]);}).join('');
-  const crossCell = key => pick[key]?editCellHtml(pick[key].cell,'cells',pick[key].cell.slot,key):key==='ok'&&okSlot!==undefined?editCellHtml(null,'cells',okSlot,key):'<span></span>';
-  const cross = crossed ? `<div class="dpad">${CROSS.map(crossCell).join('')}</div>` : '';
+  const crossCell = key => {const e=pick[key]||corner[key];return e?editCellHtml(e.cell,'cells',e.cell.slot,key):spare[key]!==undefined?editCellHtml(null,'cells',spare[key],key):'<span></span>';};
+  const cross = crossed ? `<div class="dpad">${CROSS_SQUARES.map(crossCell).join('')}</div>` : '';
   return `${cross}<div class="cells edit-grid" data-columns="${escape(String(columns))}">${cells}</div>`;
 }
 function editPinnedHtml(activity) {
@@ -518,7 +541,7 @@ function renderEditor(ctx) {
     }
     notice('');location.hash = routeHash('activity',id);
   };
-  const openSheet = (zone, slot) => {
+  const openSheet = (zone, slot, corner) => {
     const options = availableCommands(model());
     sheet.innerHTML = `<div class="sheet-handle" aria-hidden="true"></div><h2 id="sheet-title">Add a button</h2>
       ${options.length?`<ul class="sheet-list">${options.map((o,i)=>`<li><button type="button" data-pick="${i}"><span class="sheet-icon">${o.control?.[2]?icon(o.control[2]):''}</span>${escape(o.device.name)}: ${escape(o.command)}</button></li>`).join('')}</ul>`
@@ -528,7 +551,7 @@ function renderEditor(ctx) {
       if(event.target===sheet||event.target.closest('[data-sheet-cancel]'))return sheet.close();
       const pick = event.target.closest('[data-pick]');if(!pick)return;
       const o = options[+pick.dataset.pick];sheet.close();
-      if(addButton(model(),zone,slot,o.device.id,o.command))changed({zone,slot});
+      if(addButton(model(),zone,slot,o.device.id,o.command,corner))changed({zone,slot});
     };
     sheet.showModal();
     history.pushState({sheet:true},'');sheetPushed = true;
@@ -570,7 +593,7 @@ function renderEditor(ctx) {
   ctx.content.onclick = event => {
     const slotButton = event.target.closest('[data-zone]');
     if(slotButton?.classList.contains('empty')){
-      if(Date.now()>=suppressClickUntil&&here())openSheet(slotButton.dataset.zone,+slotButton.dataset.slot);
+      if(Date.now()>=suppressClickUntil&&here())openSheet(slotButton.dataset.zone,+slotButton.dataset.slot,slotButton.dataset.corner);
     } else if(event.target.closest('[data-add-row]')){ui.extraRows++;draw();}
   };
   ctx.actions.onclick = event => {if(event.target.closest('[data-save]'))save();else if(event.target.closest('[data-cancel]'))cancel();};
