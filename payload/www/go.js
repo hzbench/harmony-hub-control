@@ -358,11 +358,10 @@ function renderActivityRemote(ctx) {
 }
 // ---- Edit remote layout (activities only) ----
 // The editor works on a local draft of activity.screen: `cells` (the scrolling
-// grid) and `pinned` (the footer, at most `columns` buttons), plain packed lists
-// of {deviceId, command}; "empty slots" are only drawn, so pressing any empty
-// slot appends and removing a button shifts the rest along. Edits change the
-// draft only (mirrored to localStorage so nothing is lost if the app is killed);
-// Save is the one write to the hub.
+// grid) and `pinned` (the footer, at most `columns` buttons). Each button has a
+// fixed `slot`; empty slots are only drawn, so removing a button leaves a hole and
+// adding goes into the slot that was tapped. Edits change the draft only, which
+// lives while the editor is open; Save is the one write to the hub.
 const MAX_CELLS = GRID_SLOTS;
 const screenOf = activity => {
   activity.screen ||= {columns:4, cells:[]};
@@ -408,26 +407,13 @@ function editorSlots(zone, extent, columns, extraRows=0) {
 // ---- Draft and save ----
 // Compared as strings to tell whether a layout changed.
 const layoutShape = screen => {const s=cloneScreen(screen);return JSON.stringify([s.columns,s.cells,s.pinned]);};
-const DRAFT_PREFIX = 'harmony-layout-draft:';
 const cloneScreen = screen => {const columns=screen?.columns||4;return {columns, cells:withSlots(screen?.cells,MAX_CELLS), pinned:withSlots(screen?.pinned,columns)};};
-function storeDraft(id, base, draft) {
-  // `base` is the layout the draft started from: the later check for "changed
-  // elsewhere" compares the hub against it, not against whatever it is now.
-  writeLocal(DRAFT_PREFIX+id, layoutShape(draft)===base ? '' : JSON.stringify({base, draft}));
-}
-// The starting draft: an unsaved one from this device if it still differs from
-// the hub's layout, otherwise a copy of the hub's.
-function loadDraft(activity) {
-  const hub = cloneScreen(activity.screen), hubShape = layoutShape(hub);
-  try {
-    const stored = JSON.parse(readLocal(DRAFT_PREFIX+activity.id)||'null');
-    if(stored&&typeof stored.base==='string'&&Array.isArray(stored.draft?.cells)&&Array.isArray(stored.draft?.pinned)) {
-      const draft = cloneScreen(stored.draft);
-      if(layoutShape(draft)!==hubShape)return {draft, base:stored.base, restored:true};
-    }
-  } catch {/* unreadable draft: start from the hub */}
-  storeDraft(activity.id,hubShape,hub);
-  return {draft:hub, base:hubShape, restored:false};
+// The editor always starts from the hub's current layout. `base` is that
+// layout: Save later compares the hub against it, not against whatever it is
+// by then, to notice someone else's change.
+function startDraft(activity) {
+  const draft = cloneScreen(activity.screen);
+  return {draft, base:layoutShape(draft)};
 }
 // The single write to the hub. It works from the hub's *current* configuration
 // (this tab's copy may be hours old), refuses to silently overwrite a layout
@@ -477,7 +463,7 @@ function renderEditor(ctx) {
   if(!first){ctx.setTitle('Edit remote');return placeholder(ctx,'This activity no longer exists.');}
   ctx.setTitle('Edit remote');
   if(!owner())return placeholder(ctx,'Only the hub owner can change remote layouts.');
-  let {draft, base, restored} = loadDraft(first);
+  let {draft, base} = startDraft(first);
   const ui = {extraRows:0, dirty:false, saving:false}, sheet = $('sheet');
   // The helpers below take an activity-shaped object; the draft stands in for its screen.
   const model = () => ({id, steps:activity()?.steps||first.steps||[], screen:draft});
@@ -489,15 +475,15 @@ function renderEditor(ctx) {
     ctx.content.innerHTML = `<div class="editor">${editorHtml(model(),ui)}</div>`;
     if(focus)ctx.content.querySelector(`[data-zone="${focus.zone}"][data-slot="${focus.slot}"]`)?.focus();
   };
-  // A new edit makes any earlier "Saved." / "Restored..." message untrue.
-  const changed = focus => {notice('');storeDraft(id,base,draft);draw(focus);};
-  leaveGuard = () => layoutShape(draft)===base || confirm('Leave without saving? Your changes stay on this device as a draft until you save or discard them.');
+  // A new edit makes any earlier "Saved." message untrue.
+  const changed = focus => {notice('');draw(focus);};
+  leaveGuard = () => layoutShape(draft)===base || confirm('Leave without saving? Your changes will be lost.');
   const save = async () => {
     if(ui.saving||layoutShape(draft)===base)return;
     ui.saving = true;draw();
     try {
       const saved = await submitLayout(id,draft,base,()=>confirm('This remote was changed on another device since you started editing. Replace it with your version?'));
-      if(saved){base=layoutShape(draft);storeDraft(id,base,draft);notice('Saved.');}
+      if(saved){base=layoutShape(draft);notice('Saved.');}
     } catch(error) {notice(`Not saved: ${error.message}`,true);}
     finally {ui.saving=false;draw();}
   };
@@ -506,7 +492,7 @@ function renderEditor(ctx) {
     if(ui.saving)return;
     if(layoutShape(draft)!==base){
       if(!confirm('Discard your unsaved changes?'))return;
-      draft = cloneScreen(activity()?.screen);base = layoutShape(draft);storeDraft(id,base,draft);
+      
     }
     notice('');location.hash = routeHash('activity',id);
   };
@@ -567,7 +553,6 @@ function renderEditor(ctx) {
   };
   ctx.actions.onclick = event => {if(event.target.closest('[data-save]'))save();else if(event.target.closest('[data-cancel]'))cancel();};
   draw();
-  if(restored)notice('Restored your unsaved changes.');
 }
 function placeholder(ctx, text) {ctx.content.innerHTML=`<div class="placeholder"><p>${escape(text)}</p></div>`;}
 
