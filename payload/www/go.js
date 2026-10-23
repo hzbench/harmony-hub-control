@@ -208,14 +208,18 @@ const visibleEntries = (cells, capacity) => withSlots(cells,capacity).map(cell=>
 // The cross (when all four arrows exist) comes first. Every other button keeps
 // its place in the grid, so gaps left on purpose stay gaps; the squares the
 // cross's own buttons occupied are not gaps, so they are closed up.
-function remoteBlocks(cells) {
-  const entries = visibleEntries(cells, GRID_SLOTS);
+// The editor draws the same split, so what it shows is what the remote shows.
+function crossSplit(entries) {
   const pick = {};
   for(const key of CROSS)pick[key]=entries.find(e=>e.control?.[0]===key);
   const crossed = ['up','down','left','right'].every(key=>pick[key]);
   const members = crossed ? new Set(Object.values(pick).filter(Boolean)) : new Set();
   const vacated = [...members].map(e=>e.slot);
   const rest = entries.filter(e=>!members.has(e)).map(e=>({...e, slot:e.slot-vacated.filter(v=>v<e.slot).length}));
+  return {crossed, pick, vacated, rest};
+}
+function remoteBlocks(cells) {
+  const {crossed, pick, rest} = crossSplit(visibleEntries(cells, GRID_SLOTS));
   return [...(crossed?[{kind:'cross',pick}]:[]), ...(rest.length?[{kind:'grid',entries:rest}]:[])];
 }
 function cellButton({cell,control}, extra='', customFace='') {
@@ -398,10 +402,10 @@ function removeButton(activity, zone, slot) {
 // How many slots to draw: out to a full row beyond the last used slot (so there
 // is always somewhere to add), plus any "Add row" rows. `extent` is the highest
 // used slot + 1.
-function editorSlots(zone, extent, columns, extraRows=0) {
+function editorSlots(zone, extent, columns, extraRows=0, capacity=MAX_CELLS) {
   if(zone==='pinned')return columns;
   const total = Math.ceil((extent+1)/columns)*columns + extraRows*columns;
-  return Math.min(total, MAX_CELLS);
+  return Math.min(total, capacity);
 }
 
 // ---- Draft and save ----
@@ -430,27 +434,39 @@ async function submitLayout(id, draft, base, confirmReplace) {
   return true;
 }
 
-function editCellHtml(entry, zone, slot) {
+function editCellHtml(entry, zone, slot, extra='') {
   if(!entry)return `<button class="cell empty" type="button" data-zone="${zone}" data-slot="${slot}" aria-label="Empty slot. Tap to add a button."><svg aria-hidden="true"><use href="/icons.svg#icon-Plus"></use></svg></button>`;
   const control = controlFor(entry.command), live = resolveCell(entry);
   const label = control?.[1] || entry.command;
   const face = control?.[2] ? icon(control[2]) : `<span class="cell-text">${escape(entry.command)}</span>`;
   const note = live ? '' : ' (its device or command no longer exists)';
-  return `<button class="cell${live?'':' missing'}" type="button" data-zone="${zone}" data-slot="${slot}" aria-label="${escape(label)}${note}. Press and hold to remove." title="${escape(label)}${note}">${face}</button>`;
+  return `<button class="cell${extra?' '+extra:''}${live?'':' missing'}" type="button" data-zone="${zone}" data-slot="${slot}" aria-label="${escape(label)}${note}. Press and hold to remove." title="${escape(label)}${note}">${face}</button>`;
 }
-function editZoneHtml(activity, zone, ui) {
-  const list = zoneList(activity, zone), columns = screenOf(activity).columns||4;
-  const extent = list.reduce((most,c)=>Math.max(most,c.slot+1),0);
-  const slots = editorSlots(zone, extent, columns, zone==='cells'?ui.extraRows:0);
-  const cells = Array.from({length:slots},(_,slot)=>editCellHtml(list.find(c=>c.slot===slot)||null,zone,slot)).join('');
+// The scrolling grid is drawn like the remote: the cross (when all four arrows
+// are on the remote) first, then the other buttons with the cross's own squares
+// closed up. Squares are numbered by display position; each carries its real slot.
+function editGridHtml(activity, ui) {
+  const columns = screenOf(activity).columns||4;
+  const all = withSlots(zoneList(activity,'cells'),MAX_CELLS).map(cell=>({cell,control:controlFor(cell.command),slot:cell.slot}));
+  const {crossed, pick, vacated, rest} = crossSplit(all);
+  const free = Array.from({length:MAX_CELLS},(_,slot)=>slot).filter(slot=>!vacated.includes(slot));
+  const extent = rest.reduce((most,e)=>Math.max(most,e.slot+1),0);
+  const slots = editorSlots('cells', extent, columns, ui.extraRows, free.length);
+  const cells = Array.from({length:slots},(_,at)=>{const e=rest.find(x=>x.slot===at);return e?editCellHtml(e.cell,'cells',e.cell.slot):editCellHtml(null,'cells',free[at]);}).join('');
+  const cross = crossed ? `<div class="dpad">${CROSS.map(key=>pick[key]?editCellHtml(pick[key].cell,'cells',pick[key].cell.slot,key):'<span></span>').join('')}</div>` : '';
+  return `${cross}<div class="cells edit-grid" data-columns="${escape(String(columns))}">${cells}</div>`;
+}
+function editPinnedHtml(activity) {
+  const list = zoneList(activity,'pinned'), columns = screenOf(activity).columns||4;
+  const cells = Array.from({length:columns},(_,slot)=>editCellHtml(list.find(c=>c.slot===slot)||null,'pinned',slot)).join('');
   return `<div class="cells edit-grid" data-columns="${escape(String(columns))}">${cells}</div>`;
 }
 function editorHtml(model, ui) {
   const full = zoneList(model,'cells').length>=MAX_CELLS;
   return `<p class="edit-hint">Tap an empty square to add a button. Press and hold a button to remove it. The bottom row stays on screen while you use the remote.</p>
-    ${editZoneHtml(model,'cells',ui)}
+    ${editGridHtml(model,ui)}
     ${full?'<p class="edit-hint">The remote has reached its button limit.</p>':'<button class="add-row" type="button" data-add-row>'+icon('Plus')+'Add row</button>'}
-    <div class="pinned">${editZoneHtml(model,'pinned',ui)}</div>`;
+    <div class="pinned">${editPinnedHtml(model)}</div>`;
 }
 
 const LONG_PRESS_MS = 350, MOVE_SLOP = 10;

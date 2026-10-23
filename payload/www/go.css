@@ -75,10 +75,10 @@ body[data-reserve-notice=true] #notice[hidden]{display:block!important;visibilit
 .cells.power .cell{display:flex;gap:8px;justify-content:center;font-weight:600;font-size:15px;min-height:52px}
 .cells.all .cell-text{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;text-align:center;line-height:1.2}
 /* Edit remote layout */
-.editor{display:flex;flex-direction:column;gap:12px;flex:1}
+.editor{display:flex;flex-direction:column;gap:16px;flex:1}
+.editor>:not(.pinned){margin-inline:4px}
 .edit-hint{font-size:13px;color:var(--muted);margin:0 4px}
-.edit-grid .cell{min-height:60px;touch-action:pan-y;-webkit-touch-callout:none}
-.pinned .edit-grid .cell{min-height:52px}
+.edit-grid .cell,.editor .dpad .cell{touch-action:pan-y;-webkit-touch-callout:none}
 .cell.empty,.pinned .cell.empty{background:transparent;border:2px dashed var(--line);color:var(--muted)}
 .cell.empty svg{height:18px;width:18px}
 .cell.missing{outline:2px dashed var(--danger);outline-offset:-2px;color:var(--danger)}

@@ -465,7 +465,7 @@ console.log('Save is one write from the hub\'s current config, asks before repla
 state.devices=[tv,bar];
 const editAct=X.cloneScreen({columns:4,cells:[cell('Up'),cell('VolumeUp'),sc('Gone',5),cell('HDMI 1')],pinned:[sc('Mute',2)]});
 const eh=X.editorHtml({id:'w',steps:[{deviceId:'tv'}],screen:editAct},{extraRows:0});
-const filled=(html,zone)=>[...html.matchAll(new RegExp(`class="cell(?: missing)?" type="button" data-zone="${zone}" data-slot="(\\d+)" aria-label`,'g'))].map(m=>+m[1]);
+const filled=(html,zone)=>[...html.matchAll(new RegExp(`class="cell(?: (?!empty)[a-z]+)?(?: missing)?" type="button" data-zone="${zone}" data-slot="(\\d+)" aria-label`,'g'))].map(m=>+m[1]);
 const emptied=(html,zone)=>[...html.matchAll(new RegExp(`class="cell empty" type="button" data-zone="${zone}" data-slot="(\\d+)"`,'g'))].map(m=>+m[1]);
 assert.deepEqual(filled(eh,'cells'),[0,1,2,5]);   // Up,VolumeUp,HDMI 1 packed into 0..2 (they had no slots); Gone at 5
 assert.deepEqual(emptied(eh,'cells'),[3,4,6,7],'slots between buttons are empty squares');
@@ -507,7 +507,7 @@ console.log('Editor draws gaps as empty squares, lists every cell (including sta
     const ctx={content,actions:{innerHTML:'',onclick:null},params:[activity.id],setTitle(t){this.title=t;}};
     X.renderEditor(ctx);return {content,ctx};
   };
-  const layout=(content,zone)=>Object.fromEntries([...content.innerHTML.matchAll(new RegExp(`class="cell(?: missing)?" type="button" data-zone="${zone}" data-slot="(\\d+)" aria-label="([^".]*)`,'g'))].map(m=>[+m[1],m[2]]));
+  const layout=(content,zone)=>Object.fromEntries([...content.innerHTML.matchAll(new RegExp(`class="cell(?: (?!empty)[a-z]+)?(?: missing)?" type="button" data-zone="${zone}" data-slot="(\\d+)" aria-label="([^".]*)`,'g'))].map(m=>[+m[1],m[2]]));
   const empties=(content,zone)=>[...content.innerHTML.matchAll(new RegExp(`class="cell empty" type="button" data-zone="${zone}" data-slot="(\\d+)"`,'g'))].map(m=>+m[1]);
   const slotBtn=(content,zone,slot)=>{
     const isEmpty=new RegExp(`class="cell empty" type="button" data-zone="${zone}" data-slot="${slot}"`).test(content.innerHTML);
@@ -640,6 +640,21 @@ console.log('Editor draws gaps as empty squares, lists every cell (including sta
   hub.activities[0].screen.cells.push(sc('Left',9));context.confirmAnswer=false;await pressSave(ctx);
   assert.equal(posts.length,0,'a change made elsewhere meanwhile is still detected');
   context.confirmAnswer=true;
+
+  // With all four arrows on the remote the editor draws what the remote draws: the cross first, then the other
+  // buttons with the cross's squares closed up. Each square still edits its real slot.
+  ({content,ctx}=setup({...base0,screen:{columns:4,pinned:[],cells:[sc('Right',0),sc('Back',1),sc('Up',2),sc('Input',3),sc('OK',4),sc('Mute',5),sc('Down',6),sc('HDMI 1',7),sc('Left',8)]}}));
+  assert.match(content.innerHTML,/class="dpad"/);assert.ok(content.innerHTML.indexOf('class="dpad"')<content.innerHTML.indexOf('edit-grid'),'cross first');
+  const crossPart=content.innerHTML.slice(content.innerHTML.indexOf('class="dpad"'),content.innerHTML.indexOf('edit-grid'));
+  assert.deepEqual([...crossPart.matchAll(/data-slot="(\d+)"/g)].map(m=>+m[1]),[2,8,4,0,6],'up, left, ok, right, down: their own slots');
+  const gridPart=content.innerHTML.slice(content.innerHTML.indexOf('edit-grid'),content.innerHTML.indexOf('data-add-row'));
+  assert.deepEqual([...gridPart.matchAll(/data-slot="(\d+)"/g)].map(m=>+m[1]),[1,3,5,7,9,10,11,12],'the rest closed up, then one empty row');
+  assert.deepEqual(empties(content,'cells'),[9,10,11,12],'empty squares map to the next free real slots');
+  tapSlot(content,'cells',9);await choose('TV: PowerOn');
+  assert.deepEqual(Object.keys(layout(content,'cells')).map(Number).sort((a,b)=>a-b),[0,1,2,3,4,5,6,7,8,9]);assert.match(content.innerHTML,/class="dpad"/);
+  down(content,slotBtn(content,'cells',2));advance(600);await settle();   // remove Up: no complete cross any more
+  assert.doesNotMatch(content.innerHTML,/class="dpad"/,'the arrows go back to the grid when the cross is incomplete');
+  assert.deepEqual(empties(content,'cells').slice(0,1),[2],'...and Up\'s square is a hole');
 
   // Keyboard: an empty square opens the sheet from its normal click (Enter/Space), Delete removes the focused button.
   ({content,ctx}=setup({...base0,screen:{columns:4,cells:[sc('Up',0)],pinned:[]}}));
