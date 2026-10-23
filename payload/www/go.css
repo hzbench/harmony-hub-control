@@ -99,3 +99,4 @@ dialog.sheet h2{font-size:15px;margin:0 0 6px}
 .cancel-button:disabled{color:var(--muted)}
 .save-button{background:var(--accent);color:var(--surface);font-weight:600;min-height:40px;padding:0 18px}
 .save-button:disabled{background:var(--control);color:var(--muted);opacity:1}
+.add-row:disabled{opacity:.45}

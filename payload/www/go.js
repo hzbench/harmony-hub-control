@@ -427,6 +427,31 @@ function removeButton(activity, zone, slot) {
   if(closeUp)for(const c of list)if(c.slot>slot)c.slot--;
   return true;
 }
+// "Add arrow pad": puts the whole cross on the remote in one tap. Arrows already
+// in the grid stay; the missing ones (and OK, when a device has it) come from the
+// activity's devices and take the highest free slots, which leaves the grid as it
+// was because a cross member's slot never shows as a grid square.
+function arrowPadPlan(activity) {
+  const list = zoneList(activity,'cells'), offered = availableCommands(activity);
+  const has = key => list.some(c=>controlFor(c.command)?.[0]===key);
+  if(['up','down','left','right'].every(has))return {add:[], reason:'', crossed:true};
+  const add = [];
+  for(const key of CROSS){
+    if(has(key))continue;
+    const found = offered.find(o=>o.control?.[0]===key);
+    if(found)add.push(found);
+    else if(key!=='ok')return {add:[], reason:'This activity’s devices don’t have all four arrow keys.'};
+  }
+  if(list.length+add.length>MAX_CELLS)return {add:[], reason:'There isn’t room for the arrow pad. Remove a few buttons first.'};
+  return {add, reason:''};
+}
+function addArrowPad(activity) {
+  const {add} = arrowPadPlan(activity), list = zoneList(activity,'cells');
+  const free = Array.from({length:MAX_CELLS},(_,n)=>MAX_CELLS-1-n).filter(n=>!list.some(c=>c.slot===n));
+  if(!add.length||free.length<add.length)return false;
+  add.forEach((o,i)=>addButton(activity,'cells',free[i],o.device.id,o.command));
+  return true;
+}
 // How many slots to draw: out to a full row beyond the last used slot (so there
 // is always somewhere to add), plus any "Add row" rows. `extent` is the highest
 // used slot + 1.
@@ -491,9 +516,10 @@ function editPinnedHtml(activity) {
   return `<div class="cells edit-grid" data-columns="${escape(String(columns))}">${cells}</div>`;
 }
 function editorHtml(model, ui) {
-  const full = zoneList(model,'cells').length>=MAX_CELLS;
+  const full = zoneList(model,'cells').length>=MAX_CELLS, pad = arrowPadPlan(model);
   return `<p class="edit-hint">Tap an empty square to add a button. Press and hold a button to remove it. The bottom row stays on screen while you use the remote.</p>
     ${editGridHtml(model,ui)}
+    ${pad.crossed?'':`<button class="add-row" type="button" data-add-pad ${pad.add.length?'':'disabled'}>${icon('Plus')}Add arrow pad</button>${pad.reason?`<p class="edit-hint">${pad.reason}</p>`:''}`}
     ${full?'<p class="edit-hint">The remote has reached its button limit.</p>':'<button class="add-row" type="button" data-add-row>'+icon('Plus')+'Add row</button>'}
     <div class="pinned">${editPinnedHtml(model)}</div>`;
 }
@@ -594,7 +620,8 @@ function renderEditor(ctx) {
     const slotButton = event.target.closest('[data-zone]');
     if(slotButton?.classList.contains('empty')){
       if(Date.now()>=suppressClickUntil&&here())openSheet(slotButton.dataset.zone,+slotButton.dataset.slot,slotButton.dataset.corner);
-    } else if(event.target.closest('[data-add-row]')){ui.extraRows++;draw();}
+    } else if(event.target.closest('[data-add-pad]')){if(addArrowPad(model()))changed();}
+    else if(event.target.closest('[data-add-row]')){ui.extraRows++;draw();}
   };
   ctx.actions.onclick = event => {if(event.target.closest('[data-save]'))save();else if(event.target.closest('[data-cancel]'))cancel();};
   draw();

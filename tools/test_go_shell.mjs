@@ -681,6 +681,29 @@ console.log('Editor draws gaps as empty squares, lists every cell (including sta
   assert.doesNotMatch(content.innerHTML,/class="dpad"/,'the arrows go back to the grid when the cross is incomplete');
   assert.ok(empties(content,'cells').includes(2),'...and Up\'s square is a hole');
 
+  // Add arrow pad: the whole cross in one tap, from a blank layout, without disturbing the grid.
+  ({content,ctx}=setup({...base0,screen:{columns:4,cells:[sc('Back',0),sc('Mute',1)],pinned:[]}}));
+  assert.match(content.innerHTML,/data-add-pad >/,'offered while there is no cross');assert.doesNotMatch(content.innerHTML,/class="dpad"/);
+  const gridOf=()=>{const h=content.innerHTML,a=h.indexOf('edit-grid');return h.slice(a,h.indexOf('</div>',a));};const _g=()=>gridOf().replace(/data-slot="\d+"/g,'');
+  const gridBeforePad=gridOf().replace(/data-slot="\d+"/g,'');
+  click(content,'[data-add-pad]');
+  assert.match(content.innerHTML,/class="dpad"/);assert.doesNotMatch(content.innerHTML,/data-add-pad/,'gone once the cross exists');
+  assert.deepEqual(Object.keys(layout(content,'cells')).map(Number).sort((a,b)=>a-b),[0,1,27,28,29,30,31],'five cross buttons at the far end of the grid');
+  assert.equal(gridOf().replace(/data-slot="\d+"/g,''),gridBeforePad,'the grid is unchanged');
+  assert.equal(saveEnabled(ctx),true);assert.equal(posts.length,0);
+  assert.match(content.innerHTML.slice(content.innerHTML.indexOf('class="dpad"'),content.innerHTML.indexOf('edit-grid')),/class="cell empty tl"/,'the corners are open squares');
+  // Arrows already placed stay where they are; only the missing ones are added.
+  ({content,ctx}=setup({...base0,screen:{columns:4,cells:[sc('Up',0),sc('Left',1)],pinned:[]}}));
+  click(content,'[data-add-pad]');
+  assert.deepEqual(Object.keys(layout(content,'cells')).map(Number).sort((a,b)=>a-b),[0,1,29,30,31],'Down, Right and OK were added');assert.match(content.innerHTML,/class="dpad"/);
+  // A complete cross hides the button; a device without arrows disables it and says why.
+  ({content,ctx}=setup({...base0,screen:{columns:4,cells:[],pinned:[]}}));
+  ({content,ctx}=setup({...base0,steps:[{deviceId:'bar'}],screen:{columns:4,cells:[],pinned:[]}}));
+  assert.match(content.innerHTML,/data-add-pad disabled/);assert.match(content.innerHTML,/doesn’t have all four arrow keys|don’t have all four arrow keys/);
+  // No room: refuse rather than half-add.
+  ({content,ctx}=setup({...base0,screen:{columns:4,cells:Array.from({length:30},(_,i)=>({deviceId:'bar',command:'X'+i,slot:i})),pinned:[]}}));
+  assert.match(content.innerHTML,/data-add-pad disabled/);assert.match(content.innerHTML,/isn’t room for the arrow pad/);
+
   // Keyboard: an empty square opens the sheet from its normal click (Enter/Space), Delete removes the focused button.
   ({content,ctx}=setup({...base0,screen:{columns:4,cells:[sc('Up',0)],pinned:[]}}));
   const key=(b,k)=>{let prevented=false;content.onkeydown({key:k,target:{closest:()=>b},preventDefault(){prevented=true;}});return prevented;};
