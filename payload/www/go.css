@@ -75,3 +75,23 @@ body[data-reserve-notice=true] #notice[hidden]{display:block!important;visibilit
 .section-label{font-size:11px;font-weight:700;letter-spacing:.02em;text-transform:uppercase;color:var(--muted);margin-top:2px}
 .cells.power .cell{display:flex;gap:8px;justify-content:center;font-weight:600;font-size:15px;min-height:52px}
 .cells.all .cell-text{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;text-align:center;line-height:1.2}
+/* Edit remote layout */
+.editor{display:flex;flex-direction:column;gap:12px;flex:1}
+.edit-hint{font-size:13px;color:var(--muted);margin:0 4px}
+.edit-grid .cell{min-height:60px;touch-action:pan-y;-webkit-touch-callout:none}
+.pinned .edit-grid .cell{min-height:52px}
+.cell.empty,.pinned .cell.empty{background:transparent;border:2px dashed var(--line);color:var(--muted)}
+.cell.empty svg{height:18px;width:18px}
+.cell.missing{outline:2px dashed var(--danger);outline-offset:-2px;color:var(--danger)}
+.add-row{background:transparent;border:2px dashed var(--line);color:var(--muted);min-height:48px;font-size:13px;font-weight:600;display:flex;gap:6px;align-items:center;justify-content:center}
+.add-row svg{height:16px;width:16px}
+.editor .pinned{margin-top:auto}
+dialog.sheet{border:0;padding:10px 20px max(28px,env(safe-area-inset-bottom));margin:auto auto 0;width:100%;max-width:520px;max-height:60vh;overflow:auto;background:var(--surface);color:var(--ink);border-radius:20px 20px 0 0}
+dialog.sheet::backdrop{background:rgba(16,18,20,.4)}
+.sheet-handle{width:36px;height:4px;border-radius:2px;background:var(--line);margin:6px auto 14px}
+dialog.sheet h2{font-size:15px;margin:0 0 6px}
+.sheet-list{list-style:none;margin:0;padding:0}
+.sheet-list button,.sheet-cancel{width:100%;display:flex;align-items:center;gap:12px;background:transparent;border-radius:0;text-align:left;padding:14px 4px;font-size:15px;border-bottom:1px solid var(--line)}
+.sheet-icon{width:32px;height:32px;border-radius:9px;background:var(--control);display:grid;place-items:center;flex-shrink:0}
+.sheet-icon svg{height:16px;width:16px}
+.sheet-cancel{color:var(--muted);padding-left:44px;border-bottom:0}

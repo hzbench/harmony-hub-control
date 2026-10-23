@@ -16,9 +16,9 @@ console.log('Entry page and shell script use no inline styles or scripts (CSP-sa
 const elements={}, store=new Map();
 const el=id=>elements[id]||=({id,dataset:{},classList:{add(){},remove(){}},hidden:false,textContent:'',innerHTML:'',title:'',attrs:{},setAttribute(k,v){this.attrs[k]=v;},removeAttribute(k){delete this.attrs[k];},focus(){},addEventListener(){},querySelectorAll:()=>[]});
 const context=vm.createContext({document:{getElementById:el,title:'',body:{dataset:{}},addEventListener(){},hidden:false},window:{addEventListener(){},scrollTo(){}},location:{hash:'',replace(url){context.replaced=url;}},history:{replaceState(){}},
-  localStorage:{getItem:k=>store.get(k)??null,setItem:(k,v)=>store.set(k,v)},setTimeout:()=>0,clearTimeout(){},fetch:async()=>{throw new TypeError('offline');},AbortController,URL});
+  navigator:{vibrate(){context.vibrated=(context.vibrated||0)+1;}},localStorage:{getItem:k=>store.get(k)??null,setItem:(k,v)=>store.set(k,v)},setTimeout:()=>0,clearTimeout(){},fetch:async()=>{throw new TypeError('offline');},AbortController,URL});
 const inert=source.replace(/\n  boot\(\);\n\}\s*$/,'\n}');assert.notEqual(inert,source,'boot() auto-run not found');
-vm.runInContext(inert.replace('const state =','var state =')+'\nthis.exports={parseRoute,routeHash,connection,state,needsFullUi,api,show,screens,renderActivities,renderDevices,deviceRemoteHtml,renderDeviceRemote,remoteBlocks,remoteHtml,renderActivityRemote,CONTROLS,controlFor,volumeTarget};',context);
+vm.runInContext(inert.replace('const state =','var state =')+'\nthis.exports={parseRoute,routeHash,connection,state,needsFullUi,api,show,screens,renderActivities,renderDevices,deviceRemoteHtml,renderDeviceRemote,remoteBlocks,remoteHtml,renderActivityRemote,CONTROLS,controlFor,volumeTarget,editorSlots,availableCommands,addButton,removeButton,persistConfig,editorHtml,renderEditor,screenOf,MAX_CELLS};',context);
 const {parseRoute,routeHash,connection,state,needsFullUi,api,show}=context.exports;
 
 assert.deepEqual(JSON.parse(JSON.stringify(parseRoute(''))),{name:'activities',params:[]});
@@ -347,3 +347,216 @@ context.location.hash='#/device/roku';
 assert.deepEqual(J(await press('up')),[['bar2','VolUp']]);
 store.set('harmony-activity','');assert.deepEqual(J(await press('up')),[]);
 console.log('Hardware volume drives the open device remote, else the running activity');
+
+// ---- Edit remote layout ----
+const X=context.exports;
+assert.deepEqual([0,7,8,31,32].map(n=>X.editorSlots('cells',n,4)),[4,8,12,32,32]);
+assert.equal(X.editorSlots('cells',8,4,1),16);assert.equal(X.editorSlots('cells',30,4,5),32);
+assert.equal(X.editorSlots('cells',3,2),4);assert.equal(X.editorSlots('pinned',1,4),4);assert.equal(X.editorSlots('pinned',0,2),2);
+console.log('Editor always offers an empty row beyond the last button, honours Add row, and stops at the 32-button limit');
+
+// Available commands: start-step devices, minus placed (grid or footer) and volume.
+state.devices=[tv,bar];
+const act0={id:'w',name:'W',steps:[{deviceId:'tv'},{delayMs:5},{deviceId:'tv'},{deviceId:'gone'},{deviceId:'bar'}],screen:{columns:4,cells:[cell('Up'),cell('Mute')],pinned:[cell('Back')]}};
+const avail=X.availableCommands(act0).map(o=>o.device.id+':'+o.command);
+assert.ok(!avail.includes('tv:Up')&&!avail.includes('tv:Mute')&&!avail.includes('tv:Back'),'placed commands are not offered again');
+assert.ok(!avail.some(a=>/Volume|VolUp|VolDn/.test(a)),'volume is left to the hardware keys');
+assert.ok(avail.includes('tv:OK')&&avail.includes('tv:HDMI 1')&&avail.includes('bar:Mute'));
+assert.equal(new Set(avail).size,avail.length);assert.ok(!avail.some(a=>a.startsWith('gone')));
+assert.deepEqual(J(X.availableCommands({id:'n',steps:[]})),[]);
+console.log("Add menu offers the start-step devices' commands minus placed and volume ones");
+
+// Mutations: packed lists, caps, no duplicates; an activity without a screen gets one.
+const bare={id:'b',name:'B',steps:[]};
+assert.deepEqual(J(X.screenOf(bare)),{columns:4,cells:[],pinned:[]});
+assert.equal(X.addButton(bare,'cells','tv','Up'),true);
+assert.equal(X.addButton(bare,'cells','tv','Up'),false,'no duplicates');
+assert.equal(X.addButton(bare,'pinned','tv','Up'),false,'not on both the grid and the footer');
+for(const c of ['Back','Input','Mute','OK'])assert.equal(X.addButton(bare,'pinned','tv',c),true);
+assert.equal(X.addButton(bare,'pinned','tv','Down'),false,'the footer holds at most `columns` buttons');
+bare.screen.cells=Array.from({length:X.MAX_CELLS},(_,i)=>({deviceId:'tv',command:'C'+i}));
+assert.equal(X.addButton(bare,'cells','tv','Left'),false,'the grid stops at 32 buttons');
+assert.equal(X.removeButton(bare,'cells',5),true);assert.equal(bare.screen.cells.length,31);assert.equal(bare.screen.cells[5].command,'C6');
+assert.equal(X.removeButton(bare,'cells',99),false);assert.equal(X.removeButton(bare,'cells',-1),false);
+const narrow={id:'n',steps:[],screen:{columns:2,cells:[],pinned:[]}};
+X.addButton(narrow,'pinned','tv','Up');X.addButton(narrow,'pinned','tv','Down');assert.equal(X.addButton(narrow,'pinned','tv','Left'),false);
+console.log('Adding and removing keep packed lists within the grid and footer limits, without duplicates');
+
+// Saving: one request at a time, always the latest state, revision taken from the hub.
+{
+  const posts=[];let releaseFirst,failPost=false,failGet=false,afterCalls=0;
+  state.config={revision:5,activities:[{id:'w',name:'W',steps:[],screen:{columns:4,cells:[]}}]};
+  const server={revision:5,activities:[{id:'w',name:'hub copy',steps:[]}]};
+  context.api=async(path,body)=>{
+    if(path==='configuration'&&body){
+      posts.push({revision:body.revision,cells:body.configuration.activities[0].screen.cells.length});
+      if(posts.length===1&&releaseFirst===undefined){await new Promise(r=>releaseFirst=r);}
+      if(failPost)throw Error('Configuration changed in another browser. Reload before saving.');
+      server.revision=body.revision+1;return {ok:true};
+    }
+    if(path==='configuration'){if(failGet)throw new TypeError('offline');return JSON.parse(JSON.stringify(server));}
+    return {};
+  };
+  // A burst while the first save is in flight coalesces into exactly one more save with the latest edits.
+  const first=X.persistConfig();
+  state.config.activities[0].screen.cells.push({deviceId:'tv',command:'Up'});X.persistConfig();
+  state.config.activities[0].screen.cells.push({deviceId:'tv',command:'Down'});X.persistConfig();
+  for(let i=0;i<5;i++)await Promise.resolve();
+  assert.equal(posts.length,1);
+  releaseFirst();await first;await flush();
+  assert.deepEqual(J(posts),[{revision:5,cells:0},{revision:6,cells:2}]);
+  assert.equal(state.config.revision,7);
+  assert.equal(state.config.activities[0].screen.cells.length,2,'local edits survive the revision refresh');
+  // A rejected save shows the error and reloads what the hub actually has.
+  failPost=true;posts.length=0;
+  context.afterSave=undefined;
+  await X.persistConfig();
+  assert.match(el('notice').textContent,/^Not saved: Configuration changed in another browser/);assert.equal(el('notice').dataset.error,'true');
+  assert.equal(state.config.activities[0].name,'hub copy');
+  // Offline: nothing to reload from, so local edits stay and a later save still works.
+  state.config={revision:7,activities:[{id:'w',name:'W',steps:[],screen:{columns:4,cells:[{deviceId:'tv',command:'Up'}]}}]};
+  failGet=true;await X.persistConfig();
+  assert.equal(state.config.activities[0].name,'W');
+  failPost=false;failGet=false;posts.length=0;await X.persistConfig();
+  assert.deepEqual(J(posts),[{revision:7,cells:1}]);
+}
+console.log('Saves run one at a time with the latest state, take the revision from the hub, and recover from rejection or offline');
+
+// Rendering: stale and volume cells stay visible (and removable); slots are drawn; labels explain the gestures.
+state.devices=[tv,bar];
+const editAct={id:'w',name:'W',steps:[{deviceId:'tv'}],screen:{columns:4,cells:[cell('Up'),cell('VolumeUp'),cell('Gone'),cell('HDMI 1')],pinned:[cell('Mute')]}};
+const eh=X.editorHtml(editAct,{extraRows:0});
+assert.equal((eh.match(/data-zone="cells" data-index=/g)||[]).length,4);
+assert.equal((eh.match(/class="cell empty" type="button" data-zone="cells"/g)||[]).length,4);
+assert.equal((eh.match(/data-zone="pinned" data-index=/g)||[]).length,1);
+assert.equal((eh.match(/class="cell empty" type="button" data-zone="pinned"/g)||[]).length,3);
+assert.match(eh,/class="cell missing" type="button" data-zone="cells" data-index="2"/);
+assert.match(eh,/Gone \(its device or command no longer exists\)\. Press and hold to remove\./);
+assert.match(eh,/aria-label="Volume up\. Press and hold to remove\."/);
+assert.match(eh,/Press and hold an empty square to add a button/);assert.match(eh,/data-add-row/);
+assert.doesNotMatch(eh,/data-command=/,'editor buttons must never send commands');
+assert.equal((X.editorHtml(editAct,{extraRows:1}).match(/class="cell empty" type="button" data-zone="cells"/g)||[]).length,8);
+const fullAct={id:'f',steps:[],screen:{columns:4,cells:Array.from({length:32},(_,i)=>cell('C'+i)),pinned:[]}};
+const fh=X.editorHtml(fullAct,{extraRows:0});assert.doesNotMatch(fh,/data-add-row/);assert.match(fh,/button limit/);
+const twoCol=X.editorHtml({id:'x',steps:[],screen:{columns:2,cells:[]}},{extraRows:0}).split('Always visible')[1];
+assert.equal((twoCol.match(/class="cell empty"/g)||[]).length,2,'a 2-column footer has two slots');
+console.log('Editor lists every cell (including stale and volume ones), draws empty slots and never sends commands');
+
+// ---- Edit gestures (fake timers) ----
+{
+  let clock=0,seq=0;const timers=new Map();
+  context.setTimeout=(fn,ms)=>{timers.set(++seq,{fn,at:clock+ms});return seq;};
+  context.clearTimeout=id=>timers.delete(id);
+  const advance=ms=>{clock+=ms;for(const [id,t] of [...timers])if(t.at<=clock){timers.delete(id);t.fn();}};
+  const posts=[];
+  context.api=async(path,body)=>{if(path==='configuration'&&body){posts.push(J(body.configuration.activities[0].screen));return {ok:true};}if(path==='configuration')return {revision:99,activities:[]};return {};};
+  const sheet=Object.assign(el('sheet'),{open:false,innerHTML:'',onclick:null,showModal(){this.open=true;},close(){this.open=false;}});
+  const setup=(activity,{owner=true}={})=>{
+    state.devices=[tv,bar];state.session={role:owner?'owner':'controller'};state.config={revision:1,activities:[activity]};
+    context.location.hash='#/edit/'+activity.id;posts.length=0;sheet.open=false;
+    const content={innerHTML:'',isConnected:true,querySelector:()=>null};
+    const ctx={content,actions:{innerHTML:''},params:[activity.id],setTitle(t){this.title=t;}};
+    X.renderEditor(ctx);return {content,ctx};
+  };
+  const btn=(content,zone,index)=>{ // find the nth zone button in the rendered html
+    const re=index===undefined?new RegExp(`class="cell empty" type="button" data-zone="${zone}"`):new RegExp(`data-zone="${zone}" data-index="${index}"`);
+    assert.match(content.innerHTML,re,`${zone} ${index} should be rendered`);
+    return {dataset:{zone,...(index===undefined?{}:{index:String(index)})},classList:{contains:c=>c==='empty'&&index===undefined}};
+  };
+  const down=(content,b,x=10,y=10)=>content.onpointerdown({target:{closest:()=>b},button:0,clientX:x,clientY:y});
+  const settle=async()=>{for(let i=0;i<12;i++)await Promise.resolve();};
+
+  // Press-and-hold a filled cell removes it immediately and saves.
+  let a={id:'w',name:'W',steps:[{deviceId:'tv'}],screen:{columns:4,cells:[cell('Up'),cell('Down'),cell('Mute')],pinned:[cell('Back')]}};
+  let {content,ctx}=setup(a);
+  assert.equal(ctx.title,'Edit remote: W');
+  down(content,btn(content,'cells',1));advance(499);assert.equal(a.screen.cells.length,3,'not before the hold time');
+  advance(2);await settle();
+  assert.deepEqual(J(a.screen.cells.map(c=>c.command)),['Up','Mute']);
+  assert.equal(posts.length,1);assert.deepEqual(posts[0].cells.map(c=>c.command),['Up','Mute']);
+  assert.equal(context.vibrated,1);
+  assert.equal((content.innerHTML.match(/data-zone="cells" data-index=/g)||[]).length,2,'the grid redraws immediately');
+  // A tap (released early), a drag past the slop, and a pointer cancel all do nothing.
+  for(const stop of ['up','move','cancel']){
+    ({content}=setup(a));posts.length=0;
+    down(content,btn(content,'cells',0));
+    if(stop==='up')content.onpointerup();
+    if(stop==='move')content.onpointermove({clientX:10,clientY:40});
+    if(stop==='cancel')content.onpointercancel();
+    advance(1000);await settle();
+    assert.equal(a.screen.cells.length,2,stop);assert.equal(posts.length,0,stop);
+  }
+  ({content}=setup(a));down(content,btn(content,'cells',0));content.onpointermove({clientX:12,clientY:14});advance(600);await settle();
+  assert.equal(a.screen.cells.length,1,'a small wobble still counts as holding');
+  // Navigating away before the hold completes does nothing.
+  ({content}=setup(a));posts.length=0;down(content,btn(content,'cells',0));context.location.hash='#/devices';advance(600);await settle();
+  assert.equal(a.screen.cells.length,1);assert.equal(posts.length,0);
+
+  // Press-and-hold an empty cell opens the add sheet; choosing a command adds it and saves.
+  a={id:'w',name:'W',steps:[{deviceId:'tv'}],screen:{columns:4,cells:[cell('Up')],pinned:[]}};
+  ({content}=setup(a));
+  down(content,btn(content,'cells'));advance(600);
+  assert.equal(sheet.open,true);
+  assert.match(sheet.innerHTML,/TV: Down/);assert.doesNotMatch(sheet.innerHTML,/TV: Up</);assert.doesNotMatch(sheet.innerHTML,/TV: Volume/);
+  const downOption=[...sheet.innerHTML.matchAll(/data-pick="(\d+)"[^>]*>(?:<[^>]*>)*[^<]*<\/span>TV: Down</g)].map(m=>m[1]);
+  assert.equal(downOption.length,1);
+  sheet.onclick({target:{closest:sel=>sel==='[data-pick]'?{dataset:{pick:downOption[0]}}:null}});await settle();
+  assert.equal(sheet.open,false);assert.deepEqual(J(a.screen.cells.map(c=>c.command)),['Up','Down']);
+  assert.equal(posts.length,1);
+  // Cancel and backdrop close the sheet without changing anything.
+  posts.length=0;down(content,btn(content,'cells'));advance(600);assert.equal(sheet.open,true);
+  sheet.onclick({target:{closest:sel=>sel==='[data-sheet-cancel]'?{}:null}});assert.equal(sheet.open,false);
+  down(content,btn(content,'cells'));advance(600);sheet.onclick({target:sheet,closest:()=>null});assert.equal(sheet.open,false);
+  assert.equal(a.screen.cells.length,2);assert.equal(posts.length,0);
+
+  // The footer is edited the same way, into its own list.
+  down(content,btn(content,'pinned'));advance(600);
+  const mute=[...sheet.innerHTML.matchAll(/data-pick="(\d+)"[^>]*>(?:<[^>]*>)*[^<]*<\/span>TV: Mute</g)].map(m=>m[1])[0];
+  sheet.onclick({target:{closest:sel=>sel==='[data-pick]'?{dataset:{pick:mute}}:null}});await settle();
+  assert.deepEqual(J(a.screen.pinned.map(c=>c.command)),['Mute']);assert.equal(a.screen.cells.length,2);
+  down(content,btn(content,'pinned',0));advance(600);await settle();assert.equal(a.screen.pinned.length,0);
+
+  // Nothing left to add: the sheet says so instead of listing nothing.
+  a={id:'w',name:'W',steps:[{deviceId:'bar'}],screen:{columns:4,cells:[cell('Mute','bar')],pinned:[]}};
+  ({content}=setup(a));down(content,btn(content,'cells'));advance(600);
+  assert.match(sheet.innerHTML,/already on the remote/);assert.doesNotMatch(sheet.innerHTML,/data-pick/);
+  a={id:'w',name:'W',steps:[],screen:{columns:4,cells:[],pinned:[]}};
+  ({content}=setup(a));down(content,btn(content,'cells'));advance(600);assert.match(sheet.innerHTML,/no devices yet/);
+  sheet.close();
+
+  // Keyboard: Enter on an empty slot opens the sheet, Delete removes a button.
+  a={id:'w',name:'W',steps:[{deviceId:'tv'}],screen:{columns:4,cells:[cell('Up')],pinned:[]}};
+  ({content}=setup(a));
+  const key=(b,k)=>{let prevented=false;content.onkeydown({key:k,target:{closest:()=>b},preventDefault(){prevented=true;}});return prevented;};
+  assert.equal(key(btn(content,'cells'),'Enter'),true);assert.equal(sheet.open,true);sheet.close();
+  assert.equal(key(btn(content,'cells'),'x'),false);
+  assert.equal(key(btn(content,'cells',0),'Enter'),false);assert.equal(a.screen.cells.length,1,'Enter does not remove');
+  const vibratedBefore=context.vibrated;
+  assert.equal(key(btn(content,'cells',0),'Delete'),true);await settle();assert.equal(a.screen.cells.length,0);
+  assert.equal(context.vibrated,vibratedBefore,'only a real long-press vibrates');
+
+  // Add row reveals another row of empty slots.
+  ({content}=setup(a));
+  const before=(content.innerHTML.match(/class="cell empty" type="button" data-zone="cells"/g)||[]).length;
+  content.onclick({target:{closest:sel=>sel==='[data-add-row]'?{}:null}});
+  assert.equal((content.innerHTML.match(/class="cell empty" type="button" data-zone="cells"/g)||[]).length,before+4);
+
+  // Not the owner, or an activity that is gone: no editor, no handlers.
+  a={id:'w',name:'W',steps:[],screen:{columns:4,cells:[cell('Up')],pinned:[]}};
+  ({content}=setup(a,{owner:false}));assert.match(content.innerHTML,/Only the hub owner/);assert.equal(content.onpointerdown,undefined);
+  const ghost={content:{innerHTML:'',isConnected:true},params:['ghost'],setTitle(){}};X.renderEditor(ghost);assert.match(ghost.content.innerHTML,/no longer exists/);
+  // The activity vanishing under an open editor (another browser) redraws safely.
+  ({content}=setup({id:'w',name:'W',steps:[{deviceId:'tv'}],screen:{columns:4,cells:[cell('Up')],pinned:[]}}));
+  state.config={revision:2,activities:[]};down(content,btn(content,'cells',0));advance(600);await settle();
+  assert.match(content.innerHTML,/no longer exists/);
+  context.setTimeout=()=>0;context.clearTimeout=()=>{};
+}
+console.log('Press-and-hold adds and removes immediately; taps, drags, cancels and leaving the screen do nothing; keyboard and sheet paths work');
+
+// Leaving the editor must not leave its handlers on the shared content element.
+{
+  const content=el('content');content.onpointerdown=()=>{};content.onkeydown=()=>{};content.oncontextmenu=()=>{};
+  state.config={activities:[]};state.session={role:'owner'};context.location.hash='#/devices';show();
+  assert.equal(content.onpointerdown,null);assert.equal(content.onkeydown,null);assert.equal(content.oncontextmenu,null);
+}
+console.log('Switching screens clears the previous screen’s handlers');

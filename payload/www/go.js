@@ -62,6 +62,7 @@ async function loadDevices() {
   const bluetooth=await api('bluetooth/devices');state.devices.push(...(bluetooth.devices||[]).map(d=>({...d,transport:'bluetooth'})));
 }
 
+const SCREEN_HANDLERS = ['onclick','onpointerdown','onpointermove','onpointerup','onpointercancel','onpointerleave','oncontextmenu','onkeydown'];
 const screens = {
   // render(ctx) fills ctx.content; ctx.params are the decoded route params.
   // tab: which bottom tab it belongs to (tab screens show the connectivity
@@ -72,7 +73,7 @@ const screens = {
     ctx.content.innerHTML='<div class="placeholder"><p>Device setup, IR learning, Bluetooth pairing, backups and the rest live in the full settings pages.</p><p><a href="/#settings">Open full settings</a></p></div>';
   }},
   activity: {title:'Activity', parent:'activities', reserveNotice:true, render:renderActivityRemote},
-  edit: {title:'Edit remote', parent:'activity', parentParams:params=>params.slice(0,1), render:ctx=>placeholder(ctx,'The layout editor is built in a later step.')},
+  edit: {title:'Edit remote', parent:'activity', parentParams:params=>params.slice(0,1), reserveNotice:true, render:renderEditor},
   device: {title:'Device', parent:'devices', reserveNotice:true, render:renderDeviceRemote},
 };
 // There is no hub-side "running" activity: like the original UI, the client
@@ -336,11 +337,166 @@ function renderActivityRemote(ctx) {
   ctx.content.innerHTML=`<div class="remote">${body||'<div class="placeholder"><p>No buttons on this remote yet.</p></div>'}</div>${pinned?`<div class="pinned"><div class="pinned-label">Always visible</div>${pinned}</div>`:''}`;
   bindCommands(ctx.content);
 }
+// ---- Edit remote layout (activities only) ----
+// The editor works on activity.screen: `cells` (the scrolling grid) and `pinned`
+// (the footer, at most `columns` buttons). Both are plain packed lists of
+// {deviceId, command}; "empty slots" are only drawn, so pressing any empty slot
+// appends and removing a button shifts the rest along. Every edit applies and
+// is saved immediately.
+const MAX_CELLS = 32;  // keep in step with local_validate_config()
+const screenOf = activity => {
+  activity.screen ||= {columns:4, cells:[]};
+  activity.screen.cells ||= [];
+  activity.screen.pinned ||= [];
+  return activity.screen;
+};
+const zoneList = (activity, zone) => screenOf(activity)[zone];
+const zoneCapacity = (activity, zone) => zone==='pinned' ? (screenOf(activity).columns||4) : MAX_CELLS;
+const isPlaced = (activity, deviceId, command) => ['cells','pinned'].some(zone=>zoneList(activity,zone).some(c=>c.deviceId===deviceId&&c.command===command));
+// Commands of the devices this activity starts, minus ones already on the remote
+// and the volume pair (the hardware keys handle those).
+function availableCommands(activity) {
+  const ids = [...new Set((activity.steps||[]).map(s=>s.deviceId).filter(Boolean))];
+  return ids.flatMap(id=>{
+    const device = state.devices.find(d=>d.id===id);
+    return (device?.commands||[])
+      .filter(c=>!HARDWARE_ONLY.includes(controlFor(c.name)?.[0]) && !isPlaced(activity,device.id,c.name))
+      .map(c=>({device, command:c.name, control:controlFor(c.name)}));
+  });
+}
+function addButton(activity, zone, deviceId, command) {
+  const list = zoneList(activity, zone);
+  if(list.length>=zoneCapacity(activity,zone)||isPlaced(activity,deviceId,command))return false;
+  list.push({deviceId, command});return true;
+}
+function removeButton(activity, zone, index) {
+  const list = zoneList(activity, zone);
+  if(!(index>=0&&index<list.length))return false;
+  list.splice(index,1);return true;
+}
+// How many slots to draw: the cells plus empties out to a full row beyond the
+// last button (so there is always somewhere to add), plus any "Add row" rows.
+function editorSlots(zone, length, columns, extraRows=0) {
+  if(zone==='pinned')return columns;
+  const total = Math.ceil((length+1)/columns)*columns + extraRows*columns;
+  return Math.min(total, Math.max(length, MAX_CELLS));
+}
+
+// Save: one request at a time, always sending the latest local state, so a burst
+// of gestures coalesces instead of racing on the config revision.
+let saveRunning = false, saveAgain = false;
+let afterSave = () => {};  // set by the open editor: redraw after a failed save
+async function persistConfig() {
+  if(saveRunning){saveAgain=true;return;}
+  saveRunning = true;
+  try {
+    do {
+      saveAgain = false;
+      await api('configuration',{revision:state.config.revision, configuration:state.config});
+      // Only the revision comes back: local edits made while saving must survive.
+      state.config.revision = (await api('configuration')).revision;
+    } while(saveAgain);
+  } catch(error) {
+    saveAgain = false;
+    notice(`Not saved: ${error.message}`,true);
+    try {state.config = await api('configuration');afterSave();}  // show what the hub really has
+    catch {/* offline: keep the local edits; the next change retries */}
+  } finally {saveRunning = false;}
+}
+
+function editCellHtml(entry, zone, index) {
+  if(!entry)return `<button class="cell empty" type="button" data-zone="${zone}" aria-label="Empty slot. Press and hold to add a button."><svg aria-hidden="true"><use href="/icons.svg#icon-Plus"></use></svg></button>`;
+  const control = controlFor(entry.command), live = resolveCell(entry);
+  const label = control?.[1] || entry.command;
+  const face = control?.[2] ? icon(control[2]) : `<span class="cell-text">${escape(entry.command)}</span>`;
+  const note = live ? '' : ' (its device or command no longer exists)';
+  return `<button class="cell ${live?'':'missing'}" type="button" data-zone="${zone}" data-index="${index}" aria-label="${escape(label)}${note}. Press and hold to remove." title="${escape(label)}${note}">${face}</button>`;
+}
+function editZoneHtml(activity, zone, ui) {
+  const list = zoneList(activity, zone), columns = screenOf(activity).columns||4;
+  const slots = editorSlots(zone, list.length, columns, zone==='cells'?ui.extraRows:0);
+  const cells = list.map((e,i)=>editCellHtml(e,zone,i)).join('') + Array.from({length:Math.max(0,slots-list.length)},()=>editCellHtml(null,zone)).join('');
+  return `<div class="cells edit-grid" data-columns="${escape(String(columns))}">${cells}</div>`;
+}
+function editorHtml(activity, ui) {
+  const full = zoneList(activity,'cells').length>=MAX_CELLS;
+  return `<p class="edit-hint">Press and hold an empty square to add a button, or a filled one to remove it.</p>
+    ${editZoneHtml(activity,'cells',ui)}
+    ${full?'<p class="edit-hint">The remote has reached its button limit.</p>':'<button class="add-row" type="button" data-add-row>'+icon('Plus')+'Add row</button>'}
+    <div class="pinned"><div class="pinned-label">Always visible</div>${editZoneHtml(activity,'pinned',ui)}</div>`;
+}
+
+const LONG_PRESS_MS = 500, MOVE_SLOP = 10;
+function renderEditor(ctx) {
+  const id = ctx.params[0];
+  // Always look the activity up again: a failed save replaces state.config.
+  const activity = () => (state.config.activities||[]).find(a=>a.id===id);
+  const first = activity();
+  if(!first){ctx.setTitle('Edit remote');return placeholder(ctx,'This activity no longer exists.');}
+  ctx.setTitle(`Edit remote: ${first.name}`);
+  if(!owner())return placeholder(ctx,'Only the hub owner can change remote layouts.');
+  const ui = {extraRows:0}, sheet = $('sheet');
+  const here = () => ctx.content.isConnected && parseRoute(location.hash).name==='edit' && parseRoute(location.hash).params[0]===id;
+  const draw = focus => {
+    if(!here())return;
+    const current = activity();
+    if(!current){placeholder(ctx,'This activity no longer exists.');return;}
+    ctx.content.innerHTML = `<div class="editor">${editorHtml(current,ui)}</div>`;
+    if(focus)ctx.content.querySelector(`[data-zone="${focus.zone}"][data-index="${focus.index}"]`)?.focus();
+  };
+  afterSave = () => draw();
+  const changed = focus => {draw(focus);persistConfig();};
+  const openSheet = zone => {
+    const current = activity(), options = availableCommands(current);
+    sheet.innerHTML = `<div class="sheet-handle" aria-hidden="true"></div><h2 id="sheet-title">Add a button</h2>
+      ${options.length?`<ul class="sheet-list">${options.map((o,i)=>`<li><button type="button" data-pick="${i}"><span class="sheet-icon">${o.control?.[2]?icon(o.control[2]):''}</span>${escape(o.device.name)}: ${escape(o.command)}</button></li>`).join('')}</ul>`
+        :`<p>${(current.steps||[]).some(s=>s.deviceId)?'Every command from this activity’s devices is already on the remote.':'This activity has no devices yet. Add one to its start actions under Manage activities.'}</p>`}
+      <button type="button" class="sheet-cancel" data-sheet-cancel>Cancel</button>`;
+    sheet.onclick = event => {
+      if(event.target===sheet||event.target.closest('[data-sheet-cancel]'))return sheet.close();
+      const pick = event.target.closest('[data-pick]');if(!pick)return;
+      const o = options[+pick.dataset.pick];sheet.close();
+      const target = activity();
+      if(target&&addButton(target,zone,o.device.id,o.command))changed({zone,index:zoneList(target,zone).length-1});
+    };
+    sheet.showModal();
+  };
+  const act = (button, how) => {
+    if(!here())return;
+    const target = activity();if(!target)return draw();
+    const zone = button.dataset.zone;
+    if(button.classList.contains('empty'))return openSheet(zone);
+    const index = +button.dataset.index;
+    if(removeButton(target,zone,index)){if(how==='hold')navigator.vibrate?.(20);changed({zone,index:Math.min(index,zoneList(target,zone).length-1)});}
+  };
+  // Press-and-hold. touch-action is pan-y so a scroll cancels the press.
+  let press = null;
+  const cancelPress = () => {if(press){clearTimeout(press.timer);press=null;}};
+  ctx.content.onpointerdown = event => {
+    const button = event.target.closest('[data-zone]');if(!button||event.button!==0)return;
+    cancelPress();
+    press = {button, x:event.clientX, y:event.clientY, timer:setTimeout(()=>{const b=press.button;press=null;act(b,'hold');},LONG_PRESS_MS)};
+  };
+  ctx.content.onpointermove = event => {if(press&&Math.hypot(event.clientX-press.x,event.clientY-press.y)>MOVE_SLOP)cancelPress();};
+  ['onpointerup','onpointercancel','onpointerleave'].forEach(name=>{ctx.content[name]=cancelPress;});
+  ctx.content.oncontextmenu = event => event.preventDefault();
+  // Keyboard has no long-press: Enter/Space opens the add sheet on an empty slot, Delete removes a button.
+  ctx.content.onkeydown = event => {
+    const button = event.target.closest?.('[data-zone]');if(!button)return;
+    const empty = button.classList.contains('empty');
+    if(empty&&[' ','Enter'].includes(event.key)){event.preventDefault();act(button,'key');}
+    else if(!empty&&['Delete','Backspace'].includes(event.key)){event.preventDefault();act(button,'key');}
+  };
+  ctx.content.onclick = event => {if(event.target.closest('[data-add-row]')){ui.extraRows++;draw();}};
+  draw();
+}
 function placeholder(ctx, text) {ctx.content.innerHTML=`<div class="placeholder"><p>${escape(text)}</p></div>`;}
 
 function show() {
   const {name, params} = parseRoute(location.hash), screen = screens[name], ctx = {params, content:$('content'), actions:$('header-actions'), setTitle};
   stopHold(false);
+  for(const handler of SCREEN_HANDLERS)ctx.content[handler]=null;
+  if($('sheet')?.open)$('sheet').close();
   function setTitle(text) {$('title').textContent=text;document.title=text+' · Harmony Remote';}
   $('header-actions').innerHTML='';
   setTitle(screen.title);
