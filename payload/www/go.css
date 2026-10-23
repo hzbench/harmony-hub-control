@@ -94,7 +94,7 @@ dialog.sheet h2{font-size:15px;margin:0 0 6px}
 .sheet-icon{width:32px;height:32px;border-radius:9px;background:var(--control);display:grid;place-items:center;flex-shrink:0}
 .sheet-icon svg{height:16px;width:16px}
 .sheet-cancel{color:var(--muted);padding-left:44px;border-bottom:0}
+.cancel-button{background:transparent;color:var(--ink);min-height:40px;padding:0 12px}
+.cancel-button:disabled{color:var(--muted)}
 .save-button{background:var(--accent);color:var(--surface);font-weight:600;min-height:40px;padding:0 18px}
 .save-button:disabled{background:var(--control);color:var(--muted);opacity:1}
-.draft-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:6px 6px 6px 16px;background:var(--surface);border:1px solid var(--warn);border-radius:var(--radius);color:var(--warn);font-weight:600;font-size:14px}
-.draft-bar button{background:transparent;min-height:40px;padding:0 14px;color:var(--ink)}

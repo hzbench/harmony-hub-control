@@ -535,7 +535,7 @@ console.log('Editor draws gaps as empty squares, lists every cell (including sta
 
   // Press-and-hold a button removes it from the DRAFT and leaves its slot empty; nothing is written to the hub yet.
   let {content,ctx}=setup(base0);
-  assert.equal(ctx.title,'Edit remote: W');assert.equal(saveEnabled(ctx),false,'nothing to save yet');assert.doesNotMatch(content.innerHTML,/Unsaved changes/);
+  assert.equal(ctx.title,'Edit remote');assert.equal(saveEnabled(ctx),false,'nothing to save yet');assert.doesNotMatch(content.innerHTML,/Unsaved changes/);
   down(content,slotBtn(content,'cells',1));advance(349);assert.deepEqual(layout(content,'cells'),{0:'Up',1:'Down',2:'Mute'},'not before the hold time');
   advance(2);await settle();
   assert.deepEqual(layout(content,'cells'),{0:'Up',2:'Mute'},'the buttons to the right do not move');
@@ -543,7 +543,7 @@ console.log('Editor draws gaps as empty squares, lists every cell (including sta
   assert.equal(posts.length,0,'editing never writes to the hub');
   assert.equal(state.config.activities[0].screen.cells.length,3,'the loaded config is untouched until Save');
   assert.ok(store.get(KEY),'the draft is mirrored to this device');
-  assert.equal(saveEnabled(ctx),true);assert.match(content.innerHTML,/Unsaved changes/);
+  assert.equal(saveEnabled(ctx),true);assert.doesNotMatch(content.innerHTML,/Unsaved changes|draft-bar/,'no banner that shifts the grid');
   // The click from lifting the finger over the now-empty square must not open the sheet; a later tap does.
   tapSlot(content,'cells',1);assert.equal(sheet.open,false,'ignored right after a long-press removal');
   advance(800);tapSlot(content,'cells',1);assert.equal(sheet.open,true);sheet.close();
@@ -599,7 +599,7 @@ console.log('Editor draws gaps as empty squares, lists every cell (including sta
   await pressSave(ctx);
   assert.equal(posts.length,1,'exactly one hub write for the whole session');
   assert.deepEqual(posts[0].cells,[sc('Down',6)]);assert.deepEqual(posts[0].pinned,[sc('Mute',2)]);
-  assert.equal(el('notice').textContent,'Saved.');assert.equal(saveEnabled(ctx),false);assert.doesNotMatch(content.innerHTML,/Unsaved changes/);
+  assert.equal(el('notice').textContent,'Saved.');assert.equal(saveEnabled(ctx),false);
   assert.ok(!store.get(KEY),'the stored draft is cleared once saved');
   assert.equal(state.config.activities[0].screen.cells.length,1,'the remote view now sees the new layout');
   await pressSave(ctx);assert.equal(posts.length,1,'Save with nothing changed does nothing');
@@ -623,15 +623,19 @@ console.log('Editor draws gaps as empty squares, lists every cell (including sta
   assert.equal(posts.length,0,'declining leaves the hub alone');assert.match(context.confirmed.at(-1),/changed on another device/);assert.equal(saveEnabled(ctx),true);
   context.confirmAnswer=true;await pressSave(ctx);assert.equal(posts.length,1);
 
-  // Discard asks, then returns to the hub's layout and clears the draft and message.
+  // Cancel asks (only when there are changes), then clears the draft and returns to the remote.
+  const pressCancel=ctx=>ctx.actions.onclick({target:{closest:sel=>sel==='[data-cancel]'?{}:null}});
   ({content,ctx}=setup(base0));
+  assert.match(ctx.actions.innerHTML,/data-cancel/);
+  context.confirmed.length=0;pressCancel(ctx);assert.equal(context.confirmed.length,0,'clean: no prompt');assert.equal(context.location.hash,'#/activity/w');
+  context.location.hash='#/edit/w';
   down(content,slotBtn(content,'cells',0));advance(600);await settle();
-  context.confirmAnswer=false;click(content,'[data-discard]');assert.deepEqual(layout(content,'cells'),{1:'Down',2:'Mute'});
   el('notice').textContent='Restored your unsaved changes.';
-  context.confirmAnswer=true;click(content,'[data-discard]');
-  assert.equal(el('notice').textContent,'','Discard clears the old message');
-  assert.deepEqual(layout(content,'cells'),{0:'Up',1:'Down',2:'Mute'});assert.ok(!store.get(KEY));assert.equal(saveEnabled(ctx),false);
+  context.confirmAnswer=false;pressCancel(ctx);assert.deepEqual(layout(content,'cells'),{1:'Down',2:'Mute'});assert.equal(context.location.hash,'#/edit/w','declining stays put');assert.ok(store.get(KEY));
+  context.confirmAnswer=true;pressCancel(ctx);
+  assert.equal(el('notice').textContent,'');assert.equal(context.location.hash,'#/activity/w');assert.ok(!store.get(KEY),'draft cleared');
   assert.equal(posts.length,0);
+  context.location.hash='#/edit/w';
 
   // Leaving: the back arrow asks while there are unsaved changes; any exit keeps the draft.
   ({content,ctx}=setup(base0));

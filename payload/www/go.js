@@ -461,8 +461,7 @@ function editZoneHtml(activity, zone, ui) {
 }
 function editorHtml(model, ui) {
   const full = zoneList(model,'cells').length>=MAX_CELLS;
-  return `${ui.dirty?'<div class="draft-bar" role="status"><span>Unsaved changes</span><button type="button" data-discard>Discard</button></div>':''}
-    <p class="edit-hint">Tap an empty square to add a button. Press and hold a button to remove it. The bottom row stays on screen while you use the remote.</p>
+  return `<p class="edit-hint">Tap an empty square to add a button. Press and hold a button to remove it. The bottom row stays on screen while you use the remote.</p>
     ${editZoneHtml(model,'cells',ui)}
     ${full?'<p class="edit-hint">The remote has reached its button limit.</p>':'<button class="add-row" type="button" data-add-row>'+icon('Plus')+'Add row</button>'}
     <div class="pinned">${editZoneHtml(model,'pinned',ui)}</div>`;
@@ -476,7 +475,7 @@ function renderEditor(ctx) {
   const activity = () => (state.config.activities||[]).find(a=>a.id===id);
   const first = activity();
   if(!first){ctx.setTitle('Edit remote');return placeholder(ctx,'This activity no longer exists.');}
-  ctx.setTitle(`Edit remote: ${first.name}`);
+  ctx.setTitle('Edit remote');
   if(!owner())return placeholder(ctx,'Only the hub owner can change remote layouts.');
   let {draft, base, restored} = loadDraft(first);
   const ui = {extraRows:0, dirty:false, saving:false}, sheet = $('sheet');
@@ -486,7 +485,7 @@ function renderEditor(ctx) {
   const draw = focus => {
     if(!here())return;
     ui.dirty = layoutShape(draft)!==base;
-    ctx.actions.innerHTML = `<button type="button" class="save-button" data-save ${ui.dirty&&!ui.saving?'':'disabled'}>${ui.saving?'Saving…':'Save'}</button>`;
+    ctx.actions.innerHTML = `<button type="button" class="cancel-button" data-cancel ${ui.saving?'disabled':''}>Cancel</button><button type="button" class="save-button" data-save ${ui.dirty&&!ui.saving?'':'disabled'}>${ui.saving?'Saving…':'Save'}</button>`;
     ctx.content.innerHTML = `<div class="editor">${editorHtml(model(),ui)}</div>`;
     if(focus)ctx.content.querySelector(`[data-zone="${focus.zone}"][data-slot="${focus.slot}"]`)?.focus();
   };
@@ -502,10 +501,14 @@ function renderEditor(ctx) {
     } catch(error) {notice(`Not saved: ${error.message}`,true);}
     finally {ui.saving=false;draw();}
   };
-  const discard = () => {
-    if(!confirm('Discard your unsaved changes?'))return;
-    const hub = activity();
-    draft = cloneScreen(hub?.screen);base = layoutShape(draft);storeDraft(id,base,draft);ui.extraRows=0;notice('');draw();
+  // Cancel drops the draft and returns to the remote.
+  const cancel = () => {
+    if(ui.saving)return;
+    if(layoutShape(draft)!==base){
+      if(!confirm('Discard your unsaved changes?'))return;
+      draft = cloneScreen(activity()?.screen);base = layoutShape(draft);storeDraft(id,base,draft);
+    }
+    notice('');location.hash = routeHash('activity',id);
   };
   const openSheet = (zone, slot) => {
     const options = availableCommands(model());
@@ -561,9 +564,8 @@ function renderEditor(ctx) {
     if(slotButton?.classList.contains('empty')){
       if(Date.now()>=suppressClickUntil&&here())openSheet(slotButton.dataset.zone,+slotButton.dataset.slot);
     } else if(event.target.closest('[data-add-row]')){ui.extraRows++;draw();}
-    else if(event.target.closest('[data-discard]'))discard();
   };
-  ctx.actions.onclick = event => {if(event.target.closest('[data-save]'))save();};
+  ctx.actions.onclick = event => {if(event.target.closest('[data-save]'))save();else if(event.target.closest('[data-cancel]'))cancel();};
   draw();
   if(restored)notice('Restored your unsaved changes.');
 }
