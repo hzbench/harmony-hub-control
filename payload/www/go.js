@@ -189,21 +189,34 @@ const HARDWARE_ONLY = ['volumeup','volumedown'];
 // Icons that read as something else out of context (a bare chevron, +, -): the
 // exhaustive device list names these instead.
 const NAMED_IN_LIST = ['volumeup','volumedown','channelup','channeldown'];
-const visibleEntries = cells => (cells||[]).map(cell=>({cell,control:controlFor(cell.command)}))
-  .filter(e=>resolveCell(e.cell)&&!HARDWARE_ONLY.includes(e.control?.[0]));
-function remoteBlocks(cells) {
-  const entries = visibleEntries(cells);
-  const pick = {};
-  for(const slot of CROSS)pick[slot]=entries.find(e=>e.control?.[0]===slot);
-  const crossed = ['up','down','left','right'].every(slot=>pick[slot]);
-  const members = crossed ? new Set(Object.values(pick).filter(Boolean)) : new Set();
-  const blocks = [];
-  for(const entry of entries) {
-    if(members.has(entry)){if(!blocks.some(b=>b.kind==='cross'))blocks.push({kind:'cross',pick});continue;}
-    if(blocks.at(-1)?.kind!=='grid')blocks.push({kind:'grid',entries:[]});
-    blocks.at(-1).entries.push(entry);
+const GRID_SLOTS = 32;  // keep in step with the server's 32-cell limit
+// Buttons carry the grid slot they sit in (`slot`, 0-based). Lists saved before
+// that existed fill the lowest free slots in order. Returns copies, sorted by slot.
+function withSlots(list, capacity) {
+  const used = new Set(), placed = [], loose = [];
+  for(const c of list||[]) {
+    const copy = {...c};
+    if(Number.isInteger(copy.slot)&&copy.slot>=0&&copy.slot<capacity&&!used.has(copy.slot)){used.add(copy.slot);placed.push(copy);}
+    else loose.push(copy);
   }
-  return blocks;
+  let next = 0;
+  for(const copy of loose){while(used.has(next))next++;if(next>=capacity)break;copy.slot=next;used.add(next);placed.push(copy);}
+  return placed.sort((a,b)=>a.slot-b.slot);
+}
+const visibleEntries = (cells, capacity) => withSlots(cells,capacity).map(cell=>({cell,control:controlFor(cell.command),slot:cell.slot}))
+  .filter(e=>resolveCell(e.cell)&&!HARDWARE_ONLY.includes(e.control?.[0]));
+// The cross (when all four arrows exist) comes first. Every other button keeps
+// its place in the grid, so gaps left on purpose stay gaps; the squares the
+// cross's own buttons occupied are not gaps, so they are closed up.
+function remoteBlocks(cells) {
+  const entries = visibleEntries(cells, GRID_SLOTS);
+  const pick = {};
+  for(const key of CROSS)pick[key]=entries.find(e=>e.control?.[0]===key);
+  const crossed = ['up','down','left','right'].every(key=>pick[key]);
+  const members = crossed ? new Set(Object.values(pick).filter(Boolean)) : new Set();
+  const vacated = [...members].map(e=>e.slot);
+  const rest = entries.filter(e=>!members.has(e)).map(e=>({...e, slot:e.slot-vacated.filter(v=>v<e.slot).length}));
+  return [...(crossed?[{kind:'cross',pick}]:[]), ...(rest.length?[{kind:'grid',entries:rest}]:[])];
 }
 function cellButton({cell,control}, extra='', customFace='') {
   const label = control?.[1] || cell.command;
@@ -211,15 +224,21 @@ function cellButton({cell,control}, extra='', customFace='') {
   const face = customFace || (control?.[2] ? icon(control[2]) : `<span class="cell-text">${escape(cell.command)}</span>`);
   return `<button class="cell ${extra}" type="button" data-command="${escape(cell.command)}" data-device="${escape(cell.deviceId)}" aria-label="${escape(label)}" title="${escape(label)}">${face}</button>`;
 }
-const crossHtml = pick => `<div class="dpad">${CROSS.map(slot=>pick[slot]?cellButton(pick[slot],slot):'<span></span>').join('')}</div>`;
+const crossHtml = pick => `<div class="dpad">${CROSS.map(key=>pick[key]?cellButton(pick[key],key):'<span></span>').join('')}</div>`;
+// Rows of `columns` slots; a row with no buttons is dropped, gaps inside one stay.
+function gridHtml(entries, columns) {
+  const rows = new Map();
+  for(const e of entries){const row=Math.floor(e.slot/columns);if(!rows.has(row))rows.set(row,[]);rows.get(row).push(e);}
+  const cells = [...rows.keys()].sort((a,b)=>a-b).flatMap(row=>Array.from({length:columns},(_,col)=>{
+    const e = rows.get(row).find(x=>x.slot===row*columns+col);return e?cellButton(e):'<span></span>';}));
+  return `<div class="cells" data-columns="${escape(String(columns))}">${cells.join('')}</div>`;
+}
 function remoteHtml(screen) {
   const columns = screen?.columns || 4;
-  const body = remoteBlocks(screen?.cells).map(block=>block.kind==='cross'
-    ? crossHtml(block.pick)
-    : `<div class="cells" data-columns="${escape(String(columns))}">${block.entries.map(e=>cellButton(e)).join('')}</div>`).join('');
-  // The pinned footer is a plain row in the order it was set: no cross.
-  const pinned = visibleEntries(screen?.pinned);
-  return {body, pinned: pinned.length ? `<div class="cells" data-columns="${escape(String(columns))}">${pinned.map(e=>cellButton(e)).join('')}</div>` : ''};
+  const body = remoteBlocks(screen?.cells).map(block=>block.kind==='cross'?crossHtml(block.pick):gridHtml(block.entries,columns)).join('');
+  // The pinned footer is one row of `columns` slots, in the order set: no cross.
+  const pinned = visibleEntries(screen?.pinned, columns);
+  return {body, pinned: pinned.length ? gridHtml(pinned,columns) : ''};
 }
 
 // A device remote shows every command the device has, exactly once: the usual
@@ -334,7 +353,7 @@ function renderActivityRemote(ctx) {
   ctx.setTitle(activity.name);
   if(owner())ctx.actions.innerHTML=`<a class="header-action" href="${routeHash('edit',activity.id)}" aria-label="Edit remote layout" title="Edit remote layout">${icon('Pencil')}</a>`;
   const {body,pinned}=remoteHtml(activity.screen);
-  ctx.content.innerHTML=`<div class="remote">${body||'<div class="placeholder"><p>No buttons on this remote yet.</p></div>'}</div>${pinned?`<div class="pinned"><div class="pinned-label">Always visible</div>${pinned}</div>`:''}`;
+  ctx.content.innerHTML=`<div class="remote">${body||'<div class="placeholder"><p>No buttons on this remote yet.</p></div>'}</div>${pinned?`<div class="pinned">${pinned}</div>`:''}`;
   bindCommands(ctx.content);
 }
 // ---- Edit remote layout (activities only) ----
@@ -344,7 +363,7 @@ function renderActivityRemote(ctx) {
 // slot appends and removing a button shifts the rest along. Edits change the
 // draft only (mirrored to localStorage so nothing is lost if the app is killed);
 // Save is the one write to the hub.
-const MAX_CELLS = 32;  // keep in step with local_validate_config()
+const MAX_CELLS = GRID_SLOTS;
 const screenOf = activity => {
   activity.screen ||= {columns:4, cells:[]};
   activity.screen.cells ||= [];
@@ -365,29 +384,32 @@ function availableCommands(activity) {
       .map(c=>({device, command:c.name, control:controlFor(c.name)}));
   });
 }
-function addButton(activity, zone, deviceId, command) {
+function addButton(activity, zone, slot, deviceId, command) {
   const list = zoneList(activity, zone);
-  if(list.length>=zoneCapacity(activity,zone)||isPlaced(activity,deviceId,command))return false;
-  list.push({deviceId, command});return true;
+  if(!(Number.isInteger(slot)&&slot>=0&&slot<zoneCapacity(activity,zone))||list.some(c=>c.slot===slot)||isPlaced(activity,deviceId,command))return false;
+  list.push({deviceId, command, slot});
+  list.sort((a,b)=>a.slot-b.slot);return true;
 }
-function removeButton(activity, zone, index) {
-  const list = zoneList(activity, zone);
-  if(!(index>=0&&index<list.length))return false;
-  list.splice(index,1);return true;
+// Removing leaves the slot empty; nothing else moves.
+function removeButton(activity, zone, slot) {
+  const list = zoneList(activity, zone), at = list.findIndex(c=>c.slot===slot);
+  if(at<0)return false;
+  list.splice(at,1);return true;
 }
-// How many slots to draw: the cells plus empties out to a full row beyond the
-// last button (so there is always somewhere to add), plus any "Add row" rows.
-function editorSlots(zone, length, columns, extraRows=0) {
+// How many slots to draw: out to a full row beyond the last used slot (so there
+// is always somewhere to add), plus any "Add row" rows. `extent` is the highest
+// used slot + 1.
+function editorSlots(zone, extent, columns, extraRows=0) {
   if(zone==='pinned')return columns;
-  const total = Math.ceil((length+1)/columns)*columns + extraRows*columns;
-  return Math.min(total, Math.max(length, MAX_CELLS));
+  const total = Math.ceil((extent+1)/columns)*columns + extraRows*columns;
+  return Math.min(total, MAX_CELLS);
 }
 
 // ---- Draft and save ----
 // Compared as strings to tell whether a layout changed.
-const layoutShape = screen => JSON.stringify([screen?.columns||4, screen?.cells||[], screen?.pinned||[]]);
+const layoutShape = screen => {const s=cloneScreen(screen);return JSON.stringify([s.columns,s.cells,s.pinned]);};
 const DRAFT_PREFIX = 'harmony-layout-draft:';
-const cloneScreen = screen => ({columns:screen?.columns||4, cells:structuredClone(screen?.cells||[]), pinned:structuredClone(screen?.pinned||[])});
+const cloneScreen = screen => {const columns=screen?.columns||4;return {columns, cells:withSlots(screen?.cells,MAX_CELLS), pinned:withSlots(screen?.pinned,columns)};};
 function storeDraft(id, base, draft) {
   // `base` is the layout the draft started from: the later check for "changed
   // elsewhere" compares the hub against it, not against whatever it is now.
@@ -422,30 +444,32 @@ async function submitLayout(id, draft, base, confirmReplace) {
   return true;
 }
 
-function editCellHtml(entry, zone, index) {
-  if(!entry)return `<button class="cell empty" type="button" data-zone="${zone}" aria-label="Empty slot. Press and hold to add a button."><svg aria-hidden="true"><use href="/icons.svg#icon-Plus"></use></svg></button>`;
+function editCellHtml(entry, zone, slot) {
+  if(!entry)return `<button class="cell empty" type="button" data-zone="${zone}" data-slot="${slot}" aria-label="Empty slot. Tap to add a button."><svg aria-hidden="true"><use href="/icons.svg#icon-Plus"></use></svg></button>`;
   const control = controlFor(entry.command), live = resolveCell(entry);
   const label = control?.[1] || entry.command;
   const face = control?.[2] ? icon(control[2]) : `<span class="cell-text">${escape(entry.command)}</span>`;
   const note = live ? '' : ' (its device or command no longer exists)';
-  return `<button class="cell ${live?'':'missing'}" type="button" data-zone="${zone}" data-index="${index}" aria-label="${escape(label)}${note}. Press and hold to remove." title="${escape(label)}${note}">${face}</button>`;
+  return `<button class="cell${live?'':' missing'}" type="button" data-zone="${zone}" data-slot="${slot}" aria-label="${escape(label)}${note}. Press and hold to remove." title="${escape(label)}${note}">${face}</button>`;
 }
 function editZoneHtml(activity, zone, ui) {
   const list = zoneList(activity, zone), columns = screenOf(activity).columns||4;
-  const slots = editorSlots(zone, list.length, columns, zone==='cells'?ui.extraRows:0);
-  const cells = list.map((e,i)=>editCellHtml(e,zone,i)).join('') + Array.from({length:Math.max(0,slots-list.length)},()=>editCellHtml(null,zone)).join('');
+  const extent = list.reduce((most,c)=>Math.max(most,c.slot+1),0);
+  const slots = editorSlots(zone, extent, columns, zone==='cells'?ui.extraRows:0);
+  const cells = Array.from({length:slots},(_,slot)=>editCellHtml(list.find(c=>c.slot===slot)||null,zone,slot)).join('');
   return `<div class="cells edit-grid" data-columns="${escape(String(columns))}">${cells}</div>`;
 }
 function editorHtml(model, ui) {
   const full = zoneList(model,'cells').length>=MAX_CELLS;
   return `${ui.dirty?'<div class="draft-bar" role="status"><span>Unsaved changes</span><button type="button" data-discard>Discard</button></div>':''}
-    <p class="edit-hint">Press and hold an empty square to add a button, or a filled one to remove it. Changes are saved when you tap Save.</p>
+    <p class="edit-hint">Tap an empty square to add a button. Press and hold a button to remove it. The bottom row stays on screen while you use the remote.</p>
     ${editZoneHtml(model,'cells',ui)}
     ${full?'<p class="edit-hint">The remote has reached its button limit.</p>':'<button class="add-row" type="button" data-add-row>'+icon('Plus')+'Add row</button>'}
-    <div class="pinned"><div class="pinned-label">Always visible</div>${editZoneHtml(model,'pinned',ui)}</div>`;
+    <div class="pinned">${editZoneHtml(model,'pinned',ui)}</div>`;
 }
 
 const LONG_PRESS_MS = 500, MOVE_SLOP = 10;
+let sheetPushed = false;  // the open add sheet owns one history entry, so Back closes just the sheet
 let leaveGuard = null;  // asked before the back arrow leaves a screen; false keeps you there
 function renderEditor(ctx) {
   const id = ctx.params[0];
@@ -464,7 +488,7 @@ function renderEditor(ctx) {
     ui.dirty = layoutShape(draft)!==base;
     ctx.actions.innerHTML = `<button type="button" class="save-button" data-save ${ui.dirty&&!ui.saving?'':'disabled'}>${ui.saving?'Saving…':'Save'}</button>`;
     ctx.content.innerHTML = `<div class="editor">${editorHtml(model(),ui)}</div>`;
-    if(focus)ctx.content.querySelector(`[data-zone="${focus.zone}"][data-index="${focus.index}"]`)?.focus();
+    if(focus)ctx.content.querySelector(`[data-zone="${focus.zone}"][data-slot="${focus.slot}"]`)?.focus();
   };
   // A new edit makes any earlier "Saved." / "Restored..." message untrue.
   const changed = focus => {notice('');storeDraft(id,base,draft);draw(focus);};
@@ -483,7 +507,7 @@ function renderEditor(ctx) {
     const hub = activity();
     draft = cloneScreen(hub?.screen);base = layoutShape(draft);storeDraft(id,base,draft);ui.extraRows=0;notice('');draw();
   };
-  const openSheet = zone => {
+  const openSheet = (zone, slot) => {
     const options = availableCommands(model());
     sheet.innerHTML = `<div class="sheet-handle" aria-hidden="true"></div><h2 id="sheet-title">Add a button</h2>
       ${options.length?`<ul class="sheet-list">${options.map((o,i)=>`<li><button type="button" data-pick="${i}"><span class="sheet-icon">${o.control?.[2]?icon(o.control[2]):''}</span>${escape(o.device.name)}: ${escape(o.command)}</button></li>`).join('')}</ul>`
@@ -493,37 +517,47 @@ function renderEditor(ctx) {
       if(event.target===sheet||event.target.closest('[data-sheet-cancel]'))return sheet.close();
       const pick = event.target.closest('[data-pick]');if(!pick)return;
       const o = options[+pick.dataset.pick];sheet.close();
-      if(addButton(model(),zone,o.device.id,o.command))changed({zone,index:zoneList(model(),zone).length-1});
+      if(addButton(model(),zone,slot,o.device.id,o.command))changed({zone,slot});
     };
     sheet.showModal();
+    history.pushState({sheet:true},'');sheetPushed = true;
+    sheet.onclose = () => {if(sheetPushed){sheetPushed = false;history.back();}};
+    window.onpopstate = () => {if(sheet.open){sheetPushed = false;sheet.close();}};
   };
-  const act = (button, how) => {
+  // Removing leaves an empty slot where the finger was: ignore the click that
+  // the finger lifting would otherwise send to it.
+  let suppressClickUntil = 0;
+  const remove = (button, how) => {
     if(!here())return;
-    const zone = button.dataset.zone;
-    if(button.classList.contains('empty'))return openSheet(zone);
-    const index = +button.dataset.index;
-    if(removeButton(model(),zone,index)){if(how==='hold')navigator.vibrate?.(20);changed({zone,index:Math.min(index,zoneList(model(),zone).length-1)});}
+    const zone = button.dataset.zone, slot = +button.dataset.slot;
+    if(removeButton(model(),zone,slot)){
+      if(how==='hold'){navigator.vibrate?.(20);suppressClickUntil=Date.now()+700;}
+      changed({zone,slot});
+    }
   };
   // Press-and-hold. touch-action is pan-y so a scroll cancels the press.
   let press = null;
   const cancelPress = () => {if(press){clearTimeout(press.timer);press=null;}};
   ctx.content.onpointerdown = event => {
-    const button = event.target.closest('[data-zone]');if(!button||event.button!==0)return;
+    const button = event.target.closest('[data-zone]');if(!button||event.button!==0||button.classList.contains('empty'))return;
     cancelPress();
-    press = {button, x:event.clientX, y:event.clientY, timer:setTimeout(()=>{const b=press.button;press=null;act(b,'hold');},LONG_PRESS_MS)};
+    press = {button, x:event.clientX, y:event.clientY, timer:setTimeout(()=>{const b=press.button;press=null;remove(b,'hold');},LONG_PRESS_MS)};
   };
   ctx.content.onpointermove = event => {if(press&&Math.hypot(event.clientX-press.x,event.clientY-press.y)>MOVE_SLOP)cancelPress();};
   ['onpointerup','onpointercancel','onpointerleave'].forEach(name=>{ctx.content[name]=cancelPress;});
   ctx.content.oncontextmenu = event => event.preventDefault();
-  // Keyboard has no long-press: Enter/Space opens the add sheet on an empty slot, Delete removes a button.
+  // Keyboard has no long-press: Delete/Backspace removes the focused button. An
+  // empty slot opens the add sheet from its normal click (Enter/Space included).
   ctx.content.onkeydown = event => {
-    const button = event.target.closest?.('[data-zone]');if(!button)return;
-    const empty = button.classList.contains('empty');
-    if(empty&&[' ','Enter'].includes(event.key)){event.preventDefault();act(button,'key');}
-    else if(!empty&&['Delete','Backspace'].includes(event.key)){event.preventDefault();act(button,'key');}
+    const button = event.target.closest?.('[data-zone]');
+    if(!button||button.classList.contains('empty')||!['Delete','Backspace'].includes(event.key))return;
+    event.preventDefault();remove(button,'key');
   };
   ctx.content.onclick = event => {
-    if(event.target.closest('[data-add-row]')){ui.extraRows++;draw();}
+    const slotButton = event.target.closest('[data-zone]');
+    if(slotButton?.classList.contains('empty')){
+      if(Date.now()>=suppressClickUntil&&here())openSheet(slotButton.dataset.zone,+slotButton.dataset.slot);
+    } else if(event.target.closest('[data-add-row]')){ui.extraRows++;draw();}
     else if(event.target.closest('[data-discard]'))discard();
   };
   ctx.actions.onclick = event => {if(event.target.closest('[data-save]'))save();};
@@ -537,7 +571,8 @@ function show() {
   stopHold(false);
   for(const handler of SCREEN_HANDLERS)ctx.content[handler]=null;
   ctx.actions.onclick=null;leaveGuard=null;
-  if($('sheet')?.open)$('sheet').close();
+  window.onpopstate=null;sheetPushed=false;
+  if($('sheet')){$('sheet').onclose=null;if($('sheet').open)$('sheet').close();}
   function setTitle(text) {$('title').textContent=text;document.title=text+' · Harmony Remote';}
   $('header-actions').innerHTML='';
   setTitle(screen.title);
