@@ -66,7 +66,7 @@ const screens = {
   // tab: which bottom tab it belongs to (tab screens show the connectivity
   // icon and no back arrow); parent: where a drill-in screen's back arrow goes.
   activities: {title:'Activities', tab:'activities', render:renderActivities},
-  devices: {title:'Devices', tab:'devices', render:ctx=>placeholder(ctx,'Devices are built in a later step.')},
+  devices: {title:'Devices', tab:'devices', render:renderDevices},
   setup: {title:'Setup', tab:'setup', render:ctx=>{
     ctx.content.innerHTML='<div class="placeholder"><p>Device setup, IR learning, Bluetooth pairing, backups and the rest live in the full settings pages.</p><p><a href="/#settings">Open full settings</a></p></div>';
   }},
@@ -127,6 +127,15 @@ function renderActivities(ctx) {
       if(await run('-1')){writeLocal(ACTIVITY_KEY,'');redraw();}
     }
   };
+}
+const DEVICE_ICONS = {Television:'Tv', Audio:'Speaker', 'Media Player':'MonitorPlay'};
+function deviceRow(device) {
+  const count = (device.commands||[]).length, type = device.type || (device.transport==='bluetooth' ? 'Bluetooth' : 'IR');
+  return `<div class="row"><a class="row-main" href="${routeHash('device',device.id)}"><span class="row-icon neutral">${icon(DEVICE_ICONS[device.type]||'Radio')}</span><span class="row-text"><strong>${escape(device.name)}</strong><small>${escape(type)} · ${count} ${count===1?'command':'commands'}</small></span>${icon('ChevronRight')}</a></div>`;
+}
+function renderDevices(ctx) {
+  ctx.content.innerHTML = `<div class="list">${state.devices.map(deviceRow).join('')||'<div class="placeholder"><p>No devices yet. Add one in the full settings pages.</p></div>'}</div>
+    <a class="manage" href="/#devices">${icon('SlidersHorizontal')}Manage devices</a>`;
 }
 function placeholder(ctx, text) {ctx.content.innerHTML=`<div class="placeholder"><p>${escape(text)}</p></div>`;}
 

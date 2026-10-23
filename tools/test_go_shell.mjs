@@ -18,7 +18,7 @@ const el=id=>elements[id]||=({id,dataset:{},hidden:false,textContent:'',innerHTM
 const context=vm.createContext({document:{getElementById:el,title:''},window:{addEventListener(){},scrollTo(){}},location:{hash:'',replace(url){context.replaced=url;}},history:{replaceState(){}},
   localStorage:{getItem:k=>store.get(k)??null,setItem:(k,v)=>store.set(k,v)},setTimeout:()=>0,clearTimeout(){},fetch:async()=>{throw new TypeError('offline');},AbortController,URL});
 const inert=source.replace(/\n  boot\(\);\n\}\s*$/,'\n}');assert.notEqual(inert,source,'boot() auto-run not found');
-vm.runInContext(inert.replace('const state =','var state =')+'\nthis.exports={parseRoute,routeHash,connection,state,needsFullUi,api,show,screens,renderActivities};',context);
+vm.runInContext(inert.replace('const state =','var state =')+'\nthis.exports={parseRoute,routeHash,connection,state,needsFullUi,api,show,screens,renderActivities,renderDevices};',context);
 const {parseRoute,routeHash,connection,state,needsFullUi,api,show}=context.exports;
 
 assert.deepEqual(JSON.parse(JSON.stringify(parseRoute(''))),{name:'activities',params:[]});
@@ -135,3 +135,29 @@ context.location.hash='#/activities';draw();
 const late=click({open:'empty'});context.location.hash='#/devices';await late;
 assert.equal(el('notice').textContent,'');
 console.log('A start finishing after you navigate away does not write to another screen');
+
+// ---- Devices list ----
+state.devices=[
+  {id:'1',name:'LG <C5>',type:'Television',transport:'ir',commands:Array(21).fill({name:'x'})},
+  {id:'2',name:'Receiver',type:'Audio',transport:'ir',commands:[{name:'x'}]},
+  {id:'3',name:'Roku',type:'Media Player',transport:'ir',commands:[]},
+  {id:'bt/1',name:'Keyboard',type:'',transport:'bluetooth',commands:[{name:'a'},{name:'b'}]},
+  {id:'4',name:'Gizmo',type:'Other',transport:'ir'}];
+const devicesContent={innerHTML:''};
+context.exports.renderDevices({content:devicesContent,params:[]});
+const devicesHtml=devicesContent.innerHTML;
+assert.match(devicesHtml,/LG &lt;C5&gt;/);
+assert.match(devicesHtml,/Television · 21 commands/);
+assert.match(devicesHtml,/Audio · 1 command</);
+assert.match(devicesHtml,/Media Player · 0 commands/);
+assert.match(devicesHtml,/Bluetooth · 2 commands/);
+assert.match(devicesHtml,/Other · 0 commands/);
+assert.match(devicesHtml,/href="#\/device\/1"/);
+assert.match(devicesHtml,/href="#\/device\/bt%2F1"/);
+assert.match(devicesHtml,/icon-Tv/);assert.match(devicesHtml,/icon-Speaker/);assert.match(devicesHtml,/icon-MonitorPlay/);
+assert.match(devicesHtml,/href="\/#devices"/);
+assert.equal(context.exports.parseRoute('#/device/bt%2F1').params[0],'bt/1');
+console.log('Devices list shows type and command count (singular/plural), links to each device remote, and a Manage link');
+state.devices=[];context.exports.renderDevices({content:devicesContent,params:[]});
+assert.match(devicesContent.innerHTML,/No devices yet/);assert.match(devicesContent.innerHTML,/Manage devices/);
+console.log('Devices list has an empty state that still offers Manage devices');
