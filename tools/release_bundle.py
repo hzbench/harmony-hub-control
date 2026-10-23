@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 FILES = {name: ROOT / "payload" / "bin" / name for name in
          ("codex_webui", "codex_hbus", "codex_hal_ltcp", "codex_bthid_keyboard", "codex_portal")}
 FILES.update({name: ROOT / "payload" / "www" / name for name in
-              ("index.html", "app.css", "app.js", "icons.svg", "profiles.js")})
+              ("index.html", "app.css", "app.js", "icons.svg", "profiles.js", "go.html", "go.css", "go.js")})
 FILES.update({"localcore.lua": ROOT / "payload/core/localcore.lua",
               "codexmqtt.lua": ROOT / "payload/mqtt/codexmqtt.lua",
               "init.sh": ROOT / "payload/scripts/init.sh",

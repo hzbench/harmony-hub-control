@@ -808,6 +808,9 @@ static int local_asset(int fd, const struct request *r) {
     else if (!strcmp(r->path, "/app.css")) { name = "app.css"; type = "text/css"; }
     else if (!strcmp(r->path, "/icons.svg")) { name = "icons.svg"; type = "image/svg+xml"; }
     else if (!strcmp(r->path, "/profiles.js")) { name = "profiles.js"; type = "text/javascript"; }
+    else if (!strcmp(r->path, "/go") || !strcmp(r->path, "/go/") || !strcmp(r->path, "/go/index.html")) { name = "go.html"; type = "text/html; charset=utf-8"; }
+    else if (!strcmp(r->path, "/go/go.js")) { name = "go.js"; type = "text/javascript"; }
+    else if (!strcmp(r->path, "/go/go.css")) { name = "go.css"; type = "text/css"; }
     if (!name) return 0;
     if (!local_origin(fd, r)) { local_error(fd, "403 Forbidden", "Invalid Host or origin."); return 1; }
     snprintf(path, sizeof(path), LOCAL_WWW "/%s", name); raw = read_file_alloc(path, MAX_REQUEST_BODY, &n);

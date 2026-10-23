@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <title>Harmony Remote</title>
+  <link rel="stylesheet" href="/go/go.css">
+  <script src="/go/go.js" defer></script>
+</head>
+<body>
+  <div class="app">
+    <header class="header" id="header">
+      <button id="back" class="icon-button" type="button" aria-label="Back" hidden><svg aria-hidden="true"><use href="/icons.svg#icon-ChevronLeft"></use></svg></button>
+      <h1 id="title">Harmony Remote</h1>
+      <div id="header-actions"></div>
+      <button id="connection" class="connection" type="button" data-state="connecting" aria-label="Connecting to the hub" title="Connecting to the hub">
+        <svg class="glyph glyph-online" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5a10 10 0 0 1 14 0"/><path d="M8.3 15.8a5.2 5.2 0 0 1 7.4 0"/><circle cx="12" cy="19" r="1.1"/></svg>
+        <svg class="glyph glyph-connecting" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 1-6.36 2.64"/></svg>
+        <svg class="glyph glyph-offline" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3l18 18"/><path d="M8.3 15.8a5.2 5.2 0 0 1 7.4 0"/><path d="M5 12.5a10 10 0 0 1 4.9-2.7"/><path d="M19 12.5a10 10 0 0 0-3.2-2.25"/><circle cx="12" cy="19" r="1.1"/></svg>
+      </button>
+    </header>
+    <div id="notice" role="status" aria-live="polite" hidden></div>
+    <main id="content" tabindex="-1" aria-busy="true"></main>
+    <nav class="tabs" id="tabs" aria-label="Main navigation" hidden>
+      <a href="#/activities" data-tab="activities"><svg aria-hidden="true"><use href="/icons.svg#icon-Play"></use></svg><span>Activities</span></a>
+      <a href="#/devices" data-tab="devices"><svg aria-hidden="true"><use href="/icons.svg#icon-Tv"></use></svg><span>Devices</span></a>
+      <a href="#/setup" data-tab="setup"><svg aria-hidden="true"><use href="/icons.svg#icon-Settings"></use></svg><span>Setup</span></a>
+    </nav>
+  </div>
+</body>
+</html>

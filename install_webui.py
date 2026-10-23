@@ -346,7 +346,7 @@ class Installer:
         files["/opt/luaworks/tasks/codex/localcore.lua"] = ((PAYLOAD / "core" / "localcore.lua").read_bytes(), "644")
         files["/pkg/codexmqtt/codexmqtt.lua"] = ((PAYLOAD / "mqtt" / "codexmqtt.lua").read_bytes(), "644")
         files["/pkg/codexmqtt/manifest.json"] = (b'{"plugin":"codexmqtt"}\n', "644")
-        for name in ("index.html", "app.js", "app.css", "icons.svg", "profiles.js"):
+        for name in ("index.html", "app.js", "app.css", "icons.svg", "profiles.js", "go.html", "go.js", "go.css"):
             files["/data/codex/www/" + name] = ((PAYLOAD / "www" / name).read_bytes(), "644")
         files["/data/codex/local/migrations.json"] = ((PAYLOAD / "core" / "migrations.json").read_bytes(), "600")
         files["/data/codex/hub_id"] = ((hub_id + "\n").encode(), "644")

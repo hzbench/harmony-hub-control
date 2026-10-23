@@ -208,6 +208,19 @@ def run():
             else: raise AssertionError("server failed to start")
             assert request("devices")[0] == 401
             assert request("session", extra={"Host": "attacker.example"})[0] == 403
+            # The /go daily-use UI is served same-origin with the same CSP as the original UI.
+            for name, body in (("go.html", b"<!doctype html>go"), ("go.js", b"//go"), ("go.css", b"/*go*/")):
+                (www / name).write_bytes(body)
+            for route, body, kind in (("/go", b"<!doctype html>go", "text/html"), ("/go/", b"<!doctype html>go", "text/html"),
+                                      ("/go/go.js", b"//go", "text/javascript"), ("/go/go.css", b"/*go*/", "text/css")):
+                conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+                conn.request("GET", route, headers={"Host": f"127.0.0.1:{port}"}); response = conn.getresponse()
+                assert response.status == 200 and response.read() == body and response.getheader("Content-Type").startswith(kind), route
+                assert "script-src 'self'" in response.getheader("Content-Security-Policy"), route
+                conn.close()
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request("GET", "/go/other.js", headers={"Host": f"127.0.0.1:{port}"})
+            status = conn.getresponse().status; assert status in (401, 404), status; conn.close()
             assert request("activities/state")[0] == 401
             assert request("session")[1]["buttonAvailable"]
             status, first, first_cookie = request("controllers/request", {"name": "Physical owner", "button": True})
@@ -358,7 +371,7 @@ def run():
             from cryptography.hazmat.primitives import serialization
             key = Ed25519PrivateKey.generate()
             (local / "release.pub").write_text(key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw).hex())
-            names = ["codex_webui", "codex_hbus", "codex_hal_ltcp", "codex_bthid_keyboard", "codex_portal", "localcore.lua", "codexmqtt.lua", "index.html", "app.css", "app.js", "icons.svg", "profiles.js", "init.sh", "maintenance.sh", "migrations.json"]
+            names = ["codex_webui", "codex_hbus", "codex_hal_ltcp", "codex_bthid_keyboard", "codex_portal", "localcore.lua", "codexmqtt.lua", "index.html", "app.css", "app.js", "icons.svg", "profiles.js", "go.html", "go.css", "go.js", "init.sh", "maintenance.sh", "migrations.json"]
             manifest = json.dumps({"schemaVersion": 1, "platform": "pimento-4.15.600", "version": "test-1", "files": [{"name": n, "size": 1, "sha512": hashlib.sha512(b"x").hexdigest()} for n in names]}, separators=(",", ":"))
             signature = key.sign(manifest.encode()).hex()
             assert request("updates/begin", {"manifest": manifest, "signature": "00" * 64}, cookie, csrf)[0] == 403
@@ -374,7 +387,7 @@ def run():
             installed = {}
             for name, raw in contents.items():
                 assert request("updates/chunk", {"name": name, "offset": 0, "hex": raw.hex()}, cookie, csrf)[0] == 200
-                path = defs["CODEX_BIN_DIR"] / name if name.startswith("codex_") and name != "codexmqtt.lua" else www / name if name in ["index.html", "app.css", "app.js", "icons.svg", "profiles.js"] else local / name if name == "migrations.json" else base / name
+                path = defs["CODEX_BIN_DIR"] / name if name.startswith("codex_") and name != "codexmqtt.lua" else www / name if name in ["index.html", "app.css", "app.js", "icons.svg", "profiles.js", "go.html", "go.css", "go.js"] else local / name if name == "migrations.json" else base / name
                 path.parent.mkdir(exist_ok=True); path.write_bytes(b"previous version")
                 installed[path] = b"previous version"
             (defs["LOCAL_UPDATE_STAGE"] / "app.js").write_bytes(b"tampered")
