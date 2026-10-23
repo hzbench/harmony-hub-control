@@ -7,10 +7,14 @@ from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1] / "payload/www"
 configuration = {"schemaVersion": 1, "revision": 1, "setupMode": "keep", "layouts": {}, "deviceSetup": {}, "activities": [
-    {"id": "watch", "name": "Watch TV", "steps": [{"deviceId": "1", "command": "PowerOn", "transport": "ir"}], "exitSteps": [{"deviceId": "1", "command": "PowerOff", "transport": "ir"}]},
+    {"id": "watch", "name": "Watch TV", "steps": [{"deviceId": "1", "command": "PowerOn", "transport": "ir"}], "exitSteps": [{"deviceId": "1", "command": "PowerOff", "transport": "ir"}],
+     # Deliberately scrambled so the remote view has to find the dpad cross.
+     "screen": {"columns": 4, "cells": [{"deviceId": "1", "command": c} for c in ["Right", "Back", "Up", "Input", "OK", "Mute", "Down", "HDMI 1", "Left"]],
+                "pinned": [{"deviceId": "1", "command": c} for c in ["Home", "Rewind", "Play", "FastForward"]]}},
     {"id": "music", "name": "Listen to Music", "steps": [{"deviceId": "2", "command": "PowerOn", "transport": "ir"}], "exitSteps": []}]}
 devices = [{"id": "1", "name": "LG C5", "manufacturer": "LG", "model": "C5", "type": "Television",
-            "commands": [{"name": name} for name in ["PowerOn", "PowerOff", "VolumeUp", "VolumeDown", "Mute", "Up", "Down", "Left", "Right", "OK"]]},
+            "commands": [{"name": name} for name in ["PowerOn", "PowerOff", "VolumeUp", "VolumeDown", "Mute", "Up", "Down", "Left", "Right", "OK",
+                                                      "Back", "Input", "Home", "Rewind", "Play", "FastForward", "HDMI 1"]]},
            {"id": "2", "name": "Receiver", "manufacturer": "Denon", "model": "X", "type": "Audio",
             "commands": [{"name": name} for name in ["PowerOn", "PowerOff", "VolumeUp", "VolumeDown", "Mute"]]}]
 

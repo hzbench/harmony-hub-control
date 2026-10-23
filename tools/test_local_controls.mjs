@@ -3,7 +3,13 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 const source=fs.readFileSync(new URL('../payload/www/app.js',import.meta.url),'utf8');
 new vm.Script(source);
-const code=source.slice(source.indexOf('async function tap('),source.indexOf('function drawer()'));
+// The same tap / press-and-hold code lives in app.js (original UI) and go.js
+// (daily-use UI); every scenario below runs against both.
+const goSource=fs.readFileSync(new URL('../payload/www/go.js',import.meta.url),'utf8');
+new vm.Script(goSource);
+const commandCode={'app.js':source.slice(source.indexOf('async function tap('),source.indexOf('function drawer()')),
+  'go.js':goSource.slice(goSource.indexOf('async function tap('),goSource.indexOf('// --- end command sending ---'))};
+let code;
 // window.harmonyHardwareVolume() chains a .then()/.catch()/.finally() onto
 // its api() call rather than being itself async/awaited, so tests that
 // drive it need to drain enough queued microtasks for that whole chain to
@@ -44,6 +50,8 @@ function setup({delayQueue=false}={}){
     finish:async(error=false)=>{error?finish.reject(Error('failed')):finish.resolve({state:'completed'});await flush();},
     queued:async()=>{queue({id:'operation-1'});await flush();}};
 }
+for(const [name,source] of Object.entries(commandCode)){
+code=source;
 let t=setup();t.event('pointerdown');await t.advance(100);t.event('pointerup');t.event('click');await t.flush();
 assert.equal(t.calls.filter(c=>c.path==='commands/send').length,1);
 assert.equal(t.calls[0].mode,'tap');
@@ -55,7 +63,7 @@ for(const stop of ['pointerup','keyup','pointercancel','lostpointercapture','blu
   assert.equal(t.calls.filter(c=>c.action==='cancel').length,1);
   assert.equal(t.calls.filter(c=>c.path==='commands/send').length,1,'release must not send an extra tap');
 }
-console.log('New remote: touch, keyboard, long-hold release, pointer cancellation and synthetic-click suppression passed');
+console.log('New remote ('+name+'): touch, keyboard, long-hold release, pointer cancellation and synthetic-click suppression passed');
 
 for(const stop of ['blur','pagehide','visibilitychange']){
   t=setup();t.event('pointerdown');await t.advance(550);
@@ -80,7 +88,8 @@ t=setup();t.state.online=false;t.event('pointerdown');await t.advance(1000);t.ev
 assert.equal(t.calls.length,0);
 t=setup();t.event('pointerdown');t.event('pointermove',{clientX:100});await t.advance(1000);
 assert.equal(t.calls.length,0);
-console.log('Hold renewal failure, queued-release race, hidden pages, completion/failure and offline controls passed');
+console.log(name+': hold renewal failure, queued-release race, hidden pages, completion/failure and offline controls passed');
+}
 
 const remoteCode=source.slice(source.indexOf('const norm ='),source.indexOf('function renderRemote()'));
 const remote=vm.createContext({state:{devices:[{id:'tv',commands:[{name:'VolumeUp'}]}],config:{activities:[]}},readLocal:key=>key==='harmony-activity'?'watch':'tv',escape:s=>String(s),icon:s=>s});

@@ -14,15 +14,16 @@ references.update("icon-" + name for name in re.findall(r"icon\('([\w]+)'\)", ap
 controls = app[app.index("const controls ="):app.index("function activeDevice")]
 references.update("icon-" + name for name in re.findall(r"\['[^']+','[^']+','([^']+)',\[", controls))
 # The /go UI: icons named in its markup, icon('Name') calls, the device-type
-# icon table and the shared fallback glyph (app.js).
+# icon table and the CONTROLS table's icon column.
 go_html = (root / "go.html").read_text()
 go = (root / "go.js").read_text()
 go_references = set(re.findall(r'icons.svg#(icon-[\w]+)', go_html))
 go_references.update("icon-" + name for name in re.findall(r"icon\('([\w]+)'\)", go))
 go_references.update("icon-" + name for name in re.findall(r"\w+\s*\|\|\s*'([A-Z]\w+)'\)", go))
+controls_table = go[go.index("const CONTROLS = ["):go.index("const norm =")]
+go_references.update("icon-" + name for name in re.findall(r"\['[^']+','[^']+','([^']+)',\[", controls_table))
 table = go[go.index("const DEVICE_ICONS"):].split("\n")[0]
 go_references.update("icon-" + name for name in re.findall(r":\s*'([A-Z]\w+)'", table))
-go_references.add("icon-" + re.search(r"FALLBACK_ICON = '(\w+)'", app).group(1))
 assert len(go_references) >= 10, go_references
 references |= go_references
 assert references <= symbols, references - symbols
