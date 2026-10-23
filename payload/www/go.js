@@ -185,9 +185,10 @@ function resolveCell(c) {
 // longer exist are skipped.
 const CROSS = ['up','left','ok','right','down'];
 const HARDWARE_ONLY = ['volumeup','volumedown'];
+const visibleEntries = cells => (cells||[]).map(cell=>({cell,control:controlFor(cell.command)}))
+  .filter(e=>resolveCell(e.cell)&&!HARDWARE_ONLY.includes(e.control?.[0]));
 function remoteBlocks(cells) {
-  const entries = (cells||[]).map(cell=>({cell,control:controlFor(cell.command)}))
-    .filter(e=>resolveCell(e.cell)&&!HARDWARE_ONLY.includes(e.control?.[0]));
+  const entries = visibleEntries(cells);
   const pick = {};
   for(const slot of CROSS)pick[slot]=entries.find(e=>e.control?.[0]===slot);
   const crossed = ['up','down','left','right'].every(slot=>pick[slot]);
@@ -211,7 +212,8 @@ function remoteHtml(screen) {
   const body = remoteBlocks(screen?.cells).map(block=>block.kind==='cross'
     ? `<div class="dpad">${CROSS.map(slot=>block.pick[slot]?cellButton(block.pick[slot],slot):'<span></span>').join('')}</div>`
     : `<div class="cells" data-columns="${escape(String(columns))}">${block.entries.map(e=>cellButton(e)).join('')}</div>`).join('');
-  const pinned = remoteBlocks(screen?.pinned).flatMap(b=>b.kind==='grid'?b.entries:Object.values(b.pick).filter(Boolean));
+  // The pinned footer is a plain row in the order it was set: no cross.
+  const pinned = visibleEntries(screen?.pinned);
   return {body, pinned: pinned.length ? `<div class="cells" data-columns="${escape(String(columns))}">${pinned.map(e=>cellButton(e)).join('')}</div>` : ''};
 }
 

@@ -217,6 +217,10 @@ console.log('Remote view hides volume and stale cells, ignores label/wide, shows
 const pinnedView=remoteHtml({columns:4,cells:[cell('Back')],pinned:[cell('Mute'),cell('Gone'),cell('VolumeUp'),cell('Input')]});
 assert.equal((pinnedView.pinned.match(/data-command=/g)||[]).length,2);
 assert.doesNotMatch(pinnedView.body,/Mute/);
+// Pinning all four arrows keeps them as a row in the order set, not a cross.
+const arrowRow=remoteHtml({columns:4,cells:[],pinned:['Right','Up','Down','Left'].map(c=>cell(c))}).pinned;
+assert.doesNotMatch(arrowRow,/class="dpad"/);
+assert.deepEqual([...arrowRow.matchAll(/aria-label="(\w+)"/g)].map(m=>m[1]),['Right','Up','Down','Left']);
 console.log('Pinned buttons render as their own footer row, skipping stale and volume cells');
 
 // Full screen: header edit link only for the owner, footer outside the scrolling content.
