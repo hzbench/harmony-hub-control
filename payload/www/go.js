@@ -209,17 +209,22 @@ const visibleEntries = (cells, capacity) => withSlots(cells,capacity).map(cell=>
 // its place in the grid, so gaps left on purpose stay gaps; the squares the
 // cross's own buttons occupied are not gaps, so they are closed up.
 // The editor draws the same split, so what it shows is what the remote shows.
-function crossSplit(entries) {
+// A complete cross always has a centre. Without an OK button, that square
+// reserves the lowest unused slot (`okSlot`, where the editor adds OK), so the
+// empty centre doesn't also leave a gap in the grid.
+function crossSplit(entries, occupied) {
   const pick = {};
   for(const key of CROSS)pick[key]=entries.find(e=>e.control?.[0]===key);
   const crossed = ['up','down','left','right'].every(key=>pick[key]);
   const members = crossed ? new Set(Object.values(pick).filter(Boolean)) : new Set();
   const vacated = [...members].map(e=>e.slot);
+  const okSlot = crossed&&!pick.ok ? Array.from({length:GRID_SLOTS},(_,slot)=>slot).find(slot=>!occupied.has(slot)) : undefined;
+  if(okSlot!==undefined)vacated.push(okSlot);
   const rest = entries.filter(e=>!members.has(e)).map(e=>({...e, slot:e.slot-vacated.filter(v=>v<e.slot).length}));
-  return {crossed, pick, vacated, rest};
+  return {crossed, pick, okSlot, vacated, rest};
 }
 function remoteBlocks(cells) {
-  const {crossed, pick, rest} = crossSplit(visibleEntries(cells, GRID_SLOTS));
+  const {crossed, pick, rest} = crossSplit(visibleEntries(cells, GRID_SLOTS), new Set(withSlots(cells,GRID_SLOTS).map(c=>c.slot)));
   return [...(crossed?[{kind:'cross',pick}]:[]), ...(rest.length?[{kind:'grid',entries:rest}]:[])];
 }
 function cellButton({cell,control}, extra='', customFace='') {
@@ -435,7 +440,7 @@ async function submitLayout(id, draft, base, confirmReplace) {
 }
 
 function editCellHtml(entry, zone, slot, extra='') {
-  if(!entry)return `<button class="cell empty" type="button" data-zone="${zone}" data-slot="${slot}" aria-label="Empty slot. Tap to add a button."><svg aria-hidden="true"><use href="/icons.svg#icon-Plus"></use></svg></button>`;
+  if(!entry)return `<button class="cell empty${extra?' '+extra:''}" type="button" data-zone="${zone}" data-slot="${slot}" aria-label="Empty slot. Tap to add a button."><svg aria-hidden="true"><use href="/icons.svg#icon-Plus"></use></svg></button>`;
   const control = controlFor(entry.command), live = resolveCell(entry);
   const label = control?.[1] || entry.command;
   const face = control?.[2] ? icon(control[2]) : `<span class="cell-text">${escape(entry.command)}</span>`;
@@ -448,12 +453,13 @@ function editCellHtml(entry, zone, slot, extra='') {
 function editGridHtml(activity, ui) {
   const columns = screenOf(activity).columns||4;
   const all = withSlots(zoneList(activity,'cells'),MAX_CELLS).map(cell=>({cell,control:controlFor(cell.command),slot:cell.slot}));
-  const {crossed, pick, vacated, rest} = crossSplit(all);
+  const {crossed, pick, okSlot, vacated, rest} = crossSplit(all, new Set(all.map(e=>e.slot)));
   const free = Array.from({length:MAX_CELLS},(_,slot)=>slot).filter(slot=>!vacated.includes(slot));
   const extent = rest.reduce((most,e)=>Math.max(most,e.slot+1),0);
   const slots = editorSlots('cells', extent, columns, ui.extraRows, free.length);
   const cells = Array.from({length:slots},(_,at)=>{const e=rest.find(x=>x.slot===at);return e?editCellHtml(e.cell,'cells',e.cell.slot):editCellHtml(null,'cells',free[at]);}).join('');
-  const cross = crossed ? `<div class="dpad">${CROSS.map(key=>pick[key]?editCellHtml(pick[key].cell,'cells',pick[key].cell.slot,key):'<span></span>').join('')}</div>` : '';
+  const crossCell = key => pick[key]?editCellHtml(pick[key].cell,'cells',pick[key].cell.slot,key):key==='ok'&&okSlot!==undefined?editCellHtml(null,'cells',okSlot,key):'<span></span>';
+  const cross = crossed ? `<div class="dpad">${CROSS.map(crossCell).join('')}</div>` : '';
   return `${cross}<div class="cells edit-grid" data-columns="${escape(String(columns))}">${cells}</div>`;
 }
 function editPinnedHtml(activity) {

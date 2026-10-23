@@ -466,7 +466,7 @@ state.devices=[tv,bar];
 const editAct=X.cloneScreen({columns:4,cells:[cell('Up'),cell('VolumeUp'),sc('Gone',5),cell('HDMI 1')],pinned:[sc('Mute',2)]});
 const eh=X.editorHtml({id:'w',steps:[{deviceId:'tv'}],screen:editAct},{extraRows:0});
 const filled=(html,zone)=>[...html.matchAll(new RegExp(`class="cell(?: (?!empty)[a-z]+)?(?: missing)?" type="button" data-zone="${zone}" data-slot="(\\d+)" aria-label`,'g'))].map(m=>+m[1]);
-const emptied=(html,zone)=>[...html.matchAll(new RegExp(`class="cell empty" type="button" data-zone="${zone}" data-slot="(\\d+)"`,'g'))].map(m=>+m[1]);
+const emptied=(html,zone)=>[...html.matchAll(new RegExp(`class="cell empty(?: ok)?" type="button" data-zone="${zone}" data-slot="(\\d+)"`,'g'))].map(m=>+m[1]);
 assert.deepEqual(filled(eh,'cells'),[0,1,2,5]);   // Up,VolumeUp,HDMI 1 packed into 0..2 (they had no slots); Gone at 5
 assert.deepEqual(emptied(eh,'cells'),[3,4,6,7],'slots between buttons are empty squares');
 assert.deepEqual(filled(eh,'pinned'),[2]);assert.deepEqual(emptied(eh,'pinned'),[0,1,3]);
@@ -508,9 +508,9 @@ console.log('Editor draws gaps as empty squares, lists every cell (including sta
     X.renderEditor(ctx);return {content,ctx};
   };
   const layout=(content,zone)=>Object.fromEntries([...content.innerHTML.matchAll(new RegExp(`class="cell(?: (?!empty)[a-z]+)?(?: missing)?" type="button" data-zone="${zone}" data-slot="(\\d+)" aria-label="([^".]*)`,'g'))].map(m=>[+m[1],m[2]]));
-  const empties=(content,zone)=>[...content.innerHTML.matchAll(new RegExp(`class="cell empty" type="button" data-zone="${zone}" data-slot="(\\d+)"`,'g'))].map(m=>+m[1]);
+  const empties=(content,zone)=>[...content.innerHTML.matchAll(new RegExp(`class="cell empty(?: ok)?" type="button" data-zone="${zone}" data-slot="(\\d+)"`,'g'))].map(m=>+m[1]);
   const slotBtn=(content,zone,slot)=>{
-    const isEmpty=new RegExp(`class="cell empty" type="button" data-zone="${zone}" data-slot="${slot}"`).test(content.innerHTML);
+    const isEmpty=new RegExp(`class="cell empty(?: ok)?" type="button" data-zone="${zone}" data-slot="${slot}"`).test(content.innerHTML);
     assert.ok(isEmpty||new RegExp(`data-zone="${zone}" data-slot="${slot}"`).test(content.innerHTML),`${zone} slot ${slot} should be rendered`);
     return {dataset:{zone,slot:String(slot)},classList:{contains:c=>c==='empty'&&isEmpty}};
   };
@@ -652,6 +652,13 @@ console.log('Editor draws gaps as empty squares, lists every cell (including sta
   assert.deepEqual(empties(content,'cells'),[9,10,11,12],'empty squares map to the next free real slots');
   tapSlot(content,'cells',9);await choose('TV: PowerOn');
   assert.deepEqual(Object.keys(layout(content,'cells')).map(Number).sort((a,b)=>a-b),[0,1,2,3,4,5,6,7,8,9]);assert.match(content.innerHTML,/class="dpad"/);
+  // Removing OK keeps the cross: its centre becomes an empty square (not a stray one in the last row) that adds OK back.
+  down(content,slotBtn(content,'cells',4));advance(600);await settle();
+  assert.match(content.innerHTML,/class="dpad"/);
+  assert.match(content.innerHTML.slice(content.innerHTML.indexOf('class="dpad"'),content.innerHTML.indexOf('edit-grid')),/class="cell empty ok" type="button" data-zone="cells" data-slot="4"/);
+  assert.ok(!content.innerHTML.slice(content.innerHTML.indexOf('edit-grid')).includes('data-slot="4"'),'the reserved slot is not also a grid square');
+  advance(800);tapSlot(content,'cells',4);await choose('TV: OK');
+  assert.deepEqual(Object.keys(layout(content,'cells')).map(Number).sort((a,b)=>a-b),[0,1,2,3,4,5,6,7,8,9],'OK went back into its centre');
   down(content,slotBtn(content,'cells',2));advance(600);await settle();   // remove Up: no complete cross any more
   assert.doesNotMatch(content.innerHTML,/class="dpad"/,'the arrows go back to the grid when the cross is incomplete');
   assert.deepEqual(empties(content,'cells').slice(0,1),[2],'...and Up\'s square is a hole');
