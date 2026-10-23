@@ -69,9 +69,7 @@ const screens = {
   // icon and no back arrow); parent: where a drill-in screen's back arrow goes.
   activities: {title:'Activities', tab:'activities', render:renderActivities},
   devices: {title:'Devices', tab:'devices', render:renderDevices},
-  setup: {title:'Setup', tab:'setup', render:ctx=>{
-    ctx.content.innerHTML='<div class="placeholder"><p>Device setup, IR learning, Bluetooth pairing, backups and the rest live in the full settings pages.</p><p><a href="/#settings">Open full settings</a></p></div>';
-  }},
+  setup: {title:'Setup', tab:'setup', render:renderSetup},
   activity: {title:'Activity', parent:'activities', reserveNotice:true, render:renderActivityRemote},
   edit: {title:'Edit remote', parent:'activity', parentParams:params=>params.slice(0,1), reserveNotice:true, render:renderEditor},
   device: {title:'Device', parent:'devices', reserveNotice:true, render:renderDeviceRemote},
@@ -92,6 +90,16 @@ function activityRow(activity) {
     <button class="row-action" type="button" data-fix="${id}" aria-label="Fix device state for ${name}" title="Fix device state">${icon('RefreshCw')}</button>
     ${running?`<button class="row-action stop" type="button" data-stop aria-label="Stop ${name}" title="Stop">${icon('Square')}</button>`:''}
   </div>`;
+}
+// Setup is a short list of links into the original pages, which keep device
+// setup, IR learning, Bluetooth pairing, activity steps, backups and the rest.
+const SETUP_LINKS = [
+  ['/#devices','Radio','Devices','Add devices, learn IR codes, pair Bluetooth'],
+  ['/#activities','SlidersHorizontal','Activities','Create activities and edit their start and power-off steps'],
+  ['/#settings','Settings','Settings','Controllers, backups, Wi-Fi, MQTT and updates'],
+];
+function renderSetup(ctx) {
+  ctx.content.innerHTML = SETUP_LINKS.map(([href,glyph,name,hint])=>`<div class="row"><a class="row-main" href="${href}"><span class="row-icon neutral">${icon(glyph)}</span><span class="row-text"><strong>${name}</strong><small>${hint}</small></span>${icon('ChevronRight')}</a></div>`).join('');
 }
 function renderActivities(ctx) {
   const activities = state.config.activities||[];

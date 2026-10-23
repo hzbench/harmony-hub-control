@@ -758,4 +758,12 @@ console.log('Editing changes only a local draft in fixed slots; Save is one writ
   state.config={activities:[]};state.session={role:'owner'};context.location.hash='#/devices';show();
   assert.equal(content.onpointerdown,null);assert.equal(content.onkeydown,null);assert.equal(content.oncontextmenu,null);assert.equal(el('header-actions').onclick,null);assert.equal(X.getLeaveGuard(),null);
 }
+// Setup links into the original pages, which still own device setup, activity steps and settings.
+{
+  const content={innerHTML:''};
+  X.screens.setup.render({content,actions:{},params:[],setTitle(){}});
+  assert.deepEqual([...content.innerHTML.matchAll(/<a class="row-main" href="([^"]+)"/g)].map(m=>m[1]),['/#devices','/#activities','/#settings']);
+  assert.match(content.innerHTML,/IR codes/);
+}
+console.log('Setup links into the original pages');
 console.log('Switching screens clears the previous screen’s handlers');
