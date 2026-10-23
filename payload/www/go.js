@@ -414,10 +414,10 @@ function addButton(activity, zone, slot, deviceId, command, corner) {
   list.push({deviceId, command, slot, ...(CORNERS.includes(corner)?{corner}:{})});
   list.sort((a,b)=>a.slot-b.slot);return true;
 }
-// Removing leaves the slot empty; nothing else moves.
-// Taking OK or a corner button out of a complete cross leaves its square empty
-// but still part of the cross, so the slots after it close up: the grid below
-// looks exactly as it did.
+// Removing leaves the slot empty; nothing else moves. The exception: taking OK
+// or a corner button out of a complete cross leaves its square empty but still
+// part of the cross, so the slots after it close up and the grid below looks
+// exactly as it did.
 function removeButton(activity, zone, slot) {
   const list = zoneList(activity, zone), at = list.findIndex(c=>c.slot===slot);
   if(at<0)return false;
@@ -584,10 +584,7 @@ function renderEditor(ctx) {
   // Cancel drops the draft and returns to the remote.
   const cancel = () => {
     if(ui.saving)return;
-    if(layoutShape(draft)!==base){
-      if(!confirm('Discard your unsaved changes?'))return;
-      
-    }
+    if(layoutShape(draft)!==base&&!confirm('Discard your unsaved changes?'))return;
     notice('');location.hash = routeHash('activity',id);
   };
   const openSheet = (zone, slot, corner) => {
