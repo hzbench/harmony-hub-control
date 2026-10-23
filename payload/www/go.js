@@ -9,7 +9,8 @@ const state = {session:null, config:null, devices:[], online:null};
 const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const readLocal = (key, fallback='') => {try{return localStorage.getItem(key) || fallback;}catch{return fallback;}};
 const writeLocal = (key, value) => {try{localStorage.setItem(key,value);}catch{}};
-const TABS = ['activities','devices','setup'];
+const sleep = ms => new Promise(resolve => setTimeout(resolve,ms));
+const icon = name => `<svg aria-hidden="true"><use href="/icons.svg#icon-${escape(name)}"></use></svg>`;
 const CONNECTION_LABEL = {connecting:'Connecting to the hub',online:'Connected to the hub',offline:'Disconnected from the hub. Retrying.'};
 
 // '#/activity/watch%20tv' -> {name:'activity', params:['watch tv']}; anything
@@ -41,6 +42,20 @@ async function api(path, body) {
   } catch(error) {if(error.name==='AbortError'||error instanceof TypeError)connection(false);throw error;}
   finally {clearTimeout(timeout);}
 }
+// Same polling contract as app.js's operation(): resolves with the finished
+// operation, throws if the hub reports it failed.
+async function operation(id, seconds=45) {
+  const deadline=Date.now()+seconds*1000;
+  while(Date.now()<deadline) {
+    const op=await api('operations?id='+encodeURIComponent(id));
+    if(['failed','cancelled','completed'].includes(op.state)) {
+      if(op.state==='failed')throw Error(op.result?.error||'The hub could not complete this.');
+      return op;
+    }
+    await sleep(80);
+  }
+  throw Error('The hub did not finish in time.');
+}
 async function loadDevices() {
   const inventory=await api('devices');state.devices=(inventory.devices||[]).map(d=>({...d,transport:'ir'}));
   const bluetooth=await api('bluetooth/devices');state.devices.push(...(bluetooth.devices||[]).map(d=>({...d,transport:'bluetooth'})));
@@ -50,7 +65,7 @@ const screens = {
   // render(ctx) fills ctx.content; ctx.params are the decoded route params.
   // tab: which bottom tab it belongs to (tab screens show the connectivity
   // icon and no back arrow); parent: where a drill-in screen's back arrow goes.
-  activities: {title:'Activities', tab:'activities', render:ctx=>placeholder(ctx,'Activities are built in the next step.')},
+  activities: {title:'Activities', tab:'activities', render:renderActivities},
   devices: {title:'Devices', tab:'devices', render:ctx=>placeholder(ctx,'Devices are built in a later step.')},
   setup: {title:'Setup', tab:'setup', render:ctx=>{
     ctx.content.innerHTML='<div class="placeholder"><p>Device setup, IR learning, Bluetooth pairing, backups and the rest live in the full settings pages.</p><p><a href="/#settings">Open full settings</a></p></div>';
@@ -58,6 +73,61 @@ const screens = {
   activity: {title:'Activity', parent:'activities', render:ctx=>placeholder(ctx,'The activity remote is built in a later step.')},
   device: {title:'Device', parent:'devices', render:ctx=>placeholder(ctx,'The device remote is built in a later step.')},
 };
+// There is no hub-side "running" activity: like the original UI, the client
+// remembers the last one it started in localStorage.
+const ACTIVITY_KEY = 'harmony-activity';
+const activeActivity = () => state.config?.activities?.find(a=>a.id===readLocal(ACTIVITY_KEY));
+const activityDevices = activity => [...new Set((activity.steps||[]).map(s=>s.deviceId).filter(Boolean))]
+  .map(id=>state.devices.find(d=>d.id===id)?.name).filter(Boolean);
+let activityOperation = null;  // {id, activityId} while a start/stop is in flight
+
+function activityRow(activity) {
+  const running = activeActivity()?.id===activity.id, id = escape(activity.id), name = escape(activity.name);
+  const subtitle = running ? '<span class="running"><span class="dot" aria-hidden="true"></span>Running</span>' : `<small>${escape(activityDevices(activity).join(' · ')||'No devices')}</small>`;
+  return `<div class="row" data-running="${running}">
+    <button class="row-main" type="button" data-open="${id}"><span class="row-icon">${icon('Play')}</span><span class="row-text"><strong>${name}</strong>${subtitle}</span>${running?'':icon('ChevronRight')}</button>
+    <button class="row-action" type="button" data-fix="${id}" aria-label="Fix device state for ${name}" title="Fix device state">${icon('RefreshCw')}</button>
+    ${running?`<button class="row-action stop" type="button" data-stop aria-label="Stop ${name}" title="Stop">${icon('Square')}</button>`:''}
+  </div>`;
+}
+function renderActivities(ctx) {
+  const activities = state.config.activities||[];
+  ctx.content.innerHTML = `${activityOperation?'<div class="busy" role="status"><span>Working…</span><button type="button" data-cancel>Cancel</button></div>':''}
+    <div class="list">${activities.map(activityRow).join('')||'<div class="placeholder"><p>No activities yet. Create one in the full settings pages.</p></div>'}</div>
+    <a class="manage" href="/#activities">${icon('SlidersHorizontal')}Manage activities</a>`;
+  // Starting an activity takes seconds and the user may have navigated away
+  // by the time it finishes: only touch the screen while it is still showing.
+  const onScreen = () => ctx.content.isConnected && parseRoute(location.hash).name==='activities';
+  const redraw = () => {if(onScreen())renderActivities(ctx);};
+  const say = (message, error=false) => {if(onScreen())notice(message,error);};
+  async function run(activityId, {fixState=false}={}) {
+    if(activityOperation)return;
+    if(!state.online)return say('The hub is disconnected. Check the connection before starting an activity.',true);
+    try {
+      const op=await api('activities/run',{activityId,fixState});activityOperation={id:op.id,activityId};redraw();say('');
+      const result=await operation(op.id,180);
+      if(result.state==='completed')return true;
+      say('Cancelled. Device state is unknown.',true);
+    } catch(error) {say(error.message,true);}
+    finally {activityOperation=null;redraw();}
+  }
+  ctx.content.onclick = async event => {
+    const button = event.target.closest('button');if(!button)return;
+    if('cancel' in button.dataset){if(activityOperation)await api('operations',{id:activityOperation.id,action:'cancel'}).catch(error=>say(error.message,true));return;}
+    if(activityOperation)return;
+    if(button.dataset.open){
+      if(activeActivity()?.id===button.dataset.open){location.hash=routeHash('activity',button.dataset.open);return;}
+      if(await run(button.dataset.open)){writeLocal(ACTIVITY_KEY,button.dataset.open);location.hash=routeHash('activity',button.dataset.open);}
+    } else if(button.dataset.fix) {
+      // Re-sends the activity's start steps without the usual skip-if-already-on
+      // logic; the activity counts as running afterwards, and we stay on the list.
+      if(await run(button.dataset.fix,{fixState:true})){writeLocal(ACTIVITY_KEY,button.dataset.fix);redraw();say('Device state fixed. It is still an estimate.');}
+    } else if('stop' in button.dataset) {
+      // "-1" is the hub's power-off request: it runs the running activity's exit steps.
+      if(await run('-1')){writeLocal(ACTIVITY_KEY,'');redraw();}
+    }
+  };
+}
 function placeholder(ctx, text) {ctx.content.innerHTML=`<div class="placeholder"><p>${escape(text)}</p></div>`;}
 
 function show() {

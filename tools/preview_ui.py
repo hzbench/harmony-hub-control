@@ -6,9 +6,13 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1] / "payload/www"
-configuration = {"schemaVersion": 1, "revision": 1, "setupMode": "keep", "layouts": {}, "activities": [], "deviceSetup": {}}
+configuration = {"schemaVersion": 1, "revision": 1, "setupMode": "keep", "layouts": {}, "deviceSetup": {}, "activities": [
+    {"id": "watch", "name": "Watch TV", "steps": [{"deviceId": "1", "command": "PowerOn", "transport": "ir"}], "exitSteps": [{"deviceId": "1", "command": "PowerOff", "transport": "ir"}]},
+    {"id": "music", "name": "Listen to Music", "steps": [{"deviceId": "2", "command": "PowerOn", "transport": "ir"}], "exitSteps": []}]}
 devices = [{"id": "1", "name": "LG C5", "manufacturer": "LG", "model": "C5", "type": "Television",
-            "commands": [{"name": name} for name in ["PowerOn", "PowerOff", "VolumeUp", "VolumeDown", "Mute", "Up", "Down", "Left", "Right", "OK"]]}]
+            "commands": [{"name": name} for name in ["PowerOn", "PowerOff", "VolumeUp", "VolumeDown", "Mute", "Up", "Down", "Left", "Right", "OK"]]},
+           {"id": "2", "name": "Receiver", "manufacturer": "Denon", "model": "X", "type": "Audio",
+            "commands": [{"name": name} for name in ["PowerOn", "PowerOff", "VolumeUp", "VolumeDown", "Mute"]]}]
 
 
 class Preview(BaseHTTPRequestHandler):
@@ -45,6 +49,8 @@ class Preview(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(length))
         if self.path == "/api/v1/commands/send":
             return self.reply({"id": "fixture-no-transmission"})
+        if self.path == "/api/v1/activities/run":
+            return self.reply({"id": "fixture-activity", "state": "completed"}, 202)
         if body.get("revision") != configuration["revision"]:
             return self.reply({"error": "Configuration changed in another browser. Reload before saving."}, 409)
         if self.path == "/api/v1/devices" and body.get("action") == "create-profile":
