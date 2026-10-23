@@ -62,6 +62,7 @@ async function loadDevices() {
   const bluetooth=await api('bluetooth/devices');state.devices.push(...(bluetooth.devices||[]).map(d=>({...d,transport:'bluetooth'})));
 }
 
+const SCREEN_HANDLERS = ['onclick','onpointerdown','onpointermove','onpointerup','onpointercancel','onpointerleave','oncontextmenu','onkeydown'];
 const screens = {
   // render(ctx) fills ctx.content; ctx.params are the decoded route params.
   // tab: which bottom tab it belongs to (tab screens show the connectivity
@@ -72,7 +73,7 @@ const screens = {
     ctx.content.innerHTML='<div class="placeholder"><p>Device setup, IR learning, Bluetooth pairing, backups and the rest live in the full settings pages.</p><p><a href="/#settings">Open full settings</a></p></div>';
   }},
   activity: {title:'Activity', parent:'activities', reserveNotice:true, render:renderActivityRemote},
-  edit: {title:'Edit remote', parent:'activity', parentParams:params=>params.slice(0,1), render:ctx=>placeholder(ctx,'The layout editor is built in a later step.')},
+  edit: {title:'Edit remote', parent:'activity', parentParams:params=>params.slice(0,1), reserveNotice:true, render:renderEditor},
   device: {title:'Device', parent:'devices', reserveNotice:true, render:renderDeviceRemote},
 };
 // There is no hub-side "running" activity: like the original UI, the client
@@ -184,25 +185,63 @@ function resolveCell(c) {
 // Volume is left to the hardware keys, and cells whose device or command no
 // longer exist are skipped.
 const CROSS = ['up','left','ok','right','down'];
+const CORNERS = ['tl','tr','bl','br'];
+const CROSS_SQUARES = ['tl','up','tr','left','ok','right','bl','down','br'];   // the 3x3 block, in reading order
 const HARDWARE_ONLY = ['volumeup','volumedown'];
 // Icons that read as something else out of context (a bare chevron, +, -): the
 // exhaustive device list names these instead.
 const NAMED_IN_LIST = ['volumeup','volumedown','channelup','channeldown'];
-const visibleEntries = cells => (cells||[]).map(cell=>({cell,control:controlFor(cell.command)}))
-  .filter(e=>resolveCell(e.cell)&&!HARDWARE_ONLY.includes(e.control?.[0]));
-function remoteBlocks(cells) {
-  const entries = visibleEntries(cells);
-  const pick = {};
-  for(const slot of CROSS)pick[slot]=entries.find(e=>e.control?.[0]===slot);
-  const crossed = ['up','down','left','right'].every(slot=>pick[slot]);
-  const members = crossed ? new Set(Object.values(pick).filter(Boolean)) : new Set();
-  const blocks = [];
-  for(const entry of entries) {
-    if(members.has(entry)){if(!blocks.some(b=>b.kind==='cross'))blocks.push({kind:'cross',pick});continue;}
-    if(blocks.at(-1)?.kind!=='grid')blocks.push({kind:'grid',entries:[]});
-    blocks.at(-1).entries.push(entry);
+const GRID_SLOTS = 32;  // keep in step with the server's 32-cell limit
+// Buttons carry the grid slot they sit in (`slot`, 0-based). Lists saved before
+// that existed fill the lowest free slots in order. Returns copies, sorted by slot.
+function withSlots(list, capacity) {
+  const used = new Set(), placed = [], loose = [];
+  for(const c of list||[]) {
+    const copy = {...c};
+    if(Number.isInteger(copy.slot)&&copy.slot>=0&&copy.slot<capacity&&!used.has(copy.slot)){used.add(copy.slot);placed.push(copy);}
+    else loose.push(copy);
   }
-  return blocks;
+  let next = 0;
+  for(const copy of loose){while(used.has(next))next++;if(next>=capacity)break;copy.slot=next;used.add(next);placed.push(copy);}
+  return placed.sort((a,b)=>a.slot-b.slot);
+}
+const visibleEntries = (cells, capacity) => withSlots(cells,capacity).map(cell=>({cell,control:controlFor(cell.command),slot:cell.slot}))
+  .filter(e=>resolveCell(e.cell)&&!HARDWARE_ONLY.includes(e.control?.[0]));
+// The cross (when all four arrows exist) comes first. Every other button keeps
+// its place in the grid, so gaps left on purpose stay gaps; the squares the
+// cross's own buttons occupied are not gaps, so they are closed up.
+// The editor draws the same split, so what it shows is what the remote shows.
+// A complete cross is a 3x3 block: the five cross buttons plus up to four
+// corner buttons (cells marked `corner`, which keep a grid slot of their own so
+// they return to the grid if the cross breaks up). A square with no button
+// reserves the highest unused slot (`spare`, where the editor adds one), at the
+// far end of the grid so it never swallows a gap left on purpose.
+function crossSplit(entries, occupied) {
+  const pick = {};
+  for(const key of CROSS)pick[key]=entries.find(e=>e.control?.[0]===key);
+  const crossed = ['up','down','left','right'].every(key=>pick[key]);
+  const members = crossed ? new Set(Object.values(pick).filter(Boolean)) : new Set();
+  const corner = {};
+  if(crossed)for(const key of CORNERS){const e=entries.find(x=>!members.has(x)&&x.cell.corner===key);if(e){corner[key]=e;members.add(e);}}
+  const vacated = [...members].map(e=>e.slot), spare = {};
+  if(crossed){
+    const taken = new Set(occupied);
+    for(const key of ['ok',...CORNERS]){
+      if(pick[key]||corner[key])continue;
+      const slot = Array.from({length:GRID_SLOTS},(_,n)=>GRID_SLOTS-1-n).find(n=>!taken.has(n));
+      if(slot!==undefined){spare[key]=slot;taken.add(slot);vacated.push(slot);}
+    }
+  }
+  const rest = entries.filter(e=>!members.has(e)).map(e=>({...e, slot:e.slot-vacated.filter(v=>v<e.slot).length}));
+  return {crossed, pick, corner, spare, vacated, rest};
+}
+// `crossRow` is how many grid rows sit above the cross (0: at the top).
+const crossRowOf = screen => Number.isInteger(screen?.crossRow)&&screen.crossRow>0 ? Math.min(screen.crossRow,GRID_SLOTS) : 0;
+function remoteBlocks(cells, crossRow=0, columns=4) {
+  const {crossed, pick, corner, rest} = crossSplit(visibleEntries(cells, GRID_SLOTS), new Set(withSlots(cells,GRID_SLOTS).map(c=>c.slot)));
+  const above = rest.filter(e=>Math.floor(e.slot/columns)<crossRow), below = rest.filter(e=>Math.floor(e.slot/columns)>=crossRow);
+  const grid = entries => entries.length?[{kind:'grid',entries}]:[];
+  return crossed ? [...grid(above), {kind:'cross',pick,corner}, ...grid(below)] : grid(rest);
 }
 function cellButton({cell,control}, extra='', customFace='') {
   const label = control?.[1] || cell.command;
@@ -210,15 +249,21 @@ function cellButton({cell,control}, extra='', customFace='') {
   const face = customFace || (control?.[2] ? icon(control[2]) : `<span class="cell-text">${escape(cell.command)}</span>`);
   return `<button class="cell ${extra}" type="button" data-command="${escape(cell.command)}" data-device="${escape(cell.deviceId)}" aria-label="${escape(label)}" title="${escape(label)}">${face}</button>`;
 }
-const crossHtml = pick => `<div class="dpad">${CROSS.map(slot=>pick[slot]?cellButton(pick[slot],slot):'<span></span>').join('')}</div>`;
+const crossHtml = (pick, corner={}) => `<div class="dpad">${CROSS_SQUARES.map(key=>{const e=pick[key]||corner[key];return e?cellButton(e,key):'<span></span>';}).join('')}</div>`;
+// Rows of `columns` slots; a row with no buttons is dropped, gaps inside one stay.
+function gridHtml(entries, columns) {
+  const rows = new Map();
+  for(const e of entries){const row=Math.floor(e.slot/columns);if(!rows.has(row))rows.set(row,[]);rows.get(row).push(e);}
+  const cells = [...rows.keys()].sort((a,b)=>a-b).flatMap(row=>Array.from({length:columns},(_,col)=>{
+    const e = rows.get(row).find(x=>x.slot===row*columns+col);return e?cellButton(e):'<span></span>';}));
+  return `<div class="cells" data-columns="${escape(String(columns))}">${cells.join('')}</div>`;
+}
 function remoteHtml(screen) {
   const columns = screen?.columns || 4;
-  const body = remoteBlocks(screen?.cells).map(block=>block.kind==='cross'
-    ? crossHtml(block.pick)
-    : `<div class="cells" data-columns="${escape(String(columns))}">${block.entries.map(e=>cellButton(e)).join('')}</div>`).join('');
-  // The pinned footer is a plain row in the order it was set: no cross.
-  const pinned = visibleEntries(screen?.pinned);
-  return {body, pinned: pinned.length ? `<div class="cells" data-columns="${escape(String(columns))}">${pinned.map(e=>cellButton(e)).join('')}</div>` : ''};
+  const body = remoteBlocks(screen?.cells,crossRowOf(screen),columns).map(block=>block.kind==='cross'?crossHtml(block.pick,block.corner):gridHtml(block.entries,columns)).join('');
+  // The pinned footer is one row of `columns` slots, in the order set: no cross.
+  const pinned = visibleEntries(screen?.pinned, columns);
+  return {body, pinned: pinned.length ? gridHtml(pinned,columns) : ''};
 }
 
 // A device remote shows every command the device has, exactly once: the usual
@@ -333,14 +378,290 @@ function renderActivityRemote(ctx) {
   ctx.setTitle(activity.name);
   if(owner())ctx.actions.innerHTML=`<a class="header-action" href="${routeHash('edit',activity.id)}" aria-label="Edit remote layout" title="Edit remote layout">${icon('Pencil')}</a>`;
   const {body,pinned}=remoteHtml(activity.screen);
-  ctx.content.innerHTML=`<div class="remote">${body||'<div class="placeholder"><p>No buttons on this remote yet.</p></div>'}</div>${pinned?`<div class="pinned"><div class="pinned-label">Always visible</div>${pinned}</div>`:''}`;
+  ctx.content.innerHTML=`<div class="remote">${body||'<div class="placeholder"><p>No buttons on this remote yet.</p></div>'}</div>${pinned?`<div class="pinned">${pinned}</div>`:''}`;
   bindCommands(ctx.content);
+}
+// ---- Edit remote layout (activities only) ----
+// The editor works on a local draft of activity.screen: `cells` (the scrolling
+// grid) and `pinned` (the footer, at most `columns` buttons). Each button has a
+// fixed `slot`; empty slots are only drawn, so removing a button leaves a hole and
+// adding goes into the slot that was tapped. Edits change the draft only, which
+// lives while the editor is open; Save is the one write to the hub.
+const MAX_CELLS = GRID_SLOTS;
+const screenOf = activity => {
+  activity.screen ||= {columns:4, cells:[]};
+  activity.screen.cells ||= [];
+  activity.screen.pinned ||= [];
+  return activity.screen;
+};
+const zoneList = (activity, zone) => screenOf(activity)[zone];
+const zoneCapacity = (activity, zone) => zone==='pinned' ? (screenOf(activity).columns||4) : MAX_CELLS;
+const isPlaced = (activity, deviceId, command) => ['cells','pinned'].some(zone=>zoneList(activity,zone).some(c=>c.deviceId===deviceId&&c.command===command));
+// Commands of the devices this activity starts, minus ones already on the remote
+// and the volume pair (the hardware keys handle those).
+function availableCommands(activity) {
+  const ids = [...new Set((activity.steps||[]).map(s=>s.deviceId).filter(Boolean))];
+  return ids.flatMap(id=>{
+    const device = state.devices.find(d=>d.id===id);
+    return (device?.commands||[])
+      .filter(c=>!HARDWARE_ONLY.includes(controlFor(c.name)?.[0]) && !isPlaced(activity,device.id,c.name))
+      .map(c=>({device, command:c.name, control:controlFor(c.name)}));
+  });
+}
+function addButton(activity, zone, slot, deviceId, command, corner) {
+  const list = zoneList(activity, zone);
+  if(!(Number.isInteger(slot)&&slot>=0&&slot<zoneCapacity(activity,zone))||list.some(c=>c.slot===slot)||isPlaced(activity,deviceId,command))return false;
+  list.push({deviceId, command, slot, ...(CORNERS.includes(corner)?{corner}:{})});
+  list.sort((a,b)=>a.slot-b.slot);return true;
+}
+// Removing leaves the slot empty; nothing else moves. The exception: taking OK
+// or a corner button out of a complete cross leaves its square empty but still
+// part of the cross, so the slots after it close up and the grid below looks
+// exactly as it did.
+function removeButton(activity, zone, slot) {
+  const list = zoneList(activity, zone), at = list.findIndex(c=>c.slot===slot);
+  if(at<0)return false;
+  let closeUp = false;
+  if(zone==='cells'){
+    const all = list.map(cell=>({cell,control:controlFor(cell.command),slot:cell.slot}));
+    const {crossed, pick, corner} = crossSplit(all, new Set(all.map(e=>e.slot)));
+    closeUp = crossed && [pick.ok,...Object.values(corner)].some(e=>e?.cell===list[at]);
+  }
+  list.splice(at,1);
+  if(closeUp)for(const c of list)if(c.slot>slot)c.slot--;
+  return true;
+}
+// "Add arrow pad": puts the whole cross on the remote in one tap. Arrows already
+// in the grid stay; the missing ones (and OK, when a device has it) come from the
+// activity's devices and take the highest free slots, which leaves the grid as it
+// was because a cross member's slot never shows as a grid square.
+function arrowPadPlan(activity) {
+  const list = zoneList(activity,'cells'), offered = availableCommands(activity);
+  const has = key => list.some(c=>controlFor(c.command)?.[0]===key);
+  if(['up','down','left','right'].every(has))return {add:[], reason:'', crossed:true};
+  const add = [];
+  for(const key of CROSS){
+    if(has(key))continue;
+    const found = offered.find(o=>o.control?.[0]===key);
+    if(found)add.push(found);
+    else if(key!=='ok')return {add:[], reason:'This activity’s devices don’t have all four arrow keys.'};
+  }
+  if(list.length+add.length>MAX_CELLS)return {add:[], reason:'There isn’t room for the arrow pad. Remove a few buttons first.'};
+  return {add, reason:''};
+}
+function addArrowPad(activity) {
+  const {add} = arrowPadPlan(activity), list = zoneList(activity,'cells');
+  const free = Array.from({length:MAX_CELLS},(_,n)=>MAX_CELLS-1-n).filter(n=>!list.some(c=>c.slot===n));
+  if(!add.length||free.length<add.length)return false;
+  add.forEach((o,i)=>addButton(activity,'cells',free[i],o.device.id,o.command));
+  return true;
+}
+// How many slots to draw: out to a full row beyond the last used slot (so there
+// is always somewhere to add), plus any "Add row" rows. `extent` is the highest
+// used slot + 1.
+function editorSlots(zone, extent, columns, extraRows=0, capacity=MAX_CELLS) {
+  if(zone==='pinned')return columns;
+  const total = Math.ceil((extent+1)/columns)*columns + extraRows*columns;
+  return Math.min(total, capacity);
+}
+
+// ---- Draft and save ----
+// Compared as strings to tell whether a layout changed.
+const layoutShape = screen => {const s=cloneScreen(screen);return JSON.stringify([s.columns,s.crossRow,s.cells,s.pinned]);};
+const cloneScreen = screen => {const columns=screen?.columns||4;return {columns, crossRow:crossRowOf(screen), cells:withSlots(screen?.cells,MAX_CELLS), pinned:withSlots(screen?.pinned,columns)};};
+// The editor always starts from the hub's current layout. `base` is that
+// layout: Save later compares the hub against it, not against whatever it is
+// by then, to notice someone else's change.
+function startDraft(activity) {
+  const draft = cloneScreen(activity.screen);
+  return {draft, base:layoutShape(draft)};
+}
+// The single write to the hub. It works from the hub's *current* configuration
+// (this tab's copy may be hours old), refuses to silently overwrite a layout
+// someone else changed since the draft began, and replaces only this
+// activity's layout.
+async function submitLayout(id, draft, base, confirmReplace) {
+  const fresh = await api('configuration');
+  const activity = (fresh.activities||[]).find(a=>a.id===id);
+  if(!activity)throw Error('This activity no longer exists on the hub.');
+  if(layoutShape(activity.screen)!==base&&!confirmReplace())return false;
+  activity.screen = {...(activity.screen||{}), columns:draft.columns, crossRow:draft.crossRow, cells:draft.cells, pinned:draft.pinned};
+  await api('configuration',{revision:fresh.revision, configuration:fresh});
+  state.config = await api('configuration');
+  return true;
+}
+
+function editCellHtml(entry, zone, slot, extra='') {
+  if(!entry)return `<button class="cell empty${extra?' '+extra:''}" type="button" data-zone="${zone}" data-slot="${slot}"${CORNERS.includes(extra)?` data-corner="${extra}"`:''} aria-label="Empty slot. Tap to add a button."><svg aria-hidden="true"><use href="/icons.svg#icon-Plus"></use></svg></button>`;
+  const control = controlFor(entry.command), live = resolveCell(entry);
+  const label = control?.[1] || entry.command;
+  const face = control?.[2] ? icon(control[2]) : `<span class="cell-text">${escape(entry.command)}</span>`;
+  const note = live ? '' : ' (its device or command no longer exists)';
+  return `<button class="cell${extra?' '+extra:''}${live?'':' missing'}" type="button" data-zone="${zone}" data-slot="${slot}" aria-label="${escape(label)}${note}. Press and hold to remove." title="${escape(label)}${note}">${face}</button>`;
+}
+// The scrolling grid is drawn like the remote: the cross (when all four arrows
+// are on the remote) first, then the other buttons with the cross's own squares
+// closed up. Squares are numbered by display position; each carries its real slot.
+function editGridHtml(activity, ui) {
+  const columns = screenOf(activity).columns||4;
+  const all = withSlots(zoneList(activity,'cells'),MAX_CELLS).map(cell=>({cell,control:controlFor(cell.command),slot:cell.slot}));
+  const {crossed, pick, corner, spare, vacated, rest} = crossSplit(all, new Set(all.map(e=>e.slot)));
+  const free = Array.from({length:MAX_CELLS},(_,slot)=>slot).filter(slot=>!vacated.includes(slot));
+  const extent = rest.reduce((most,e)=>Math.max(most,e.slot+1),0);
+  const slots = editorSlots('cells', extent, columns, ui.extraRows, free.length);
+  const squares = Array.from({length:slots},(_,at)=>{const e=rest.find(x=>x.slot===at);return e?editCellHtml(e.cell,'cells',e.cell.slot):editCellHtml(null,'cells',free[at]);});
+  const rows = Array.from({length:Math.ceil(squares.length/columns)},(_,row)=>squares.slice(row*columns,(row+1)*columns));
+  const crossCell = key => {const e=pick[key]||corner[key];return e?editCellHtml(e.cell,'cells',e.cell.slot,key):spare[key]!==undefined?editCellHtml(null,'cells',spare[key],key):'<span></span>';};
+  const at = Math.min(crossRowOf(activity.screen),rows.length);
+  // Items top to bottom: grid rows, the cross at its row, and (while choosing a
+  // spot) a bar before each row and after the last. Neighbouring rows share one grid.
+  const items = [];
+  for(let row=0;row<=rows.length;row++){
+    if(ui.placing&&!(crossed&&row===at))items.push({bar:row});
+    if(crossed&&row===at)items.push({cross:true});
+    if(row<rows.length)items.push({row:rows[row]});
+  }
+  const out = [];let run = [];
+  const flush = () => {if(run.length)out.push(`<div class="cells edit-grid" data-columns="${escape(String(columns))}">${run.join('')}</div>`);run=[];};
+  for(const item of items){
+    if(item.row){run.push(...item.row);continue;}
+    flush();
+    out.push(item.cross?`<div class="dpad">${CROSS_SQUARES.map(crossCell).join('')}</div>`:`<button class="place-bar" type="button" data-place-row="${item.bar}">Place arrow pad here</button>`);
+  }
+  flush();
+  return out.join('');
+}
+function editPinnedHtml(activity) {
+  const list = zoneList(activity,'pinned'), columns = screenOf(activity).columns||4;
+  const cells = Array.from({length:columns},(_,slot)=>editCellHtml(list.find(c=>c.slot===slot)||null,'pinned',slot)).join('');
+  return `<div class="cells edit-grid" data-columns="${escape(String(columns))}">${cells}</div>`;
+}
+function editorHtml(model, ui) {
+  const full = zoneList(model,'cells').length>=MAX_CELLS, pad = arrowPadPlan(model);
+  return `<p class="edit-hint">${ui.placing?'Tap where the arrow pad should go.':'Tap an empty square to add a button. Press and hold a button to remove it. The bottom row stays on screen while you use the remote.'}</p>
+    ${editGridHtml(model,ui)}
+    ${ui.placing?'<button class="add-row" type="button" data-place-cancel>Cancel</button>'
+      :pad.crossed?`<button class="add-row" type="button" data-move-pad>${icon('Plus')}Move arrow pad</button>`
+      :`<button class="add-row" type="button" data-add-pad ${pad.add.length?'':'disabled'}>${icon('Plus')}Add arrow pad</button>${pad.reason?`<p class="edit-hint">${pad.reason}</p>`:''}`}
+    ${full?'<p class="edit-hint">The remote has reached its button limit.</p>':'<button class="add-row" type="button" data-add-row>'+icon('Plus')+'Add row</button>'}
+    <div class="pinned">${editPinnedHtml(model)}</div>`;
+}
+
+const LONG_PRESS_MS = 350, MOVE_SLOP = 10;
+let sheetPushed = false;  // the open add sheet owns one history entry, so Back closes just the sheet
+let leaveGuard = null;  // asked before the back arrow leaves a screen; false keeps you there
+function renderEditor(ctx) {
+  const id = ctx.params[0];
+  const activity = () => (state.config.activities||[]).find(a=>a.id===id);
+  const first = activity();
+  if(!first){ctx.setTitle('Edit remote');return placeholder(ctx,'This activity no longer exists.');}
+  ctx.setTitle('Edit remote');
+  if(!owner())return placeholder(ctx,'Only the hub owner can change remote layouts.');
+  let {draft, base} = startDraft(first);
+  const ui = {extraRows:0, dirty:false, saving:false, placing:false}, sheet = $('sheet');
+  // The helpers below take an activity-shaped object; the draft stands in for its screen.
+  const model = () => ({id, steps:activity()?.steps||first.steps||[], screen:draft});
+  const here = () => ctx.content.isConnected && parseRoute(location.hash).name==='edit' && parseRoute(location.hash).params[0]===id;
+  const draw = focus => {
+    if(!here())return;
+    ui.dirty = layoutShape(draft)!==base;
+    ctx.actions.innerHTML = `<button type="button" class="cancel-button" data-cancel ${ui.saving?'disabled':''}>Cancel</button><button type="button" class="save-button" data-save ${ui.dirty&&!ui.saving?'':'disabled'}>${ui.saving?'Saving…':'Save'}</button>`;
+    ctx.content.innerHTML = `<div class="editor">${editorHtml(model(),ui)}</div>`;
+    if(focus)ctx.content.querySelector(`[data-zone="${focus.zone}"][data-slot="${focus.slot}"]`)?.focus();
+  };
+  // A new edit makes any earlier "Saved." message untrue.
+  const changed = focus => {notice('');draw(focus);};
+  leaveGuard = () => layoutShape(draft)===base || confirm('Leave without saving? Your changes will be lost.');
+  const save = async () => {
+    if(ui.saving||layoutShape(draft)===base)return;
+    ui.saving = true;draw();
+    try {
+      const saved = await submitLayout(id,draft,base,()=>confirm('This remote was changed on another device since you started editing. Replace it with your version?'));
+      if(saved){base=layoutShape(draft);notice('Saved.');}
+    } catch(error) {notice(`Not saved: ${error.message}`,true);}
+    finally {ui.saving=false;draw();}
+  };
+  // Cancel drops the draft and returns to the remote.
+  const cancel = () => {
+    if(ui.saving)return;
+    if(layoutShape(draft)!==base&&!confirm('Discard your unsaved changes?'))return;
+    notice('');location.hash = routeHash('activity',id);
+  };
+  const openSheet = (zone, slot, corner) => {
+    const options = availableCommands(model());
+    sheet.innerHTML = `<div class="sheet-handle" aria-hidden="true"></div><h2 id="sheet-title">Add a button</h2>
+      ${options.length?`<ul class="sheet-list">${options.map((o,i)=>`<li><button type="button" data-pick="${i}"><span class="sheet-icon">${o.control?.[2]?icon(o.control[2]):''}</span>${escape(o.device.name)}: ${escape(o.command)}</button></li>`).join('')}</ul>`
+        :`<p>${(model().steps).some(s=>s.deviceId)?'Every command from this activity’s devices is already on the remote.':'This activity has no devices yet. Add one to its start actions under Manage activities.'}</p>`}
+      <button type="button" class="sheet-cancel" data-sheet-cancel>Cancel</button>`;
+    sheet.onclick = event => {
+      if(event.target===sheet||event.target.closest('[data-sheet-cancel]'))return sheet.close();
+      const pick = event.target.closest('[data-pick]');if(!pick)return;
+      const o = options[+pick.dataset.pick];sheet.close();
+      if(addButton(model(),zone,slot,o.device.id,o.command,corner))changed({zone,slot});
+    };
+    sheet.showModal();
+    history.pushState({sheet:true},'');sheetPushed = true;
+    sheet.onclose = () => {if(sheetPushed){sheetPushed = false;history.back();}};
+    window.onpopstate = () => {if(sheet.open){sheetPushed = false;sheet.close();}};
+  };
+  // Removing leaves an empty slot where the finger was: ignore the click that
+  // the finger lifting would otherwise send to it.
+  let suppressClickUntil = 0;
+  const remove = (button, how) => {
+    if(!here())return;
+    const zone = button.dataset.zone, slot = +button.dataset.slot;
+    if(removeButton(model(),zone,slot)){
+      if(how==='hold'){navigator.vibrate?.(20);suppressClickUntil=Date.now()+700;}
+      changed({zone,slot});
+    }
+  };
+  // Press-and-hold, shorter than Android's own ~400 ms long-press so our haptic is the first one felt.
+  let press = null;
+  const cancelPress = () => {if(press){clearTimeout(press.timer);press=null;}};
+  ctx.content.onpointerdown = event => {
+    const button = event.target.closest('[data-zone]');if(!button||event.button!==0||button.classList.contains('empty'))return;
+    cancelPress();
+    // Chrome sends pointercancel as soon as a pan starts, even for a few pixels of finger
+    // drift, so a cancel alone doesn't end the press; only an actual scroll does.
+    const scrollY = window.scrollY;
+    press = {button, x:event.clientX, y:event.clientY, timer:setTimeout(()=>{const b=press.button;press=null;if(window.scrollY===scrollY)remove(b,'hold');},LONG_PRESS_MS)};
+  };
+  ctx.content.onpointermove = event => {if(press&&Math.hypot(event.clientX-press.x,event.clientY-press.y)>MOVE_SLOP)cancelPress();};
+  ['onpointerup','onpointerleave'].forEach(name=>{ctx.content[name]=cancelPress;});
+  ctx.content.oncontextmenu = event => event.preventDefault();
+  // Keyboard has no long-press: Delete/Backspace removes the focused button. An
+  // empty slot opens the add sheet from its normal click (Enter/Space included).
+  ctx.content.onkeydown = event => {
+    const button = event.target.closest?.('[data-zone]');
+    if(!button||button.classList.contains('empty')||!['Delete','Backspace'].includes(event.key))return;
+    event.preventDefault();remove(button,'key');
+  };
+  ctx.content.onclick = event => {
+    const slotButton = event.target.closest('[data-zone]');
+    if(slotButton?.classList.contains('empty')){
+      if(Date.now()>=suppressClickUntil&&here())openSheet(slotButton.dataset.zone,+slotButton.dataset.slot,slotButton.dataset.corner);
+    } else if(event.target.closest('[data-add-pad]')){ui.placing='add';draw();}
+    else if(event.target.closest('[data-move-pad]')){ui.placing='move';draw();}
+    else if(event.target.closest('[data-place-cancel]')){ui.placing=false;draw();}
+    else if(event.target.closest('[data-place-row]')){
+      const row = +event.target.closest('[data-place-row]').dataset.placeRow;
+      if(ui.placing==='add'&&!addArrowPad(model())){ui.placing=false;draw();return;}
+      draft.crossRow = row;ui.placing = false;changed();
+    }
+    else if(event.target.closest('[data-add-row]')){ui.extraRows++;draw();}
+  };
+  ctx.actions.onclick = event => {if(event.target.closest('[data-save]'))save();else if(event.target.closest('[data-cancel]'))cancel();};
+  draw();
 }
 function placeholder(ctx, text) {ctx.content.innerHTML=`<div class="placeholder"><p>${escape(text)}</p></div>`;}
 
 function show() {
   const {name, params} = parseRoute(location.hash), screen = screens[name], ctx = {params, content:$('content'), actions:$('header-actions'), setTitle};
   stopHold(false);
+  for(const handler of SCREEN_HANDLERS)ctx.content[handler]=null;
+  ctx.actions.onclick=null;leaveGuard=null;
+  window.onpopstate=null;sheetPushed=false;
+  if($('sheet')){$('sheet').onclose=null;if($('sheet').open)$('sheet').close();}
   function setTitle(text) {$('title').textContent=text;document.title=text+' · Harmony Remote';}
   $('header-actions').innerHTML='';
   setTitle(screen.title);
@@ -388,7 +709,7 @@ async function pollSession() {
 
 if(typeof document!=='undefined'&&$('content')) {
   window.addEventListener('hashchange',()=>{if(state.config)show();});
-  $('back').addEventListener('click',()=>{location.hash=$('back').dataset.href||routeHash('activities');});
+  $('back').addEventListener('click',()=>{if(leaveGuard&&!leaveGuard())return;location.hash=$('back').dataset.href||routeHash('activities');});
   $('connection').addEventListener('click',()=>{connection(null);boot();});
   sessionTimer=setTimeout(pollSession,15000);
   boot();
