@@ -309,8 +309,23 @@ def run():
             assert request("devices", cookie=cookie)[1]["devices"][0]["commands"][0]["name"] == "PowerOff"
             configuration = request("configuration", cookie=cookie)[1]
             configuration["layouts"][device_id] = [{"slot": "volumeup", "label": "Volume", "command": "VolumeUp"}]
-            configuration["activities"] = [{"id": "watch", "name": "Watch TV", "steps": [], "exitSteps": [], "buttons": [{"slot": "volumeup", "deviceId": device_id, "command": "VolumeUp", "label": "Volume"}]}]
+            configuration["activities"] = [{"id": "watch", "name": "Watch TV", "steps": [], "exitSteps": [], "screen": {"columns": 2, "cells": [{"deviceId": device_id, "command": "VolumeUp", "label": "Volume"}]}}]
             assert request("configuration", {"revision": 6, "configuration": configuration}, cookie, csrf)[0] == 200
+            # The custom-screen field is validated server-side, not just by the client UI.
+            bad_columns = json.loads(json.dumps(configuration)); bad_columns["activities"][0]["screen"]["columns"] = 0
+            assert request("configuration", {"revision": 7, "configuration": bad_columns}, cookie, csrf)[0] == 400
+            too_many_cells = json.loads(json.dumps(configuration)); too_many_cells["activities"][0]["screen"]["cells"] = [{"deviceId": device_id, "command": "VolumeUp"}] * 33
+            assert request("configuration", {"revision": 7, "configuration": too_many_cells}, cookie, csrf)[0] == 400
+            # Each individual cell is within the per-field length limits and the array
+            # is within the 32-cell cap, but 32 cells this large still serialize past
+            # the runtime 7000-byte limit activities/run enforces - the whole-activity
+            # size check must catch what the per-field/array checks alone would miss.
+            oversized_cells = json.loads(json.dumps(configuration))
+            oversized_cells["activities"][0]["screen"]["cells"] = [
+                {"deviceId": "d" * 64, "command": "c" * 127, "label": "l" * 64} for _ in range(32)]
+            assert len(json.dumps(oversized_cells["activities"][0])) > 7000
+            assert request("configuration", {"revision": 7, "configuration": oversized_cells}, cookie, csrf)[0] == 400
+            assert request("configuration", cookie=cookie)[1]["revision"] == 7
             assert request("commands/save", {"revision": 7, "deviceId": device_id, "oldName": "PowerOff", "name": "Off", "mode": "nec", "protocol": "2", "nec": "20DFA35C"}, cookie, csrf)[0] == 200
             assert request("devices", {"revision": 8, "deviceId": device_id, "action": "delete"}, cookie, csrf)[0] == 200
             assert request("devices", cookie=cookie)[1]["devices"] == []

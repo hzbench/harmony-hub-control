@@ -583,6 +583,16 @@ done:
     if (lock >= 0) close(lock); cJSON_Delete(pairs); cJSON_Delete(out);
 }
 
+/* Shared per-cell shape check for both the legacy per-slot `buttons` layout
+   and the newer free-form `screen.cells` grid - both place a device command
+   with an optional display label. */
+static int local_validate_cell(const cJSON *b) {
+    return cJSON_IsObject(b) &&
+        safe_label(lj_str(b, "deviceId")) && strlen(lj_str(b, "deviceId")) <= 64 &&
+        safe_label(lj_str(b, "command")) && strlen(lj_str(b, "command")) <= 127 &&
+        strlen(lj_str(b, "label")) <= 64;
+}
+
 static int local_validate_config(const cJSON *o) {
     cJSON *activities = lj_get(o, "activities"), *layouts = lj_get(o, "layouts"), *a, *b;
     cJSON *revision = lj_get(o, "revision"); const char *mode = lj_str(o, "setupMode");
@@ -610,16 +620,37 @@ static int local_validate_config(const cJSON *o) {
     }
     cJSON_ArrayForEach(a, activities) {
         cJSON *steps = lj_get(a, "steps"), *exits = lj_get(a, "exitSteps"), *buttons = lj_get(a, "buttons"); int total = 0, pass;
+        cJSON *screen = lj_get(a, "screen");
         if (!safe_run_id(lj_str(a, "id")) || strlen(lj_str(a, "id")) > 64 || !safe_label(lj_str(a, "name")) || strlen(lj_str(a, "name")) > 64) return 0;
         for (b = a->next; b; b = b->next) if (strcmp(lj_str(a, "id"), lj_str(b, "id")) == 0) return 0;
         if (!cJSON_IsArray(steps) || cJSON_GetArraySize(steps) > 64 || !cJSON_IsArray(exits) || cJSON_GetArraySize(exits) > 64) return 0;
+        /* `buttons` is the pre-existing per-slot layout `screen` replaced for
+           new activities; it's kept here, unmigrated, only so activities
+           saved under the old system continue to validate and round-trip
+           until something actually migrates or retires that data (see the
+           `screen` comment below). */
         if (buttons && (!cJSON_IsArray(buttons) || cJSON_GetArraySize(buttons) > 32)) return 0;
         cJSON_ArrayForEach(b, buttons) {
             cJSON *other;
-            if (!safe_run_id(lj_str(b, "slot")) || strlen(lj_str(b, "slot")) > 32 ||
-                !safe_label(lj_str(b, "deviceId")) || strlen(lj_str(b, "deviceId")) > 64 ||
-                !safe_label(lj_str(b, "command")) || strlen(lj_str(b, "command")) > 127 || strlen(lj_str(b, "label")) > 64) return 0;
+            if (!safe_run_id(lj_str(b, "slot")) || strlen(lj_str(b, "slot")) > 32 || !local_validate_cell(b)) return 0;
             for (other = b->next; other; other = other->next) if (!strcmp(lj_str(b, "slot"), lj_str(other, "slot"))) return 0;
+        }
+        /* The free-form per-activity remote screen (custom button grid).
+           Activities saved under the older per-slot `buttons` system above
+           have no `screen` field and are not migrated to one - both fields
+           can coexist unused on old data; nothing currently reads `buttons`
+           for display once `screen` exists.
+           The 32-cell array cap below is a cheap early bound, not the
+           real guarantee - 32 cells at the per-field length limits above
+           serialize well past local_activity_run()'s 7000-byte runtime
+           cap, so the actual protection is the whole-activity size check
+           at the end of this loop, which mirrors that runtime check
+           exactly. */
+        if (screen) {
+            cJSON *cells = lj_get(screen, "cells"); int columns = lj_int(screen, "columns", 0);
+            if (!cJSON_IsObject(screen) || columns < 1 || columns > 4 ||
+                !cJSON_IsArray(cells) || cJSON_GetArraySize(cells) > 32) return 0;
+            cJSON_ArrayForEach(b, cells) if (!local_validate_cell(b)) return 0;
         }
         for (pass = 0; pass < 2; pass++) cJSON_ArrayForEach(b, (pass ? exits : steps)) {
             int delay = lj_int(b, "delayMs", 0);
@@ -630,6 +661,11 @@ static int local_validate_config(const cJSON *o) {
                  (strcmp(lj_str(b, "transport"), "ir") && strcmp(lj_str(b, "transport"), "bluetooth")))) return 0;
         }
         if (total > 120000) return 0;
+        /* Mirrors local_activity_run()'s own 7000-byte check on the same
+           cJSON_Duplicate(a,1)-equivalent object, with headroom for the
+           ~17 bytes it adds for "fixState" at run time - so an activity
+           that passes validation here can never hit that 413 later. */
+        { char *raw = cJSON_PrintUnformatted(a); int oversized = !raw || strlen(raw) > 6900; free(raw); if (oversized) return 0; }
     }
     return 1;
 }

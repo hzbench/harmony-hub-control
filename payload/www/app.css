@@ -62,6 +62,12 @@ main{min-width:0;padding:30px 40px 60px}
 .remote-pairs button{width:100%;height:52px}
 .remote .playback{display:flex;gap:8px;margin:16px 0 0}
 .playback button{flex:1;min-width:0;padding:10px 0;height:48px}
+.screen-grid{display:grid;gap:10px;margin:16px 0;grid-template-columns:repeat(1,1fr)}
+.screen-grid[data-columns="2"]{grid-template-columns:repeat(2,1fr)}
+.screen-grid[data-columns="3"]{grid-template-columns:repeat(3,1fr)}
+.screen-grid[data-columns="4"]{grid-template-columns:repeat(4,1fr)}
+.screen-grid button{min-height:64px;text-align:center}
+.screen-cell.wide{grid-column:1/-1}
 .remote-footer{display:flex;justify-content:center;gap:10px;margin-top:16px}
 .remote-footer button{display:flex;align-items:center;justify-content:center;gap:8px}
 .icon-button{width:48px;flex-shrink:0;padding:10px;display:grid;place-items:center}

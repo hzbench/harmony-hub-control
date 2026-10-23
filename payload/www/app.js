@@ -46,6 +46,10 @@ const controls = [
   ['channelup','Channel up','ChevronUp',['channelup','programup','pageup','chnext']],['channeldown','Channel down','ChevronDown',['channeldown','programdown','pagedown','chprev']],
   ['rewind','Rewind','Rewind',['rewind','rew']],['play','Play','Play',['play','playpause']],['pause','Pause','Pause',['pause']],['stop','Stop','Square',['stop']],['forward','Fast forward','FastForward',['fastforward','forward']]
 ];
+// Named so a caller that already has a command name in hand (rather than
+// a device's command list to search, like matchCommand() below) doesn't
+// have to re-derive this same norm()-against-aliases comparison inline.
+const aliasMatches = (name,aliases) => aliases.includes(norm(name));
 function matchCommand(commands,aliases) {return aliases.map(alias=>commands.find(c=>norm(c.name)===alias)).find(Boolean);}
 function defaultLayout(commands) {
   return controls.map(([slot,label,,aliases])=>{const command=matchCommand(commands,aliases)?.name;
@@ -55,34 +59,80 @@ function defaultLayout(commands) {
 }
 function activeDevice() {return state.devices.find(d=>d.id===readLocal('harmony-device'))||state.devices[0];}
 function activeActivity() {return state.config?.activities?.find(a=>a.id===readLocal('harmony-activity'));}
-function remoteButton(slot,device) {
-  const [key,label,image,aliases]=controls.find(c=>c[0]===slot);
-  const face=text=>image?icon(image)+(['power','poweron','poweroff','input'].includes(key)?`<span class="label">${escape(text===label?({poweron:'On',poweroff:'Off'}[key]||label):text)}</span>`:''):escape(text);
-  const assignment=activeActivity()?.buttons?.find(b=>b.slot===key);
-  if(activeActivity()) {
-    if(!assignment||!state.devices.find(d=>d.id===assignment.deviceId)?.commands.some(c=>c.name===assignment.command))return '';
-    return `<button class="${key}" data-command="${escape(assignment.command)}" data-device="${escape(assignment.deviceId)}" aria-label="${escape(assignment.label||label)}" title="${escape(assignment.label||label)}">${face(assignment.label||label)}</button>`;
-  }
+// Shared by remoteButton() and window.harmonyHardwareVolume() so both
+// agree on what a device's slot resolves to, including a saved custom
+// layout suppressing a slot the owner removed (previously only
+// remoteButton enforced this — the hardware-key path could fire a
+// command for a button the owner had explicitly hidden).
+function resolveSlotCommand(device,key,aliases) {
   const custom=state.config?.layouts?.[device.id]?.find(c=>c.slot===key);
   const layout=state.config?.layouts?.[device.id];
   const command=custom?device.commands.find(c=>c.name===custom.command):layout?null:matchCommand(device.commands,aliases);
+  return {command,custom};
+}
+// Shared by cellButton() (render) and window.harmonyHardwareVolume()'s
+// activity branch, which both need to turn a screen cell's stored
+// {deviceId,command} back into the live device/command it refers to -
+// and silently skip a cell whose device or command no longer exists
+// (e.g. the device was deleted) rather than acting on a stale reference.
+function resolveCell(c) {
+  const device=state.devices.find(d=>d.id===c.deviceId);
+  const command=device?.commands.find(cmd=>cmd.name===c.command);
+  return command?{device,command}:null;
+}
+// Shared by the device-layout editor and the activity-screen editor's
+// move-up/move-down buttons, which were previously two copies of the
+// same swap-and-redraw logic over different arrays.
+function bindReorder(root,selector,datasetKey,array,draw) {
+  root.querySelectorAll(selector).forEach(e=>e.onclick=()=>{const i=+e.dataset[datasetKey],j=i+(+e.dataset.direction);[array[i],array[j]]=[array[j],array[i]];draw();});
+}
+function remoteButton(slot,device) {
+  const [key,label,image,aliases]=controls.find(c=>c[0]===slot);
+  const face=text=>image?icon(image)+(['power','poweron','poweroff','input'].includes(key)?`<span class="label">${escape(text===label?({poweron:'On',poweroff:'Off'}[key]||label):text)}</span>`:''):escape(text);
+  const {command,custom}=resolveSlotCommand(device,key,aliases);
   if(!command) return '';
   return `<button class="${escape(key)}" data-command="${escape(command.name)}" data-device="${escape(device.id)}" aria-label="${escape(custom?.label||label)}" title="${escape(custom?.label||label)}">${face(custom?.label||label)}</button>`;
 }
+// Shared by renderRemote() and renderActivityScreen() — both render the
+// same #selected-device dropdown and must react to it identically.
+function bindSelectedDeviceChange() {
+  $('selected-device').addEventListener('change',e=>{if(e.target.value.startsWith('activity:'))writeLocal('harmony-activity',e.target.value.slice(9));else{writeLocal('harmony-activity','');writeLocal('harmony-device',e.target.value);}renderRemote();});
+}
 function renderRemote() {
+  const activity=activeActivity();
+  if(activity)return renderActivityScreen(activity);
   const device=activeDevice();
   if(!device){mount(`<div class="empty"><h2>No devices yet</h2>${owner()?'<button data-action="add-device" class="primary">Add a device</button>':'<p>The owner has not added any devices.</p>'}</div>`);return;}
   writeLocal('harmony-device',device.id);
   const btn=slot=>remoteButton(slot,device);
-  const activity=activeActivity();
-  mount(`<div class="remote"><label for="selected-device">${activity?'Activity':'Device'}</label><select id="selected-device"><optgroup label="Devices">${deviceOptions(activity?'':device.id)}</optgroup>${state.config.activities.length?'<optgroup label="Activities">'+state.config.activities.map(a=>`<option value="activity:${escape(a.id)}" ${a.id===activity?.id?'selected':''}>${escape(a.name)}</option>`).join('')+'</optgroup>':''}</select>
+  mount(`<div class="remote"><label for="selected-device">Device</label><select id="selected-device"><optgroup label="Devices">${deviceOptions(device.id)}</optgroup>${state.config.activities.length?'<optgroup label="Activities">'+state.config.activities.map(a=>`<option value="activity:${escape(a.id)}">${escape(a.name)}</option>`).join('')+'</optgroup>':''}</select>
     <div class="remote-top">${btn('poweron')||btn('power')}${btn('poweroff')}${btn('input')}</div>
     <div class="dpad">${['up','left','ok','right','down'].map(btn).join('')}</div>
     <div class="remote-group">${['back','home','menu','mute'].map(btn).join('')}</div>
     <div class="remote-pairs"><div>${btn('volumeup')||btn('volumedown')?'<small>Volume</small>':''}${btn('volumeup')}${btn('volumedown')}</div><div>${btn('channelup')||btn('channeldown')?'<small>Channel</small>':''}${btn('channelup')}${btn('channeldown')}</div></div>
     <div class="playback">${['rewind','play','pause','stop','forward'].map(btn).join('')}</div>
-    <div class="remote-footer"><button data-action="drawer">${icon('List')}<span class="label">All commands</span></button>${owner()?'<button data-action="'+(activity?'edit-activity':'layout')+'" data-id="'+escape(activity?.id||'')+'" class="icon-button" aria-label="Edit remote buttons" title="Edit remote buttons">'+icon('SlidersHorizontal')+'</button>':''}</div></div>`);
-  $('selected-device').addEventListener('change',e=>{if(e.target.value.startsWith('activity:'))writeLocal('harmony-activity',e.target.value.slice(9));else{writeLocal('harmony-activity','');writeLocal('harmony-device',e.target.value);}renderRemote();});
+    <div class="remote-footer"><button data-action="drawer">${icon('List')}<span class="label">All commands</span></button>${owner()?'<button data-action="layout" class="icon-button" aria-label="Edit remote buttons" title="Edit remote buttons">'+icon('SlidersHorizontal')+'</button>':''}</div></div>`);
+  bindSelectedDeviceChange();
+  bindCommands($('content'));
+}
+function renderActivityScreen(activity) {
+  // Known gap: activities saved under the pre-existing per-slot `buttons`
+  // assignment system have no `screen` field and are not migrated here —
+  // this just falls back to an empty screen, so their old button layout
+  // (and hardware-volume routing, which also only reads `screen.cells`)
+  // silently disappears after upgrading. No real activities exist on an
+  // unrooted hub yet, so this is deferred rather than fixed now; revisit
+  // before this ships to a hub that has `buttons`-based activities saved.
+  const screen=activity.screen||{columns:2,cells:[]};
+  const cellButton=c=>{
+    if(!resolveCell(c))return '';
+    return `<button class="screen-cell${c.wide?' wide':''}" data-command="${escape(c.command)}" data-device="${escape(c.deviceId)}" aria-label="${escape(c.label||c.command)}" title="${escape(c.label||c.command)}">${escape(c.label||c.command)}</button>`;
+  };
+  const cells=(screen.cells||[]).map(cellButton).join('');
+  mount(`<div class="remote"><label for="selected-device">Activity</label><select id="selected-device">${state.devices.length?'<optgroup label="Devices">'+deviceOptions('')+'</optgroup>':''}<optgroup label="Activities">${state.config.activities.map(a=>`<option value="activity:${escape(a.id)}" ${a.id===activity.id?'selected':''}>${escape(a.name)}</option>`).join('')}</optgroup></select>
+    ${cells?`<div class="screen-grid" data-columns="${escape(String(screen.columns||2))}">${cells}</div>`:`<div class="empty"><p>No buttons on this activity's screen yet.</p></div>`}
+    <div class="remote-footer"><button data-action="drawer">${icon('List')}<span class="label">All commands</span></button>${owner()?'<button data-action="edit-activity" data-id="'+escape(activity.id)+'" class="icon-button" aria-label="Edit remote buttons" title="Edit remote buttons">'+icon('SlidersHorizontal')+'</button>':''}</div></div>`);
+  bindSelectedDeviceChange();
   bindCommands($('content'));
 }
 async function operation(id, seconds=45) {
@@ -103,6 +153,49 @@ async function tap(button) {
   try {notice('Sending...');const op=await api('commands/send',{deviceId:device.id,command:button.dataset.command,transport:device.transport,mode:'tap'});const result=await operation(op.id);notice(result.state==='completed'?'Sent to the hub.':'Command cancelled.');}
   catch(error){notice(error.message,true);}
 }
+// Hardware volume-key support for the Android WebView wrapper (foreground
+// only - see that app's MainActivity.onKeyDown). Resolves the current
+// device/activity's volumeup/volumedown slot the same way remoteButton()
+// does (via the shared resolveSlotCommand), then sends through the same
+// path tap() uses.
+let hardwareVolumeBusy = false;
+window.harmonyHardwareVolume = function(direction) {
+  if (!state.online || !state.config || !state.devices.length || hardwareVolumeBusy) return;
+  const slot = direction === 'up' ? 'volumeup' : 'volumedown';
+  const [key,,,aliases] = controls.find(c => c[0] === slot);
+  const activity = activeActivity();
+  let deviceId, command;
+  if (activity) {
+    // Same `buttons`-migration gap as renderActivityScreen() above. Also
+    // skips a cell whose device/command no longer exist (e.g. the device
+    // was deleted) instead of silently sending to a stale deviceId, same
+    // as cellButton()'s render-time check; keeps looking at the next
+    // alias-matching cell rather than giving up on the first stale one.
+    // Known, accepted limitation: if an activity's screen has volume
+    // cells for two different devices (e.g. a TV and a soundbar both
+    // have one), this always picks whichever appears first in `cells` -
+    // there's no UI for the owner to say which one the hardware key
+    // should control.
+    const resolved = (activity.screen?.cells||[])
+      .filter(c => aliasMatches(c.command,aliases))
+      .map(c => ({deviceId: c.deviceId, resolved: resolveCell(c)}))
+      .find(r => r.resolved);
+    if (!resolved) return;
+    deviceId = resolved.deviceId; command = resolved.resolved.command.name;
+  } else {
+    const device = activeDevice();
+    if (!device) return;
+    const {command: resolved} = resolveSlotCommand(device, key, aliases);
+    if (!resolved) return;
+    deviceId = device.id; command = resolved.name;
+  }
+  const device = state.devices.find(d => d.id === deviceId);
+  hardwareVolumeBusy = true;
+  api('commands/send', {deviceId, command, transport: device?.transport || 'ir', mode: 'tap'})
+    .then(op => operation(op.id))
+    .catch(error => notice(error.message, true))
+    .finally(() => { hardwareVolumeBusy = false; });
+};
 function stopHold(tapOnRelease=false) {
   const hold=state.hold;if(!hold)return;
   state.hold=null;hold.stopped=true;clearTimeout(hold.timer);clearInterval(hold.renew);
@@ -145,7 +238,7 @@ function bindCommands(root) {
 document.addEventListener('visibilitychange',()=>{if(document.hidden)stopHold(false);});
 function drawer() {
   const activity=activeActivity();
-  if(activity){const draw=()=>{stopHold(false);$('extra-commands').innerHTML=(activity.buttons||[]).filter(b=>(b.label||b.command).toLowerCase().includes($('command-search').value.toLowerCase())).map(b=>`<button data-device="${escape(b.deviceId)}" data-command="${escape(b.command)}">${escape(b.label||b.command)}</button>`).join('')||'<p class="no-results">No matching commands.</p>';bindCommands($('extra-commands'));};$('command-search').value='';$('command-search').oninput=draw;draw();$('drawer').showModal();$('command-search').focus();return;}
+  if(activity){const draw=()=>{stopHold(false);$('extra-commands').innerHTML=(activity.screen?.cells||[]).filter(b=>(b.label||b.command).toLowerCase().includes($('command-search').value.toLowerCase())).map(b=>`<button data-device="${escape(b.deviceId)}" data-command="${escape(b.command)}">${escape(b.label||b.command)}</button>`).join('')||'<p class="no-results">No matching commands.</p>';bindCommands($('extra-commands'));};$('command-search').value='';$('command-search').oninput=draw;draw();$('drawer').showModal();$('command-search').focus();return;}
   const device=activeDevice();if(!device)return;
   const priority=(state.config.layouts[device.id]||[]).map(c=>c.command);
   const ordered=[...device.commands].sort((a,b)=>{const ai=priority.indexOf(a.name),bi=priority.indexOf(b.name);return (ai<0?1000:ai)-(bi<0?1000:bi);});
@@ -213,7 +306,7 @@ function renderLayout() {
     $('add-assignment').onclick=()=>{const control=controls.find(c=>!rows.some(r=>r.slot===c[0]));if(!control)return notice('Every remote control has an assignment.',true);rows.push({slot:control[0],label:control[1],command:''});draw();};
     $('content').querySelectorAll('[data-label]').forEach(e=>e.oninput=()=>rows[+e.dataset.label].label=e.value);
     $('content').querySelectorAll('[data-layout-command]').forEach(e=>e.onchange=()=>rows[+e.dataset.layoutCommand].command=e.value);
-    $('content').querySelectorAll('[data-move]').forEach(e=>e.onclick=()=>{const i=+e.dataset.move,j=i+(+e.dataset.direction);[rows[i],rows[j]]=[rows[j],rows[i]];draw();});
+    bindReorder($('content'),'[data-move]','move',rows,draw);
     $('layout-form').onsubmit=async e=>{e.preventDefault();await busy(e.submitter,'Saving...',async()=>{const config=structuredClone(state.config);config.layouts[device.id]=rows.filter(r=>r.command);await saveConfig(config);writeLocal('harmony-device',device.id);writeLocal('harmony-activity','');show('remote');notice('Remote buttons saved.');});};
   };draw();
 }
@@ -380,16 +473,23 @@ function activityStep(step,group,index) {
   return `<div class="activity-step"><div class="step-row"><div><label for="${id}-device">Device</label><select id="${id}-device" data-step="${ref}" data-key="deviceId"><option value="">Delay only</option>${deviceOptions(step.deviceId)}</select></div><div><label for="${id}-delay">${step.deviceId?'Delay after (ms)':'Delay (ms)'}</label><input id="${id}-delay" type="number" min="0" max="30000" step="100" data-step="${ref}" data-key="delayMs" value="${step.delayMs||0}"></div><button type="button" data-remove="${ref}" class="icon-button" title="Remove action">${icon('Minus')}</button></div>${step.deviceId?`<div class="fields"><div><label for="${id}-command">Command</label><select id="${id}-command" data-step="${ref}" data-key="command">${commandOptions(step.deviceId,step.command)}</select></div><div><label for="${id}-role">Action type</label><select id="${id}-role" data-step="${ref}" data-key="role"><option value="command">Command</option><option value="power-on" ${step.role==='power-on'?'selected':''}>Discrete power on</option><option value="power-off" ${step.role==='power-off'?'selected':''}>Power off</option><option value="input" ${step.role==='input'?'selected':''}>Input</option></select></div></div>`:''}</div>`;
 }
 function renderActivityEditor(activity=null) {
-  const value=structuredClone(activity||{id:'activity-'+Date.now().toString(36),name:'',steps:[],exitSteps:[],buttons:[]});
-  value.buttons ||= [];
+  const value=structuredClone(activity||{id:'activity-'+Date.now().toString(36),name:'',steps:[],exitSteps:[],screen:{columns:2,cells:[]}});
+  value.screen ||= {columns:2,cells:[]};
+  value.screen.cells ||= [];
   const draw=()=>{
     mount(`<div class="editor"><h2>${activity?'Edit activity':'Add activity'}</h2><form id="activity-form">${field('Name','activity-name',value.name,'text','required maxlength="64"')}${['steps','exitSteps'].map(group=>`<section class="section"><h3>${group==='steps'?'Start actions':'Power-off actions'}</h3>${value[group].map((step,i)=>activityStep(step,group,i)).join('')}<button type="button" data-add-step="${group}">${icon('Plus')} Add action</button></section>`).join('')}<div class="toolbar"><button class="primary">Save activity</button><button type="button" data-action="activities">Cancel</button>${activity?'<button type="button" data-action="delete-activity" data-id="'+escape(activity.id)+'" class="danger">Delete activity</button>':''}</div></form></div>`);
     const section=document.createElement('section');section.className='section';
-    section.innerHTML=`<h3>Remote buttons</h3>${value.buttons.map((b,i)=>`<div class="button-assignment"><label for="activity-slot-${i}">Control</label><select id="activity-slot-${i}" data-activity-button="${i}" data-key="slot">${controls.map(([slot,label])=>`<option value="${slot}" ${slot===b.slot?'selected':''}>${label}</option>`).join('')}</select><div class="fields"><div><label for="activity-device-${i}">Device</label><select id="activity-device-${i}" data-activity-button="${i}" data-key="deviceId">${deviceOptions(b.deviceId)}</select></div><div><label for="activity-command-${i}">Command</label><select id="activity-command-${i}" data-activity-button="${i}" data-key="command">${commandOptions(b.deviceId,b.command)}</select></div></div><label for="activity-label-${i}">Label</label><input id="activity-label-${i}" value="${escape(b.label||'')}" maxlength="64" data-activity-button="${i}" data-key="label"><button type="button" data-remove-activity-button="${i}" class="icon-button" title="Remove button">${icon('Minus')}</button></div>`).join('')}<button type="button" id="add-activity-button">${icon('Plus')} Assign button</button>`;
+    const screen=value.screen;
+    const screenDevices=[...new Set(value.steps.map(s=>s.deviceId).filter(Boolean))].map(id=>state.devices.find(d=>d.id===id)).filter(Boolean);
+    const available=screenDevices.flatMap(d=>d.commands.filter(c=>!screen.cells.some(cell=>cell.deviceId===d.id&&cell.command===c.name)).map(c=>({device:d,command:c})));
+    section.innerHTML=`<h3>Custom remote screen</h3><p>Buttons are built from the devices used in this activity's start actions above.</p><label for="screen-columns">Columns</label><select id="screen-columns">${[1,2,3,4].map(n=>`<option value="${n}" ${n===(screen.columns||2)?'selected':''}>${n}</option>`).join('')}</select>${screen.cells.map((c,i)=>`<div class="button-assignment"><small>${escape(state.devices.find(d=>d.id===c.deviceId)?.name||'Unknown device')}: ${escape(c.command)}</small><div class="reorder"><input aria-label="Button label" placeholder="${escape(c.command)}" value="${escape(c.label||'')}" data-screen-label="${i}" maxlength="64"><label class="check-label"><input type="checkbox" data-screen-wide="${i}" ${c.wide?'checked':''}> Full width</label><button type="button" data-screen-move="${i}" data-direction="-1" class="icon-button" title="Move up" ${!i?'disabled':''}>${icon('ChevronUp')}</button><button type="button" data-screen-move="${i}" data-direction="1" class="icon-button" title="Move down" ${i===screen.cells.length-1?'disabled':''}>${icon('ChevronDown')}</button></div><button type="button" data-screen-remove="${i}" class="icon-button" title="Remove button">${icon('Minus')}</button></div>`).join('')||'<p>No buttons placed yet.</p>'}<div class="toolbar">${screenDevices.length?(available.length?available.map(({device,command},i)=>`<button type="button" data-screen-add="${i}">${icon('Plus')} ${escape(device.name)}: ${escape(command.name)}</button>`).join(''):'<p>All commands from this activity’s devices are already on the screen.</p>'):'<p>Add a device to this activity’s start actions to choose buttons.</p>'}</div>`;
     $('activity-form').insertBefore(section,$('activity-form').lastElementChild);
-    section.querySelectorAll('[data-activity-button]').forEach(e=>e.onchange=()=>{const b=value.buttons[+e.dataset.activityButton];b[e.dataset.key]=e.value;if(e.dataset.key==='deviceId'){b.command='';draw();}});
-    section.querySelectorAll('[data-remove-activity-button]').forEach(e=>e.onclick=()=>{value.buttons.splice(+e.dataset.removeActivityButton,1);draw();});
-    $('add-activity-button').onclick=()=>{const slot=controls.find(([s])=>!value.buttons.some(b=>b.slot===s)),device=state.devices[0];if(!slot||!device)return;value.buttons.push({slot:slot[0],label:slot[1],deviceId:device.id,command:''});draw();};
+    $('screen-columns').onchange=()=>{screen.columns=+$('screen-columns').value;};
+    section.querySelectorAll('[data-screen-label]').forEach(e=>e.oninput=()=>{screen.cells[+e.dataset.screenLabel].label=e.value;});
+    section.querySelectorAll('[data-screen-wide]').forEach(e=>e.onchange=()=>{screen.cells[+e.dataset.screenWide].wide=e.target.checked;});
+    bindReorder(section,'[data-screen-move]','screenMove',screen.cells,draw);
+    section.querySelectorAll('[data-screen-remove]').forEach(e=>e.onclick=()=>{screen.cells.splice(+e.dataset.screenRemove,1);draw();});
+    section.querySelectorAll('[data-screen-add]').forEach(e=>e.onclick=()=>{if(screen.cells.length>=32)return notice('Custom screen has reached the button limit.',true);const {device,command}=available[+e.dataset.screenAdd];screen.cells.push({deviceId:device.id,command:command.name,label:'',wide:false});draw();});
     $('activity-name').oninput=e=>value.name=e.target.value;
     $('content').querySelectorAll('[data-step]').forEach(e=>e.onchange=()=>{const [group,index]=e.dataset.step.split(':'),step=value[group][+index];step[e.dataset.key]=e.dataset.key==='delayMs'?Number(e.value):e.value;if(e.dataset.key==='deviceId'){step.command='';step.transport=state.devices.find(d=>d.id===e.value)?.transport||'ir';step.kind=e.value?'command':'delay';draw();}});
     $('content').querySelectorAll('[data-remove]').forEach(e=>e.onclick=()=>{const [group,index]=e.dataset.remove.split(':');value[group].splice(+index,1);draw();});

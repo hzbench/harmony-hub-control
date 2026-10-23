@@ -4,6 +4,11 @@ import vm from 'node:vm';
 const source=fs.readFileSync(new URL('../payload/www/app.js',import.meta.url),'utf8');
 new vm.Script(source);
 const code=source.slice(source.indexOf('async function tap('),source.indexOf('function drawer()'));
+// window.harmonyHardwareVolume() chains a .then()/.catch()/.finally() onto
+// its api() call rather than being itself async/awaited, so tests that
+// drive it need to drain enough queued microtasks for that whole chain to
+// settle before asserting on its side effects.
+async function flushMicrotasks(){for(let i=0;i<20;i++)await Promise.resolve();}
 function setup({delayQueue=false}={}){
   let now=0, sequence=0, failRenew=false, queue, finish;
   const timers=new Map(), calls=[], handlers={}, globals={}, state={online:true,hold:null,devices:[{id:'tv',transport:'ir'}]};
@@ -78,11 +83,63 @@ assert.equal(t.calls.length,0);
 console.log('Hold renewal failure, queued-release race, hidden pages, completion/failure and offline controls passed');
 
 const remoteCode=source.slice(source.indexOf('const norm ='),source.indexOf('function renderRemote()'));
-const remote=vm.createContext({state:{devices:[{id:'tv',commands:[{name:'VolumeUp'}]}],config:{activities:[{id:'watch',buttons:[{slot:'volumeup',deviceId:'tv',command:'VolumeUp',label:'Volume'}]}]}},readLocal:key=>key==='harmony-activity'?'watch':'tv',escape:s=>String(s),icon:s=>s});
+const remote=vm.createContext({state:{devices:[{id:'tv',commands:[{name:'VolumeUp'}]}],config:{activities:[]}},readLocal:key=>key==='harmony-activity'?'watch':'tv',escape:s=>String(s),icon:s=>s});
 vm.runInContext(remoteCode,remote);
 assert.match(vm.runInContext('remoteButton("volumeup",activeDevice())',remote),/data-command="VolumeUp" data-device="tv"/);
 assert.equal(vm.runInContext('remoteButton("ok",activeDevice())',remote),'');
-console.log('Activity remote assignments target the saved device and hide unassigned controls');
+console.log('Remote buttons resolve commands via device aliases and hide unmatched controls');
+
+// resolveCell() is the lookup renderActivityScreen()'s cellButton() uses to
+// turn a stored {deviceId,command} cell back into a renderable button (and
+// the one harmonyHardwareVolume() reuses below) - unit-tested directly here
+// since, like remoteButton() above, it's exercised through its pure return
+// value rather than a full mount()ed render.
+assert.equal(vm.runInContext("resolveCell({deviceId:'tv',command:'VolumeUp'}).device.id",remote),'tv');
+assert.equal(vm.runInContext("resolveCell({deviceId:'tv',command:'VolumeUp'}).command.name",remote),'VolumeUp');
+assert.equal(vm.runInContext("resolveCell({deviceId:'missing',command:'VolumeUp'})",remote),null);
+assert.equal(vm.runInContext("resolveCell({deviceId:'tv',command:'Missing'})",remote),null);
+console.log('resolveCell() resolves a screen cell to its live device/command and rejects stale references');
+
+const volumeCalls=[];
+const volumeState={online:true,config:{activities:[{id:'watch',screen:{cells:[{deviceId:'tv',command:'VolumeUp',label:'Volume'},{deviceId:'tv',command:'VolumeDown',label:'Volume'}]}}]},devices:[{id:'tv',transport:'ir',commands:[{name:'VolumeUp'},{name:'VolumeDown'}]}]};
+const volumeCode=source.slice(source.indexOf('const norm ='),source.indexOf('function stopHold('));
+const volumeContext=vm.createContext({state:volumeState,window:{},readLocal:key=>key==='harmony-activity'?'watch':'tv',escape:String,icon:()=>'',
+  api:async(path,body)=>{if(path.startsWith('operations?'))return {state:'completed'};volumeCalls.push({path,...body});return {id:'op-1'};}});
+vm.runInContext(volumeCode,volumeContext);
+vm.runInContext('window.harmonyHardwareVolume("up")',volumeContext);
+await flushMicrotasks();
+assert.equal(volumeCalls.length,1);assert.equal(volumeCalls[0].deviceId,'tv');assert.equal(volumeCalls[0].command,'VolumeUp');
+volumeCalls.length=0;
+vm.runInContext('window.harmonyHardwareVolume("down")',volumeContext);
+await flushMicrotasks();
+assert.equal(volumeCalls.length,1);assert.equal(volumeCalls[0].command,'VolumeDown');
+console.log('Hardware volume keys resolve the right command from an active activity\'s custom screen');
+
+// A saved custom layout that omits the volume slot must suppress the
+// hardware key too, same as it already suppresses the on-screen button —
+// previously only remoteButton() enforced this.
+const suppressedCalls=[];
+const suppressedState={online:true,config:{activities:[],layouts:{tv:[{slot:'ok',command:'Select'}]}},devices:[{id:'tv',transport:'ir',commands:[{name:'VolumeUp'},{name:'Select'}]}]};
+const suppressedContext=vm.createContext({state:suppressedState,window:{},readLocal:key=>key==='harmony-activity'?'':'tv',escape:String,icon:()=>'',
+  api:async(path,body)=>{if(path.startsWith('operations?'))return {state:'completed'};suppressedCalls.push({path,...body});return {id:'op-1'};}});
+vm.runInContext(volumeCode,suppressedContext);
+vm.runInContext('window.harmonyHardwareVolume("up")',suppressedContext);
+await flushMicrotasks();
+assert.equal(suppressedCalls.length,0);
+console.log('Hardware volume key is suppressed by a custom layout the same way the on-screen button is');
+
+// A screen cell referencing a deleted device/command must be skipped in
+// favor of the next alias-matching cell, instead of silently sending to
+// a stale target (or sending nothing at all).
+const staleCalls=[];
+const staleState={online:true,config:{activities:[{id:'watch',screen:{cells:[{deviceId:'missing',command:'VolumeUp'},{deviceId:'tv',command:'VolumeUp'}]}}]},devices:[{id:'tv',transport:'ir',commands:[{name:'VolumeUp'}]}]};
+const staleContext=vm.createContext({state:staleState,window:{},readLocal:key=>key==='harmony-activity'?'watch':'tv',escape:String,icon:()=>'',
+  api:async(path,body)=>{if(path.startsWith('operations?'))return {state:'completed'};staleCalls.push({path,...body});return {id:'op-1'};}});
+vm.runInContext(volumeCode,staleContext);
+vm.runInContext('window.harmonyHardwareVolume("up")',staleContext);
+await flushMicrotasks();
+assert.equal(staleCalls.length,1);assert.equal(staleCalls[0].deviceId,'tv');
+console.log('Hardware volume key skips a screen cell with a deleted device and uses the next matching one');
 vm.runInContext("state.config.activities=[];state.devices[0].commands=[{name:'Vol_dn'},{name:'Ch_next'},{name:'Ch_prev'}]",remote);
 for(const [slot,command] of [['volumedown','Vol_dn'],['channelup','Ch_next'],['channeldown','Ch_prev']]){
   assert.match(vm.runInContext(`remoteButton('${slot}',activeDevice())`,remote),new RegExp(`data-command="${command}"`));
