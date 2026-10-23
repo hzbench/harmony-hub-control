@@ -468,7 +468,7 @@ function editorHtml(model, ui) {
     <div class="pinned">${editZoneHtml(model,'pinned',ui)}</div>`;
 }
 
-const LONG_PRESS_MS = 500, MOVE_SLOP = 10;
+const LONG_PRESS_MS = 350, MOVE_SLOP = 10;
 let sheetPushed = false;  // the open add sheet owns one history entry, so Back closes just the sheet
 let leaveGuard = null;  // asked before the back arrow leaves a screen; false keeps you there
 function renderEditor(ctx) {
@@ -535,7 +535,7 @@ function renderEditor(ctx) {
       changed({zone,slot});
     }
   };
-  // Press-and-hold. touch-action is pan-y so a scroll cancels the press.
+  // Press-and-hold, shorter than Android's own ~400 ms long-press so our haptic is the first one felt.
   let press = null;
   const cancelPress = () => {if(press){clearTimeout(press.timer);press=null;}};
   ctx.content.onpointerdown = event => {

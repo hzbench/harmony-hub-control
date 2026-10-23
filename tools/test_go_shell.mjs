@@ -536,7 +536,7 @@ console.log('Editor draws gaps as empty squares, lists every cell (including sta
   // Press-and-hold a button removes it from the DRAFT and leaves its slot empty; nothing is written to the hub yet.
   let {content,ctx}=setup(base0);
   assert.equal(ctx.title,'Edit remote: W');assert.equal(saveEnabled(ctx),false,'nothing to save yet');assert.doesNotMatch(content.innerHTML,/Unsaved changes/);
-  down(content,slotBtn(content,'cells',1));advance(499);assert.deepEqual(layout(content,'cells'),{0:'Up',1:'Down',2:'Mute'},'not before the hold time');
+  down(content,slotBtn(content,'cells',1));advance(349);assert.deepEqual(layout(content,'cells'),{0:'Up',1:'Down',2:'Mute'},'not before the hold time');
   advance(2);await settle();
   assert.deepEqual(layout(content,'cells'),{0:'Up',2:'Mute'},'the buttons to the right do not move');
   assert.ok(empties(content,'cells').includes(1),'the vacated slot is an empty square');
