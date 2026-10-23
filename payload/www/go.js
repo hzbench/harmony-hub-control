@@ -338,11 +338,12 @@ function renderActivityRemote(ctx) {
   bindCommands(ctx.content);
 }
 // ---- Edit remote layout (activities only) ----
-// The editor works on activity.screen: `cells` (the scrolling grid) and `pinned`
-// (the footer, at most `columns` buttons). Both are plain packed lists of
-// {deviceId, command}; "empty slots" are only drawn, so pressing any empty slot
-// appends and removing a button shifts the rest along. Every edit applies and
-// is saved immediately.
+// The editor works on a local draft of activity.screen: `cells` (the scrolling
+// grid) and `pinned` (the footer, at most `columns` buttons), plain packed lists
+// of {deviceId, command}; "empty slots" are only drawn, so pressing any empty
+// slot appends and removing a button shifts the rest along. Edits change the
+// draft only (mirrored to localStorage so nothing is lost if the app is killed);
+// Save is the one write to the hub.
 const MAX_CELLS = 32;  // keep in step with local_validate_config()
 const screenOf = activity => {
   activity.screen ||= {columns:4, cells:[]};
@@ -382,26 +383,43 @@ function editorSlots(zone, length, columns, extraRows=0) {
   return Math.min(total, Math.max(length, MAX_CELLS));
 }
 
-// Save: one request at a time, always sending the latest local state, so a burst
-// of gestures coalesces instead of racing on the config revision.
-let saveRunning = false, saveAgain = false;
-let afterSave = () => {};  // set by the open editor: redraw after a failed save
-async function persistConfig() {
-  if(saveRunning){saveAgain=true;return;}
-  saveRunning = true;
+// ---- Draft and save ----
+// Compared as strings to tell whether a layout changed.
+const layoutShape = screen => JSON.stringify([screen?.columns||4, screen?.cells||[], screen?.pinned||[]]);
+const DRAFT_PREFIX = 'harmony-layout-draft:';
+const cloneScreen = screen => ({columns:screen?.columns||4, cells:structuredClone(screen?.cells||[]), pinned:structuredClone(screen?.pinned||[])});
+function storeDraft(id, base, draft) {
+  // `base` is the layout the draft started from: the later check for "changed
+  // elsewhere" compares the hub against it, not against whatever it is now.
+  writeLocal(DRAFT_PREFIX+id, layoutShape(draft)===base ? '' : JSON.stringify({base, draft}));
+}
+// The starting draft: an unsaved one from this device if it still differs from
+// the hub's layout, otherwise a copy of the hub's.
+function loadDraft(activity) {
+  const hub = cloneScreen(activity.screen), hubShape = layoutShape(hub);
   try {
-    do {
-      saveAgain = false;
-      await api('configuration',{revision:state.config.revision, configuration:state.config});
-      // Only the revision comes back: local edits made while saving must survive.
-      state.config.revision = (await api('configuration')).revision;
-    } while(saveAgain);
-  } catch(error) {
-    saveAgain = false;
-    notice(`Not saved: ${error.message}`,true);
-    try {state.config = await api('configuration');afterSave();}  // show what the hub really has
-    catch {/* offline: keep the local edits; the next change retries */}
-  } finally {saveRunning = false;}
+    const stored = JSON.parse(readLocal(DRAFT_PREFIX+activity.id)||'null');
+    if(stored&&typeof stored.base==='string'&&Array.isArray(stored.draft?.cells)&&Array.isArray(stored.draft?.pinned)) {
+      const draft = cloneScreen(stored.draft);
+      if(layoutShape(draft)!==hubShape)return {draft, base:stored.base, restored:true};
+    }
+  } catch {/* unreadable draft: start from the hub */}
+  storeDraft(activity.id,hubShape,hub);
+  return {draft:hub, base:hubShape, restored:false};
+}
+// The single write to the hub. It works from the hub's *current* configuration
+// (this tab's copy may be hours old), refuses to silently overwrite a layout
+// someone else changed since the draft began, and replaces only this
+// activity's layout.
+async function submitLayout(id, draft, base, confirmReplace) {
+  const fresh = await api('configuration');
+  const activity = (fresh.activities||[]).find(a=>a.id===id);
+  if(!activity)throw Error('This activity no longer exists on the hub.');
+  if(layoutShape(activity.screen)!==base&&!confirmReplace())return false;
+  activity.screen = {...(activity.screen||{}), columns:draft.columns, cells:draft.cells, pinned:draft.pinned};
+  await api('configuration',{revision:fresh.revision, configuration:fresh});
+  state.config = await api('configuration');
+  return true;
 }
 
 function editCellHtml(entry, zone, index) {
@@ -418,56 +436,73 @@ function editZoneHtml(activity, zone, ui) {
   const cells = list.map((e,i)=>editCellHtml(e,zone,i)).join('') + Array.from({length:Math.max(0,slots-list.length)},()=>editCellHtml(null,zone)).join('');
   return `<div class="cells edit-grid" data-columns="${escape(String(columns))}">${cells}</div>`;
 }
-function editorHtml(activity, ui) {
-  const full = zoneList(activity,'cells').length>=MAX_CELLS;
-  return `<p class="edit-hint">Press and hold an empty square to add a button, or a filled one to remove it.</p>
-    ${editZoneHtml(activity,'cells',ui)}
+function editorHtml(model, ui) {
+  const full = zoneList(model,'cells').length>=MAX_CELLS;
+  return `${ui.dirty?'<div class="draft-bar" role="status"><span>Unsaved changes</span><button type="button" data-discard>Discard</button></div>':''}
+    <p class="edit-hint">Press and hold an empty square to add a button, or a filled one to remove it. Changes are saved when you tap Save.</p>
+    ${editZoneHtml(model,'cells',ui)}
     ${full?'<p class="edit-hint">The remote has reached its button limit.</p>':'<button class="add-row" type="button" data-add-row>'+icon('Plus')+'Add row</button>'}
-    <div class="pinned"><div class="pinned-label">Always visible</div>${editZoneHtml(activity,'pinned',ui)}</div>`;
+    <div class="pinned"><div class="pinned-label">Always visible</div>${editZoneHtml(model,'pinned',ui)}</div>`;
 }
 
 const LONG_PRESS_MS = 500, MOVE_SLOP = 10;
+let leaveGuard = null;  // asked before the back arrow leaves a screen; false keeps you there
 function renderEditor(ctx) {
   const id = ctx.params[0];
-  // Always look the activity up again: a failed save replaces state.config.
   const activity = () => (state.config.activities||[]).find(a=>a.id===id);
   const first = activity();
   if(!first){ctx.setTitle('Edit remote');return placeholder(ctx,'This activity no longer exists.');}
   ctx.setTitle(`Edit remote: ${first.name}`);
   if(!owner())return placeholder(ctx,'Only the hub owner can change remote layouts.');
-  const ui = {extraRows:0}, sheet = $('sheet');
+  let {draft, base, restored} = loadDraft(first);
+  const ui = {extraRows:0, dirty:false, saving:false}, sheet = $('sheet');
+  // The helpers below take an activity-shaped object; the draft stands in for its screen.
+  const model = () => ({id, steps:activity()?.steps||first.steps||[], screen:draft});
   const here = () => ctx.content.isConnected && parseRoute(location.hash).name==='edit' && parseRoute(location.hash).params[0]===id;
   const draw = focus => {
     if(!here())return;
-    const current = activity();
-    if(!current){placeholder(ctx,'This activity no longer exists.');return;}
-    ctx.content.innerHTML = `<div class="editor">${editorHtml(current,ui)}</div>`;
+    ui.dirty = layoutShape(draft)!==base;
+    ctx.actions.innerHTML = `<button type="button" class="save-button" data-save ${ui.dirty&&!ui.saving?'':'disabled'}>${ui.saving?'Saving…':'Save'}</button>`;
+    ctx.content.innerHTML = `<div class="editor">${editorHtml(model(),ui)}</div>`;
     if(focus)ctx.content.querySelector(`[data-zone="${focus.zone}"][data-index="${focus.index}"]`)?.focus();
   };
-  afterSave = () => draw();
-  const changed = focus => {draw(focus);persistConfig();};
+  // A new edit makes any earlier "Saved." / "Restored..." message untrue.
+  const changed = focus => {notice('');storeDraft(id,base,draft);draw(focus);};
+  leaveGuard = () => layoutShape(draft)===base || confirm('Leave without saving? Your changes stay on this device as a draft until you save or discard them.');
+  const save = async () => {
+    if(ui.saving||layoutShape(draft)===base)return;
+    ui.saving = true;draw();
+    try {
+      const saved = await submitLayout(id,draft,base,()=>confirm('This remote was changed on another device since you started editing. Replace it with your version?'));
+      if(saved){base=layoutShape(draft);storeDraft(id,base,draft);notice('Saved.');}
+    } catch(error) {notice(`Not saved: ${error.message}`,true);}
+    finally {ui.saving=false;draw();}
+  };
+  const discard = () => {
+    if(!confirm('Discard your unsaved changes?'))return;
+    const hub = activity();
+    draft = cloneScreen(hub?.screen);base = layoutShape(draft);storeDraft(id,base,draft);ui.extraRows=0;notice('');draw();
+  };
   const openSheet = zone => {
-    const current = activity(), options = availableCommands(current);
+    const options = availableCommands(model());
     sheet.innerHTML = `<div class="sheet-handle" aria-hidden="true"></div><h2 id="sheet-title">Add a button</h2>
       ${options.length?`<ul class="sheet-list">${options.map((o,i)=>`<li><button type="button" data-pick="${i}"><span class="sheet-icon">${o.control?.[2]?icon(o.control[2]):''}</span>${escape(o.device.name)}: ${escape(o.command)}</button></li>`).join('')}</ul>`
-        :`<p>${(current.steps||[]).some(s=>s.deviceId)?'Every command from this activity’s devices is already on the remote.':'This activity has no devices yet. Add one to its start actions under Manage activities.'}</p>`}
+        :`<p>${(model().steps).some(s=>s.deviceId)?'Every command from this activity’s devices is already on the remote.':'This activity has no devices yet. Add one to its start actions under Manage activities.'}</p>`}
       <button type="button" class="sheet-cancel" data-sheet-cancel>Cancel</button>`;
     sheet.onclick = event => {
       if(event.target===sheet||event.target.closest('[data-sheet-cancel]'))return sheet.close();
       const pick = event.target.closest('[data-pick]');if(!pick)return;
       const o = options[+pick.dataset.pick];sheet.close();
-      const target = activity();
-      if(target&&addButton(target,zone,o.device.id,o.command))changed({zone,index:zoneList(target,zone).length-1});
+      if(addButton(model(),zone,o.device.id,o.command))changed({zone,index:zoneList(model(),zone).length-1});
     };
     sheet.showModal();
   };
   const act = (button, how) => {
     if(!here())return;
-    const target = activity();if(!target)return draw();
     const zone = button.dataset.zone;
     if(button.classList.contains('empty'))return openSheet(zone);
     const index = +button.dataset.index;
-    if(removeButton(target,zone,index)){if(how==='hold')navigator.vibrate?.(20);changed({zone,index:Math.min(index,zoneList(target,zone).length-1)});}
+    if(removeButton(model(),zone,index)){if(how==='hold')navigator.vibrate?.(20);changed({zone,index:Math.min(index,zoneList(model(),zone).length-1)});}
   };
   // Press-and-hold. touch-action is pan-y so a scroll cancels the press.
   let press = null;
@@ -487,8 +522,13 @@ function renderEditor(ctx) {
     if(empty&&[' ','Enter'].includes(event.key)){event.preventDefault();act(button,'key');}
     else if(!empty&&['Delete','Backspace'].includes(event.key)){event.preventDefault();act(button,'key');}
   };
-  ctx.content.onclick = event => {if(event.target.closest('[data-add-row]')){ui.extraRows++;draw();}};
+  ctx.content.onclick = event => {
+    if(event.target.closest('[data-add-row]')){ui.extraRows++;draw();}
+    else if(event.target.closest('[data-discard]'))discard();
+  };
+  ctx.actions.onclick = event => {if(event.target.closest('[data-save]'))save();};
   draw();
+  if(restored)notice('Restored your unsaved changes.');
 }
 function placeholder(ctx, text) {ctx.content.innerHTML=`<div class="placeholder"><p>${escape(text)}</p></div>`;}
 
@@ -496,6 +536,7 @@ function show() {
   const {name, params} = parseRoute(location.hash), screen = screens[name], ctx = {params, content:$('content'), actions:$('header-actions'), setTitle};
   stopHold(false);
   for(const handler of SCREEN_HANDLERS)ctx.content[handler]=null;
+  ctx.actions.onclick=null;leaveGuard=null;
   if($('sheet')?.open)$('sheet').close();
   function setTitle(text) {$('title').textContent=text;document.title=text+' · Harmony Remote';}
   $('header-actions').innerHTML='';
@@ -544,7 +585,7 @@ async function pollSession() {
 
 if(typeof document!=='undefined'&&$('content')) {
   window.addEventListener('hashchange',()=>{if(state.config)show();});
-  $('back').addEventListener('click',()=>{location.hash=$('back').dataset.href||routeHash('activities');});
+  $('back').addEventListener('click',()=>{if(leaveGuard&&!leaveGuard())return;location.hash=$('back').dataset.href||routeHash('activities');});
   $('connection').addEventListener('click',()=>{connection(null);boot();});
   sessionTimer=setTimeout(pollSession,15000);
   boot();

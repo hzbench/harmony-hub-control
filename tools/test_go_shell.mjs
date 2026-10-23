@@ -16,9 +16,9 @@ console.log('Entry page and shell script use no inline styles or scripts (CSP-sa
 const elements={}, store=new Map();
 const el=id=>elements[id]||=({id,dataset:{},classList:{add(){},remove(){}},hidden:false,textContent:'',innerHTML:'',title:'',attrs:{},setAttribute(k,v){this.attrs[k]=v;},removeAttribute(k){delete this.attrs[k];},focus(){},addEventListener(){},querySelectorAll:()=>[]});
 const context=vm.createContext({document:{getElementById:el,title:'',body:{dataset:{}},addEventListener(){},hidden:false},window:{addEventListener(){},scrollTo(){}},location:{hash:'',replace(url){context.replaced=url;}},history:{replaceState(){}},
-  navigator:{vibrate(){context.vibrated=(context.vibrated||0)+1;}},localStorage:{getItem:k=>store.get(k)??null,setItem:(k,v)=>store.set(k,v)},setTimeout:()=>0,clearTimeout(){},fetch:async()=>{throw new TypeError('offline');},AbortController,URL});
+  confirm:message=>{(context.confirmed||(context.confirmed=[])).push(message);return context.confirmAnswer!==false;},navigator:{vibrate(){context.vibrated=(context.vibrated||0)+1;}},localStorage:{getItem:k=>store.get(k)??null,setItem:(k,v)=>store.set(k,v)},setTimeout:()=>0,clearTimeout(){},fetch:async()=>{throw new TypeError('offline');},AbortController,URL,structuredClone});
 const inert=source.replace(/\n  boot\(\);\n\}\s*$/,'\n}');assert.notEqual(inert,source,'boot() auto-run not found');
-vm.runInContext(inert.replace('const state =','var state =')+'\nthis.exports={parseRoute,routeHash,connection,state,needsFullUi,api,show,screens,renderActivities,renderDevices,deviceRemoteHtml,renderDeviceRemote,remoteBlocks,remoteHtml,renderActivityRemote,CONTROLS,controlFor,volumeTarget,editorSlots,availableCommands,addButton,removeButton,persistConfig,editorHtml,renderEditor,screenOf,MAX_CELLS};',context);
+vm.runInContext(inert.replace('const state =','var state =')+'\nthis.exports={parseRoute,routeHash,connection,state,needsFullUi,api,show,screens,renderActivities,renderDevices,deviceRemoteHtml,renderDeviceRemote,remoteBlocks,remoteHtml,renderActivityRemote,CONTROLS,controlFor,volumeTarget,editorSlots,availableCommands,addButton,removeButton,editorHtml,renderEditor,screenOf,MAX_CELLS,layoutShape,loadDraft,storeDraft,submitLayout,getLeaveGuard:()=>leaveGuard};',context);
 const {parseRoute,routeHash,connection,state,needsFullUi,api,show}=context.exports;
 
 assert.deepEqual(JSON.parse(JSON.stringify(parseRoute(''))),{name:'activities',params:[]});
@@ -382,45 +382,64 @@ const narrow={id:'n',steps:[],screen:{columns:2,cells:[],pinned:[]}};
 X.addButton(narrow,'pinned','tv','Up');X.addButton(narrow,'pinned','tv','Down');assert.equal(X.addButton(narrow,'pinned','tv','Left'),false);
 console.log('Adding and removing keep packed lists within the grid and footer limits, without duplicates');
 
-// Saving: one request at a time, always the latest state, revision taken from the hub.
+// Draft and save.
+const shapeOf=X.layoutShape, mk=(cells,pinned=[],columns=4)=>({columns,cells,pinned});
+assert.equal(shapeOf(undefined),shapeOf({columns:4,cells:[],pinned:[]}));
+assert.notEqual(shapeOf(mk([cell('Up')])),shapeOf(mk([])));assert.notEqual(shapeOf(mk([],[cell('Up')])),shapeOf(mk([cell('Up')])));
 {
-  const posts=[];let releaseFirst,failPost=false,failGet=false,afterCalls=0;
-  state.config={revision:5,activities:[{id:'w',name:'W',steps:[],screen:{columns:4,cells:[]}}]};
-  const server={revision:5,activities:[{id:'w',name:'hub copy',steps:[]}]};
-  context.api=async(path,body)=>{
-    if(path==='configuration'&&body){
-      posts.push({revision:body.revision,cells:body.configuration.activities[0].screen.cells.length});
-      if(posts.length===1&&releaseFirst===undefined){await new Promise(r=>releaseFirst=r);}
-      if(failPost)throw Error('Configuration changed in another browser. Reload before saving.');
-      server.revision=body.revision+1;return {ok:true};
-    }
-    if(path==='configuration'){if(failGet)throw new TypeError('offline');return JSON.parse(JSON.stringify(server));}
-    return {};
-  };
-  // A burst while the first save is in flight coalesces into exactly one more save with the latest edits.
-  const first=X.persistConfig();
-  state.config.activities[0].screen.cells.push({deviceId:'tv',command:'Up'});X.persistConfig();
-  state.config.activities[0].screen.cells.push({deviceId:'tv',command:'Down'});X.persistConfig();
-  for(let i=0;i<5;i++)await Promise.resolve();
-  assert.equal(posts.length,1);
-  releaseFirst();await first;await flush();
-  assert.deepEqual(J(posts),[{revision:5,cells:0},{revision:6,cells:2}]);
-  assert.equal(state.config.revision,7);
-  assert.equal(state.config.activities[0].screen.cells.length,2,'local edits survive the revision refresh');
-  // A rejected save shows the error and reloads what the hub actually has.
-  failPost=true;posts.length=0;
-  context.afterSave=undefined;
-  await X.persistConfig();
-  assert.match(el('notice').textContent,/^Not saved: Configuration changed in another browser/);assert.equal(el('notice').dataset.error,'true');
-  assert.equal(state.config.activities[0].name,'hub copy');
-  // Offline: nothing to reload from, so local edits stay and a later save still works.
-  state.config={revision:7,activities:[{id:'w',name:'W',steps:[],screen:{columns:4,cells:[{deviceId:'tv',command:'Up'}]}}]};
-  failGet=true;await X.persistConfig();
-  assert.equal(state.config.activities[0].name,'W');
-  failPost=false;failGet=false;posts.length=0;await X.persistConfig();
-  assert.deepEqual(J(posts),[{revision:7,cells:1}]);
+  const act={id:'w',name:'W',steps:[],screen:mk([cell('Up'),cell('Down')])};
+  const key='harmony-layout-draft:w';
+  // No stored draft: start from a copy of the hub's layout, and store nothing.
+  store.delete(key);let d=X.loadDraft(act);
+  assert.equal(d.restored,false);assert.equal(d.base,shapeOf(act.screen));assert.deepEqual(J(d.draft),J(act.screen));
+  d.draft.cells.push(cell('Mute'));assert.equal(act.screen.cells.length,2,'the draft is a copy');
+  assert.ok(!store.get(key));
+  // An unsaved draft that still differs is restored together with the layout it started from.
+  X.storeDraft('w',d.base,d.draft);assert.ok(store.get(key));
+  const again=X.loadDraft(act);assert.equal(again.restored,true);assert.equal(again.base,d.base);assert.equal(again.draft.cells.length,3);
+  // A draft identical to the hub's layout, or unreadable, is dropped.
+  X.storeDraft('w','x',mk([cell('Up'),cell('Down')]));assert.equal(X.loadDraft(act).restored,false);assert.ok(!store.get(key));
+  store.set(key,'{not json');assert.equal(X.loadDraft(act).restored,false);
+  store.set(key,JSON.stringify({base:1,draft:{cells:'x'}}));assert.equal(X.loadDraft(act).restored,false);
+  // Storing a draft equal to its base clears it.
+  X.storeDraft('w',shapeOf(act.screen),act.screen);assert.ok(!store.get(key));
 }
-console.log('Saves run one at a time with the latest state, take the revision from the hub, and recover from rejection or offline');
+console.log('Drafts start from the hub layout, survive a restart while they differ, and are dropped when stale or unreadable');
+
+{
+  const posts=[];let hub,failPost=false;
+  const reset=()=>{hub={revision:9,setupMode:'keep',layouts:{},activities:[
+    {id:'w',name:'W',steps:[],screen:{columns:4,cells:[cell('Up')],pinned:[],extra:'kept'}},{id:'o',name:'Other',steps:[],screen:mk([cell('Mute')])}]};posts.length=0;failPost=false;};
+  context.api=async(path,body)=>{
+    if(path!=='configuration')return {};
+    if(!body)return J(hub);
+    posts.push(J(body));
+    if(failPost)throw Error('Invalid configuration, layout or activity sequence.');
+    hub={...J(body.configuration),revision:body.revision+1};return {ok:true};
+  };
+  const base=shapeOf(mk([cell('Up')])), draft=mk([cell('Up'),cell('Down')],[cell('Mute')]);
+  state.config={revision:1,activities:[]};
+  // One write, built from the hub's current config (which moved on since this tab loaded).
+  reset();let confirms=0;
+  assert.equal(await X.submitLayout('w',draft,base,()=>{confirms++;return true;}),true);
+  assert.equal(posts.length,1);assert.equal(confirms,0);
+  assert.equal(posts[0].revision,9,'uses the hub\'s current revision, not this tab\'s');
+  const sent=posts[0].configuration;
+  assert.deepEqual(sent.activities[0].screen.cells.map(c=>c.command),['Up','Down']);assert.deepEqual(sent.activities[0].screen.pinned.map(c=>c.command),['Mute']);
+  assert.equal(sent.activities[0].screen.extra,'kept','other screen fields survive');
+  assert.deepEqual(J(sent.activities[1]),J({id:'o',name:'Other',steps:[],screen:mk([cell('Mute')])}),'other activities are untouched');
+  assert.equal(state.config.revision,10,'local config is refreshed from the hub after saving');
+  // Changed elsewhere since the draft began: ask first; declining writes nothing.
+  reset();hub.activities[0].screen.cells.push(cell('Left'));
+  assert.equal(await X.submitLayout('w',draft,base,()=>{confirms++;return false;}),false);assert.equal(confirms,1);assert.equal(posts.length,0);
+  assert.equal(await X.submitLayout('w',draft,base,()=>true),true);assert.equal(posts.length,1);
+  // The activity was deleted elsewhere, or the hub rejects the layout: throws, writes nothing more, local config untouched.
+  reset();hub.activities.shift();state.config={revision:1,marker:true,activities:[]};
+  await assert.rejects(X.submitLayout('w',draft,base,()=>true),/no longer exists/);assert.equal(posts.length,0);
+  reset();failPost=true;await assert.rejects(X.submitLayout('w',draft,base,()=>true),/Invalid configuration/);
+  assert.equal(posts.length,1);assert.equal(state.config.marker,true);
+}
+console.log('Save is one write from the hub\'s current config, asks before replacing a layout changed elsewhere, and fails without side effects');
 
 // Rendering: stale and volume cells stay visible (and removable); slots are drawn; labels explain the gestures.
 state.devices=[tv,bar];
@@ -448,115 +467,160 @@ console.log('Editor lists every cell (including stale and volume ones), draws em
   context.setTimeout=(fn,ms)=>{timers.set(++seq,{fn,at:clock+ms});return seq;};
   context.clearTimeout=id=>timers.delete(id);
   const advance=ms=>{clock+=ms;for(const [id,t] of [...timers])if(t.at<=clock){timers.delete(id);t.fn();}};
-  const posts=[];
-  context.api=async(path,body)=>{if(path==='configuration'&&body){posts.push(J(body.configuration.activities[0].screen));return {ok:true};}if(path==='configuration')return {revision:99,activities:[]};return {};};
+  let hub,posts=[];
+  const newHub=activity=>{hub={revision:1,setupMode:'keep',layouts:{},activities:[J(activity)]};posts=[];};
+  context.api=async(path,body)=>{
+    if(path!=='configuration')return {};
+    if(!body)return J(hub);
+    posts.push(J(body.configuration.activities[0].screen));hub={...J(body.configuration),revision:body.revision+1};return {ok:true};
+  };
   const sheet=Object.assign(el('sheet'),{open:false,innerHTML:'',onclick:null,showModal(){this.open=true;},close(){this.open=false;}});
-  const setup=(activity,{owner=true}={})=>{
-    state.devices=[tv,bar];state.session={role:owner?'owner':'controller'};state.config={revision:1,activities:[activity]};
-    context.location.hash='#/edit/'+activity.id;posts.length=0;sheet.open=false;
+  const KEY='harmony-layout-draft:w';
+  const setup=(activity,{owner=true,keepStore=false}={})=>{
+    if(!keepStore)store.delete(KEY);
+    newHub(activity);state.devices=[tv,bar];state.session={role:owner?'owner':'controller'};state.config=J(hub);
+    context.location.hash='#/edit/'+activity.id;sheet.open=false;context.confirmed=[];context.confirmAnswer=true;el('notice').textContent='';
     const content={innerHTML:'',isConnected:true,querySelector:()=>null};
-    const ctx={content,actions:{innerHTML:''},params:[activity.id],setTitle(t){this.title=t;}};
+    const ctx={content,actions:{innerHTML:'',onclick:null},params:[activity.id],setTitle(t){this.title=t;}};
     X.renderEditor(ctx);return {content,ctx};
   };
-  const btn=(content,zone,index)=>{ // find the nth zone button in the rendered html
+  const cmds=(content,zone)=>[...content.innerHTML.matchAll(new RegExp(`data-zone="${zone}" data-index="\\d+" aria-label="([^".]*)`,'g'))].map(m=>m[1]);
+  const btn=(content,zone,index)=>{
     const re=index===undefined?new RegExp(`class="cell empty" type="button" data-zone="${zone}"`):new RegExp(`data-zone="${zone}" data-index="${index}"`);
     assert.match(content.innerHTML,re,`${zone} ${index} should be rendered`);
     return {dataset:{zone,...(index===undefined?{}:{index:String(index)})},classList:{contains:c=>c==='empty'&&index===undefined}};
   };
   const down=(content,b,x=10,y=10)=>content.onpointerdown({target:{closest:()=>b},button:0,clientX:x,clientY:y});
+  const pickFrom=(label)=>[...sheet.innerHTML.matchAll(/data-pick="(\d+)"[^>]*>(?:<[^>]*>)*[^<]*<\/span>([^<]*)</g)].find(m=>m[2]===label)?.[1];
+  const choose=async label=>{sheet.onclick({target:{closest:sel=>sel==='[data-pick]'?{dataset:{pick:pickFrom(label)}}:null}});await settle();};
+  const click=(content,attr)=>content.onclick({target:{closest:sel=>sel===attr?{}:null}});
   const settle=async()=>{for(let i=0;i<12;i++)await Promise.resolve();};
+  const saveEnabled=ctx=>!/data-save\s+disabled/.test(ctx.actions.innerHTML);
+  const pressSave=async ctx=>{ctx.actions.onclick({target:{closest:sel=>sel==='[data-save]'?{}:null}});await settle();};
+  const base0={id:'w',name:'W',steps:[{deviceId:'tv'}],screen:{columns:4,cells:[cell('Up'),cell('Down'),cell('Mute')],pinned:[cell('Back')]}};
 
-  // Press-and-hold a filled cell removes it immediately and saves.
-  let a={id:'w',name:'W',steps:[{deviceId:'tv'}],screen:{columns:4,cells:[cell('Up'),cell('Down'),cell('Mute')],pinned:[cell('Back')]}};
-  let {content,ctx}=setup(a);
-  assert.equal(ctx.title,'Edit remote: W');
-  down(content,btn(content,'cells',1));advance(499);assert.equal(a.screen.cells.length,3,'not before the hold time');
+  // Press-and-hold a filled cell removes it from the DRAFT: nothing is written to the hub yet.
+  let {content,ctx}=setup(base0);
+  assert.equal(ctx.title,'Edit remote: W');assert.equal(saveEnabled(ctx),false,'nothing to save yet');assert.doesNotMatch(content.innerHTML,/Unsaved changes/);
+  down(content,btn(content,'cells',1));advance(499);assert.deepEqual(cmds(content,'cells'),['Up','Down','Mute'],'not before the hold time');
   advance(2);await settle();
-  assert.deepEqual(J(a.screen.cells.map(c=>c.command)),['Up','Mute']);
-  assert.equal(posts.length,1);assert.deepEqual(posts[0].cells.map(c=>c.command),['Up','Mute']);
-  assert.equal(context.vibrated,1);
-  assert.equal((content.innerHTML.match(/data-zone="cells" data-index=/g)||[]).length,2,'the grid redraws immediately');
+  assert.deepEqual(cmds(content,'cells'),['Up','Mute']);
+  assert.equal(posts.length,0,'editing never writes to the hub');
+  assert.equal(state.config.activities[0].screen.cells.length,3,'the loaded config is untouched until Save');
+  assert.ok(store.get(KEY),'the draft is mirrored to this device');
+  assert.equal(saveEnabled(ctx),true);assert.match(content.innerHTML,/Unsaved changes/);
   // A tap (released early), a drag past the slop, and a pointer cancel all do nothing.
   for(const stop of ['up','move','cancel']){
-    ({content}=setup(a));posts.length=0;
     down(content,btn(content,'cells',0));
     if(stop==='up')content.onpointerup();
     if(stop==='move')content.onpointermove({clientX:10,clientY:40});
     if(stop==='cancel')content.onpointercancel();
     advance(1000);await settle();
-    assert.equal(a.screen.cells.length,2,stop);assert.equal(posts.length,0,stop);
+    assert.deepEqual(cmds(content,'cells'),['Up','Mute'],stop);
   }
-  ({content}=setup(a));down(content,btn(content,'cells',0));content.onpointermove({clientX:12,clientY:14});advance(600);await settle();
-  assert.equal(a.screen.cells.length,1,'a small wobble still counts as holding');
+  down(content,btn(content,'cells',0));content.onpointermove({clientX:12,clientY:14});advance(600);await settle();
+  assert.deepEqual(cmds(content,'cells'),['Mute'],'a small wobble still counts as holding');
   // Navigating away before the hold completes does nothing.
-  ({content}=setup(a));posts.length=0;down(content,btn(content,'cells',0));context.location.hash='#/devices';advance(600);await settle();
-  assert.equal(a.screen.cells.length,1);assert.equal(posts.length,0);
+  down(content,btn(content,'cells',0));context.location.hash='#/devices';advance(600);await settle();
+  assert.deepEqual(J(JSON.parse(store.get(KEY)).draft.cells.map(c=>c.command)),['Mute']);
+  assert.equal(posts.length,0);
 
-  // Press-and-hold an empty cell opens the add sheet; choosing a command adds it and saves.
-  a={id:'w',name:'W',steps:[{deviceId:'tv'}],screen:{columns:4,cells:[cell('Up')],pinned:[]}};
-  ({content}=setup(a));
+  // Add via the sheet (grid and footer): still only the draft changes.
+  ({content,ctx}=setup({...base0,screen:{columns:4,cells:[cell('Up')],pinned:[]}}));
   down(content,btn(content,'cells'));advance(600);
-  assert.equal(sheet.open,true);
-  assert.match(sheet.innerHTML,/TV: Down/);assert.doesNotMatch(sheet.innerHTML,/TV: Up</);assert.doesNotMatch(sheet.innerHTML,/TV: Volume/);
-  const downOption=[...sheet.innerHTML.matchAll(/data-pick="(\d+)"[^>]*>(?:<[^>]*>)*[^<]*<\/span>TV: Down</g)].map(m=>m[1]);
-  assert.equal(downOption.length,1);
-  sheet.onclick({target:{closest:sel=>sel==='[data-pick]'?{dataset:{pick:downOption[0]}}:null}});await settle();
-  assert.equal(sheet.open,false);assert.deepEqual(J(a.screen.cells.map(c=>c.command)),['Up','Down']);
-  assert.equal(posts.length,1);
+  assert.equal(sheet.open,true);assert.match(sheet.innerHTML,/TV: Down/);assert.doesNotMatch(sheet.innerHTML,/TV: Up</);assert.doesNotMatch(sheet.innerHTML,/TV: Volume/);
+  await choose('TV: Down');
+  assert.equal(sheet.open,false);assert.deepEqual(cmds(content,'cells'),['Up','Down']);
+  down(content,btn(content,'pinned'));advance(600);await choose('TV: Mute');
+  assert.deepEqual(cmds(content,'pinned'),['Mute']);assert.equal(posts.length,0);
   // Cancel and backdrop close the sheet without changing anything.
-  posts.length=0;down(content,btn(content,'cells'));advance(600);assert.equal(sheet.open,true);
+  down(content,btn(content,'cells'));advance(600);assert.equal(sheet.open,true);
   sheet.onclick({target:{closest:sel=>sel==='[data-sheet-cancel]'?{}:null}});assert.equal(sheet.open,false);
   down(content,btn(content,'cells'));advance(600);sheet.onclick({target:sheet,closest:()=>null});assert.equal(sheet.open,false);
-  assert.equal(a.screen.cells.length,2);assert.equal(posts.length,0);
+  assert.deepEqual(cmds(content,'cells'),['Up','Down']);
 
-  // The footer is edited the same way, into its own list.
-  down(content,btn(content,'pinned'));advance(600);
-  const mute=[...sheet.innerHTML.matchAll(/data-pick="(\d+)"[^>]*>(?:<[^>]*>)*[^<]*<\/span>TV: Mute</g)].map(m=>m[1])[0];
-  sheet.onclick({target:{closest:sel=>sel==='[data-pick]'?{dataset:{pick:mute}}:null}});await settle();
-  assert.deepEqual(J(a.screen.pinned.map(c=>c.command)),['Mute']);assert.equal(a.screen.cells.length,2);
-  down(content,btn(content,'pinned',0));advance(600);await settle();assert.equal(a.screen.pinned.length,0);
+  // Save: all those edits go to the hub in ONE write; the editor is clean afterwards.
+  down(content,btn(content,'cells',0));advance(600);await settle();   // one more edit: remove Up
+  assert.equal(posts.length,0);
+  await pressSave(ctx);
+  assert.equal(posts.length,1,'exactly one hub write for the whole session');
+  assert.deepEqual(posts[0].cells.map(c=>c.command),['Down']);assert.deepEqual(posts[0].pinned.map(c=>c.command),['Mute']);
+  assert.equal(el('notice').textContent,'Saved.');assert.equal(saveEnabled(ctx),false);assert.doesNotMatch(content.innerHTML,/Unsaved changes/);
+  assert.ok(!store.get(KEY),'the stored draft is cleared once saved');
+  assert.equal(state.config.activities[0].screen.cells.length,1,'the remote view now sees the new layout');
+  await pressSave(ctx);assert.equal(posts.length,1,'Save with nothing changed does nothing');
+  down(content,btn(content,'cells',0));advance(600);await settle();
+  assert.equal(el('notice').textContent,'','a new edit clears the old "Saved." message');
 
-  // Nothing left to add: the sheet says so instead of listing nothing.
-  a={id:'w',name:'W',steps:[{deviceId:'bar'}],screen:{columns:4,cells:[cell('Mute','bar')],pinned:[]}};
-  ({content}=setup(a));down(content,btn(content,'cells'));advance(600);
-  assert.match(sheet.innerHTML,/already on the remote/);assert.doesNotMatch(sheet.innerHTML,/data-pick/);
-  a={id:'w',name:'W',steps:[],screen:{columns:4,cells:[],pinned:[]}};
-  ({content}=setup(a));down(content,btn(content,'cells'));advance(600);assert.match(sheet.innerHTML,/no devices yet/);
-  sheet.close();
+  // A rejected save keeps the draft and says why.
+  ({content,ctx}=setup(base0));
+  down(content,btn(content,'cells',0));advance(600);await settle();
+  const realApi=context.api;context.api=async(path,body)=>{if(body)throw Error('Invalid configuration, layout or activity sequence.');return realApi(path,body);};
+  await pressSave(ctx);
+  assert.match(el('notice').textContent,/^Not saved: Invalid configuration/);assert.equal(el('notice').dataset.error,'true');
+  assert.deepEqual(cmds(content,'cells'),['Down','Mute']);assert.equal(saveEnabled(ctx),true);assert.ok(store.get(KEY));
+  context.api=realApi;await pressSave(ctx);assert.equal(posts.length,1,'a retry then succeeds');
+
+  // The layout changed on another device: ask before replacing it.
+  ({content,ctx}=setup(base0));
+  down(content,btn(content,'cells',0));advance(600);await settle();
+  hub.activities[0].screen.cells.push(cell('Left'));
+  context.confirmAnswer=false;await pressSave(ctx);
+  assert.equal(posts.length,0,'declining leaves the hub alone');assert.match(context.confirmed.at(-1),/changed on another device/);assert.equal(saveEnabled(ctx),true);
+  context.confirmAnswer=true;await pressSave(ctx);assert.equal(posts.length,1);
+
+  // Discard asks, then returns to the hub's layout and clears the draft.
+  ({content,ctx}=setup(base0));
+  down(content,btn(content,'cells',0));advance(600);await settle();
+  context.confirmAnswer=false;click(content,'[data-discard]');assert.deepEqual(cmds(content,'cells'),['Down','Mute']);
+  el('notice').textContent='Restored your unsaved changes.';
+  context.confirmAnswer=true;click(content,'[data-discard]');
+  assert.equal(el('notice').textContent,'','Discard clears the old message');
+  assert.deepEqual(cmds(content,'cells'),['Up','Down','Mute']);assert.ok(!store.get(KEY));assert.equal(saveEnabled(ctx),false);
+  assert.equal(posts.length,0);
+
+  // Leaving: the back arrow asks while there are unsaved changes; any exit keeps the draft.
+  ({content,ctx}=setup(base0));
+  assert.equal(X.getLeaveGuard()(),true);assert.equal(context.confirmed.length,0,'no prompt when clean');
+  down(content,btn(content,'cells',0));advance(600);await settle();
+  context.confirmAnswer=false;assert.equal(X.getLeaveGuard()(),false);assert.match(context.confirmed.at(-1),/Leave without saving/);
+  context.confirmAnswer=true;assert.equal(X.getLeaveGuard()(),true);
+  context.location.hash='#/activity/w';show();assert.equal(X.getLeaveGuard(),null);
+  // Coming back restores the draft and says so; saving then checks against the ORIGINAL layout.
+  ({content,ctx}=setup(base0,{keepStore:true}));
+  assert.deepEqual(cmds(content,'cells'),['Down','Mute']);assert.equal(saveEnabled(ctx),true);assert.match(el('notice').textContent,/Restored your unsaved changes/);
+  hub.activities[0].screen.cells.push(cell('Left'));context.confirmAnswer=false;await pressSave(ctx);
+  assert.equal(posts.length,0,'a restored draft still detects a change made elsewhere meanwhile');
+  context.confirmAnswer=true;
 
   // Keyboard: Enter on an empty slot opens the sheet, Delete removes a button.
-  a={id:'w',name:'W',steps:[{deviceId:'tv'}],screen:{columns:4,cells:[cell('Up')],pinned:[]}};
-  ({content}=setup(a));
+  ({content,ctx}=setup({...base0,screen:{columns:4,cells:[cell('Up')],pinned:[]}}));
   const key=(b,k)=>{let prevented=false;content.onkeydown({key:k,target:{closest:()=>b},preventDefault(){prevented=true;}});return prevented;};
   assert.equal(key(btn(content,'cells'),'Enter'),true);assert.equal(sheet.open,true);sheet.close();
   assert.equal(key(btn(content,'cells'),'x'),false);
-  assert.equal(key(btn(content,'cells',0),'Enter'),false);assert.equal(a.screen.cells.length,1,'Enter does not remove');
+  assert.equal(key(btn(content,'cells',0),'Enter'),false);assert.deepEqual(cmds(content,'cells'),['Up'],'Enter does not remove');
   const vibratedBefore=context.vibrated;
-  assert.equal(key(btn(content,'cells',0),'Delete'),true);await settle();assert.equal(a.screen.cells.length,0);
+  assert.equal(key(btn(content,'cells',0),'Delete'),true);assert.deepEqual(cmds(content,'cells'),[]);
   assert.equal(context.vibrated,vibratedBefore,'only a real long-press vibrates');
 
   // Add row reveals another row of empty slots.
-  ({content}=setup(a));
+  ({content}=setup({...base0,screen:{columns:4,cells:[],pinned:[]}}));
   const before=(content.innerHTML.match(/class="cell empty" type="button" data-zone="cells"/g)||[]).length;
-  content.onclick({target:{closest:sel=>sel==='[data-add-row]'?{}:null}});
+  click(content,'[data-add-row]');
   assert.equal((content.innerHTML.match(/class="cell empty" type="button" data-zone="cells"/g)||[]).length,before+4);
 
-  // Not the owner, or an activity that is gone: no editor, no handlers.
-  a={id:'w',name:'W',steps:[],screen:{columns:4,cells:[cell('Up')],pinned:[]}};
-  ({content}=setup(a,{owner:false}));assert.match(content.innerHTML,/Only the hub owner/);assert.equal(content.onpointerdown,undefined);
-  const ghost={content:{innerHTML:'',isConnected:true},params:['ghost'],setTitle(){}};X.renderEditor(ghost);assert.match(ghost.content.innerHTML,/no longer exists/);
-  // The activity vanishing under an open editor (another browser) redraws safely.
-  ({content}=setup({id:'w',name:'W',steps:[{deviceId:'tv'}],screen:{columns:4,cells:[cell('Up')],pinned:[]}}));
-  state.config={revision:2,activities:[]};down(content,btn(content,'cells',0));advance(600);await settle();
-  assert.match(content.innerHTML,/no longer exists/);
-  context.setTimeout=()=>0;context.clearTimeout=()=>{};
+  // Not the owner, or an activity that is gone: no editor, no handlers, no guard.
+  ({content}=setup(base0,{owner:false}));assert.match(content.innerHTML,/Only the hub owner/);assert.equal(content.onpointerdown,undefined);
+  context.location.hash='#/edit/w';show();assert.equal(X.getLeaveGuard(),null,'a non-owner gets no editor and no leave prompt');
+  const ghost={content:{innerHTML:'',isConnected:true},actions:{innerHTML:''},params:['ghost'],setTitle(){}};X.renderEditor(ghost);assert.match(ghost.content.innerHTML,/no longer exists/);
+  context.setTimeout=()=>0;context.clearTimeout=()=>{};context.confirmed=[];context.confirmAnswer=true;
 }
-console.log('Press-and-hold adds and removes immediately; taps, drags, cancels and leaving the screen do nothing; keyboard and sheet paths work');
+console.log('Editing changes only a local draft; Save is one write; conflicts, rejection, discard, leaving and restoring are handled');
 
 // Leaving the editor must not leave its handlers on the shared content element.
 {
   const content=el('content');content.onpointerdown=()=>{};content.onkeydown=()=>{};content.oncontextmenu=()=>{};
   state.config={activities:[]};state.session={role:'owner'};context.location.hash='#/devices';show();
-  assert.equal(content.onpointerdown,null);assert.equal(content.onkeydown,null);assert.equal(content.oncontextmenu,null);
+  assert.equal(content.onpointerdown,null);assert.equal(content.onkeydown,null);assert.equal(content.oncontextmenu,null);assert.equal(el('header-actions').onclick,null);assert.equal(X.getLeaveGuard(),null);
 }
 console.log('Switching screens clears the previous screen’s handlers');
