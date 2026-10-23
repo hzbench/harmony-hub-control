@@ -541,10 +541,13 @@ function renderEditor(ctx) {
   ctx.content.onpointerdown = event => {
     const button = event.target.closest('[data-zone]');if(!button||event.button!==0||button.classList.contains('empty'))return;
     cancelPress();
-    press = {button, x:event.clientX, y:event.clientY, timer:setTimeout(()=>{const b=press.button;press=null;remove(b,'hold');},LONG_PRESS_MS)};
+    // Chrome sends pointercancel as soon as a pan starts, even for a few pixels of finger
+    // drift, so a cancel alone doesn't end the press; only an actual scroll does.
+    const scrollY = window.scrollY;
+    press = {button, x:event.clientX, y:event.clientY, timer:setTimeout(()=>{const b=press.button;press=null;if(window.scrollY===scrollY)remove(b,'hold');},LONG_PRESS_MS)};
   };
   ctx.content.onpointermove = event => {if(press&&Math.hypot(event.clientX-press.x,event.clientY-press.y)>MOVE_SLOP)cancelPress();};
-  ['onpointerup','onpointercancel','onpointerleave'].forEach(name=>{ctx.content[name]=cancelPress;});
+  ['onpointerup','onpointerleave'].forEach(name=>{ctx.content[name]=cancelPress;});
   ctx.content.oncontextmenu = event => event.preventDefault();
   // Keyboard has no long-press: Delete/Backspace removes the focused button. An
   // empty slot opens the add sheet from its normal click (Enter/Space included).

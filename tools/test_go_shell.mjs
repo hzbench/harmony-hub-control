@@ -547,19 +547,21 @@ console.log('Editor draws gaps as empty squares, lists every cell (including sta
   // The click from lifting the finger over the now-empty square must not open the sheet; a later tap does.
   tapSlot(content,'cells',1);assert.equal(sheet.open,false,'ignored right after a long-press removal');
   advance(800);tapSlot(content,'cells',1);assert.equal(sheet.open,true);sheet.close();
-  // A tap (released early), a drag past the slop, and a pointer cancel on a button do nothing.
+  // A tap (released early) and a drag past the slop do nothing; nor does a hold during which the page scrolled.
   for(const stop of ['up','move','cancel']){
     down(content,slotBtn(content,'cells',0));
     if(stop==='up')content.onpointerup();
     if(stop==='move')content.onpointermove({clientX:10,clientY:40});
-    if(stop==='cancel')content.onpointercancel();
+    if(stop==='cancel'){context.window.scrollY=40;}
     advance(1000);await settle();
     assert.deepEqual(layout(content,'cells'),{0:'Up',2:'Mute'},stop);
   }
+  context.window.scrollY=0;
   // Holding an empty square does nothing (it is a tap target, not a hold target).
   down(content,slotBtn(content,'cells',1));advance(1000);await settle();assert.equal(sheet.open,false);assert.deepEqual(layout(content,'cells'),{0:'Up',2:'Mute'});
-  down(content,slotBtn(content,'cells',0));content.onpointermove({clientX:12,clientY:14});advance(600);await settle();
-  assert.deepEqual(layout(content,'cells'),{2:'Mute'},'a small wobble still counts as holding');
+  // Chrome fires pointercancel when a pan starts, even for a tiny drift; with no actual scroll the hold still counts.
+  down(content,slotBtn(content,'cells',0));content.onpointermove({clientX:12,clientY:14});content.onpointercancel?.();advance(600);await settle();
+  assert.deepEqual(layout(content,'cells'),{2:'Mute'},'a small wobble and a pointercancel still count as holding');
   // Navigating away before the hold completes does nothing.
   down(content,slotBtn(content,'cells',2));context.location.hash='#/devices';advance(600);await settle();
   assert.deepEqual(J(JSON.parse(store.get(KEY)).draft.cells.map(c=>c.command)),['Mute']);
