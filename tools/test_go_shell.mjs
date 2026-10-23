@@ -14,11 +14,11 @@ assert.match(html,/href="\/go\/go\.css"/);assert.match(html,/src="\/go\/go\.js"/
 console.log('Entry page and shell script use no inline styles or scripts (CSP-safe)');
 
 const elements={}, store=new Map();
-const el=id=>elements[id]||=({id,dataset:{},hidden:false,textContent:'',innerHTML:'',title:'',attrs:{},setAttribute(k,v){this.attrs[k]=v;},removeAttribute(k){delete this.attrs[k];},focus(){},addEventListener(){},querySelectorAll:()=>[]});
-const context=vm.createContext({document:{getElementById:el,title:''},window:{addEventListener(){},scrollTo(){}},location:{hash:'',replace(url){context.replaced=url;}},history:{replaceState(){}},
+const el=id=>elements[id]||=({id,dataset:{},classList:{add(){},remove(){}},hidden:false,textContent:'',innerHTML:'',title:'',attrs:{},setAttribute(k,v){this.attrs[k]=v;},removeAttribute(k){delete this.attrs[k];},focus(){},addEventListener(){},querySelectorAll:()=>[]});
+const context=vm.createContext({document:{getElementById:el,title:'',body:{dataset:{}},addEventListener(){},hidden:false},window:{addEventListener(){},scrollTo(){}},location:{hash:'',replace(url){context.replaced=url;}},history:{replaceState(){}},
   localStorage:{getItem:k=>store.get(k)??null,setItem:(k,v)=>store.set(k,v)},setTimeout:()=>0,clearTimeout(){},fetch:async()=>{throw new TypeError('offline');},AbortController,URL});
 const inert=source.replace(/\n  boot\(\);\n\}\s*$/,'\n}');assert.notEqual(inert,source,'boot() auto-run not found');
-vm.runInContext(inert.replace('const state =','var state =')+'\nthis.exports={parseRoute,routeHash,connection,state,needsFullUi,api,show,screens,renderActivities,renderDevices};',context);
+vm.runInContext(inert.replace('const state =','var state =')+'\nthis.exports={parseRoute,routeHash,connection,state,needsFullUi,api,show,screens,renderActivities,renderDevices,remoteBlocks,remoteHtml,renderActivityRemote,CONTROLS,controlFor,volumeTarget};',context);
 const {parseRoute,routeHash,connection,state,needsFullUi,api,show}=context.exports;
 
 assert.deepEqual(JSON.parse(JSON.stringify(parseRoute(''))),{name:'activities',params:[]});
@@ -50,6 +50,7 @@ assert.equal(needsFullUi({role:'controller'},{setupMode:'unselected'}),false);
 console.log('Pairing and first-run setup are handed to the original UI');
 
 // Drill-in screens get a back arrow and no tabs/connection icon; tab screens the reverse.
+state.config={activities:[]};state.session={role:'owner'};
 context.location.hash='#/activity/watch';show();
 assert.equal(el('back').hidden,false);assert.equal(el('back').dataset.parent,'activities');
 assert.equal(el('tabs').hidden,true);assert.equal(el('connection').hidden,true);
@@ -164,3 +165,110 @@ console.log('Devices list shows type and command count (singular/plural), links 
 state.devices=[];context.exports.renderDevices({content:devicesContent,params:[]});
 assert.match(devicesContent.innerHTML,/No devices yet/);assert.match(devicesContent.innerHTML,/Manage devices/);
 console.log('Devices list has an empty state that still offers Manage devices');
+
+// ---- Activity remote ----
+const J=v=>JSON.parse(JSON.stringify(v));
+const appSource=fs.readFileSync(new URL('../payload/www/app.js',import.meta.url),'utf8');
+const appControls=(()=>{const c=vm.createContext({});vm.runInContext(appSource.slice(appSource.indexOf('const norm ='),appSource.indexOf('function defaultLayout'))+';this.controls=controls',c);return J(c.controls);})();
+assert.deepEqual(J(context.exports.CONTROLS).map(([slot,label,,aliases])=>[slot,label,aliases]),appControls.map(([slot,label,,aliases])=>[slot,label,aliases]));
+console.log("go.js's control/alias table matches app.js's, so both UIs resolve commands identically");
+
+const tv={id:'tv',name:'TV',transport:'ir',commands:['Up','Down','Left','Right','OK','Back','Input','Mute','VolumeUp','VolumeDown','HDMI 1','PowerOn'].map(name=>({name}))};
+const bar={id:'bar',name:'Bar',transport:'ir',commands:[{name:'VolUp'},{name:'VolDn'},{name:'Mute'}]};
+state.devices=[tv,bar];
+const cell=(command,deviceId='tv',extra={})=>({deviceId,command,...extra});
+const kinds=blocks=>J([...blocks].map(b=>b.kind==='cross'?'cross':[...b.entries].map(e=>e.cell.command).join(',')));
+const {remoteBlocks,remoteHtml}=context.exports;
+
+// Cross recognition does not depend on placement order or what surrounds it.
+const arrows=['Up','Left','OK','Right','Down'];
+for(const order of [arrows,[...arrows].reverse(),['Down','OK','Up','Right','Left']]){
+  assert.deepEqual(kinds(remoteBlocks(order.map(c=>cell(c)))),['cross'],order.join());
+}
+assert.deepEqual(kinds(remoteBlocks([cell('Back'),...arrows.map(c=>cell(c)),cell('Input'),cell('Mute')])),['Back','cross','Input,Mute']);
+assert.deepEqual(kinds(remoteBlocks([cell('Up'),cell('Back'),cell('Down'),cell('Input'),cell('Left'),cell('Mute'),cell('Right')])),['cross','Back,Input,Mute']);
+const noOk=remoteBlocks(['Up','Down','Left','Right'].map(c=>cell(c)));
+assert.deepEqual(kinds(noOk),['cross']);assert.equal(noOk[0].pick.ok,undefined);
+assert.match(remoteHtml({columns:4,cells:['Up','Down','Left','Right'].map(c=>cell(c))}).body,/<span><\/span>/);
+// A partial set of arrows is just ordinary buttons; a duplicate arrow stays ordinary.
+assert.deepEqual(kinds(remoteBlocks([cell('Up'),cell('Down'),cell('Back')])),['Up,Down,Back']);
+assert.deepEqual(kinds(remoteBlocks([...arrows.map(c=>cell(c)),cell('Up')])),['cross','Up']);
+// Aliases count (a different device's "Select"/"Arrow Up" style names).
+const alt={id:'alt',transport:'ir',commands:['Arrow Up','Arrow Down','Arrow Left','Arrow Right','Select'].map(name=>({name}))};
+state.devices=[tv,bar,alt];
+assert.deepEqual(kinds(remoteBlocks(['Arrow Up','Select','Arrow Left','Arrow Right','Arrow Down'].map(c=>cell(c,'alt')))),['cross']);
+state.devices=[tv,bar];
+console.log('The dpad cross is recognised in any placement order, keeps other buttons around it, and needs all four arrows');
+
+// Volume is hardware-only; stale cells are skipped; legacy label/wide are ignored.
+assert.deepEqual(kinds(remoteBlocks([cell('VolumeUp'),cell('VolumeDown'),cell('Mute'),cell('Gone'),cell('Back','missing')])),['Mute']);
+const legacy=remoteHtml({columns:2,cells:[cell('Mute','tv',{label:'Shhh',wide:true})]}).body;
+assert.doesNotMatch(legacy,/Shhh|wide/);assert.match(legacy,/data-columns="2"/);assert.match(legacy,/aria-label="Mute"/);
+// Known commands show an icon, unknown ones their own name; everything is escaped.
+const iconsHtml=remoteHtml({cells:[cell('Mute'),cell('HDMI 1')]}).body;
+assert.match(iconsHtml,/icon-VolumeX/);assert.match(iconsHtml,/<span class="cell-text">HDMI 1<\/span>/);
+state.devices=[{id:'x',commands:[{name:'<b>"x"'}]}];
+assert.doesNotMatch(remoteHtml({cells:[cell('<b>"x"','x')]}).body,/<b>/);
+state.devices=[tv,bar];
+assert.match(remoteHtml(undefined).body,/^$/);assert.equal(remoteHtml(undefined).pinned,'');
+console.log('Remote view hides volume and stale cells, ignores label/wide, shows names for unknown commands, escapes everything');
+
+// Pinned footer: same renderer, separate from the scrolling cells.
+const pinnedView=remoteHtml({columns:4,cells:[cell('Back')],pinned:[cell('Mute'),cell('Gone'),cell('VolumeUp'),cell('Input')]});
+assert.equal((pinnedView.pinned.match(/data-command=/g)||[]).length,2);
+assert.doesNotMatch(pinnedView.body,/Mute/);
+console.log('Pinned buttons render as their own footer row, skipping stale and volume cells');
+
+// Full screen: header edit link only for the owner, footer outside the scrolling content.
+state.config={activities:[{id:'watch',name:'Watch <TV>',steps:[{deviceId:'tv'}],screen:{columns:4,cells:[cell('Back')],pinned:[cell('Mute')]}}]};
+const rc={content:{innerHTML:'',querySelectorAll:()=>[]},actions:{innerHTML:''},params:['watch'],setTitle(t){this.title=t;}};
+state.session={role:'owner'};context.exports.renderActivityRemote(rc);
+assert.equal(rc.title,'Watch <TV>');
+assert.match(rc.actions.innerHTML,/href="#\/edit\/watch"/);
+assert.match(rc.content.innerHTML,/class="pinned"/);
+rc.actions.innerHTML='';state.session={role:'controller'};context.exports.renderActivityRemote(rc);
+assert.equal(rc.actions.innerHTML,'');
+rc.params=['nope'];context.exports.renderActivityRemote(rc);assert.match(rc.content.innerHTML,/no longer exists/);
+console.log('Activity remote shows the edit link only to the owner and copes with a missing activity');
+
+// Back from the editor returns to that activity's remote, not the list.
+context.location.hash='#/edit/watch';show();
+assert.equal(el('back').dataset.href,'#/activity/watch');
+context.location.hash='#/activity/watch';show();
+assert.equal(el('back').dataset.href,'#/activities');assert.equal(context.document.body.dataset.reserveNotice,'true');
+context.location.hash='#/devices';show();assert.equal(context.document.body.dataset.reserveNotice,'false');
+console.log('Back arrows return to the right parent; only remotes reserve space for send status');
+
+// ---- Hardware volume ----
+const sent=[];context.api=async(path,body)=>{sent.push({path,...body});return {id:'op'};};context.operation=async()=>({state:'completed'});
+const flush=async()=>{for(let i=0;i<10;i++)await Promise.resolve();};
+const setActivity=(activity)=>{state.config={activities:[activity]};store.set('harmony-activity',activity?.id||'');};
+state.online=true;
+const press=async d=>{sent.length=0;context.window.harmonyHardwareVolume(d);await flush();return sent.map(c=>[c.deviceId,c.command]);};
+setActivity({id:'a',steps:[{deviceId:'bar'}],screen:{cells:[cell('VolumeUp'),cell('VolumeDown')]}});
+assert.deepEqual(J(await press('up')),[['tv','VolumeUp']]);
+assert.deepEqual(J(await press('down')),[['tv','VolumeDown']]);
+// A screen cell for a deleted device/command is skipped in favour of the next one.
+setActivity({id:'a',steps:[],screen:{cells:[cell('VolumeUp','gone'),cell('VolUp','bar')]}});
+assert.deepEqual(J(await press('up')),[['bar','VolUp']]);
+// No volume cell (the new editor can't place one): fall back to the start-step devices.
+setActivity({id:'a',steps:[{deviceId:'tv'},{deviceId:'bar'}],screen:{cells:[cell('Back')]}});
+assert.deepEqual(J(await press('up')),[['tv','VolumeUp']]);
+setActivity({id:'a',steps:[{deviceId:'bar'}]});
+assert.deepEqual(J(await press('down')),[['bar','VolDn']]);
+setActivity({id:'a',steps:[{delay:1},{deviceId:'missing'}]});
+assert.deepEqual(J(await press('up')),[]);
+setActivity(null);state.config={activities:[]};assert.deepEqual(J(await press('up')),[]);
+setActivity({id:'a',steps:[{deviceId:'tv'}]});state.online=false;assert.deepEqual(J(await press('up')),[]);state.online=true;
+// Ignored while a previous volume command is still in flight.
+let finishOp;context.operation=()=>new Promise(r=>finishOp=r);
+sent.length=0;context.window.harmonyHardwareVolume('up');context.window.harmonyHardwareVolume('up');await flush();
+assert.equal(sent.length,1);finishOp({state:'completed'});await flush();
+context.operation=async()=>({state:'completed'});
+assert.deepEqual(J(await press('up')),[['tv','VolumeUp']]);
+console.log('Hardware volume uses a screen volume cell, else the start-step devices, skips stale targets and ignores overlapping presses');
+// Regression: an empty reserved notice has no height unless the rule gives it one,
+// which let "Sent to the hub." push the whole remote down under the user's finger.
+assert.match(css,/body\[data-reserve-notice=true\] #notice\{min-height:\d+px\}/);
+assert.match(css,/body\[data-reserve-notice=true\] #notice\[hidden\]\{display:block!important;visibility:hidden\}/);
+console.log('Remote screens reserve space for the send status so a press cannot shift the buttons');

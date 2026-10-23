@@ -36,8 +36,6 @@ function deviceTypeOptions(selected='Television') {
   if(!types.includes(selected))types.unshift(selected);
   return types.map(type=>`<option ${type===selected?'selected':''}>${escape(type)}</option>`).join('');
 }
-// Glyph for a placed command no `controls` alias recognises.
-const FALLBACK_ICON = 'Circle';
 const norm = name => String(name).toLowerCase().replace(/\+/g,'up').replace(/-\s*$/,'down').replace(/[^a-z0-9]/g,'');
 const controls = [
   ['power','Power','Power',['power','powertoggle','onoff']],['poweron','Power on','Power',['poweron','on']],['poweroff','Power off','Power',['poweroff','off']],
