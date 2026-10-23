@@ -432,7 +432,7 @@ assert.notEqual(shapeOf(mk([sc('Up',0)])),shapeOf(mk([sc('Up',3)])),'moving a bu
   store.set('harmony-layout-draft:w','{"base":"x","draft":{"cells":[],"pinned":[]}}');   // a leftover from an older version is ignored
   const d=X.startDraft(act);store.delete('harmony-layout-draft:w');
   assert.equal(d.base,shapeOf(act.screen));
-  assert.deepEqual(J(d.draft),{columns:4,cells:[sc('Up',0),sc('Down',1)],pinned:[]},'the draft gives every button a slot');
+  assert.deepEqual(J(d.draft),{columns:4,crossRow:0,cells:[sc('Up',0),sc('Down',1)],pinned:[]},'the draft gives every button a slot');
   assert.equal(shapeOf(d.draft),d.base,'...without counting as a change');
   d.draft.cells.push(sc('Mute',2));assert.equal(act.screen.cells.length,2);assert.equal(act.screen.cells[0].slot,undefined,'the draft is a copy');
 }
@@ -681,12 +681,15 @@ console.log('Editor draws gaps as empty squares, lists every cell (including sta
   assert.doesNotMatch(content.innerHTML,/class="dpad"/,'the arrows go back to the grid when the cross is incomplete');
   assert.ok(empties(content,'cells').includes(2),'...and Up\'s square is a hole');
 
-  // Add arrow pad: the whole cross in one tap, from a blank layout, without disturbing the grid.
+  const place=row=>content.onclick({target:{closest:sel=>sel==='[data-place-row]'?{dataset:{placeRow:String(row)}}:null}});
+  // Add arrow pad: choose a spot, and the whole cross goes there in one go, from a blank layout, without disturbing the grid.
   ({content,ctx}=setup({...base0,screen:{columns:4,cells:[sc('Back',0),sc('Mute',1)],pinned:[]}}));
   assert.match(content.innerHTML,/data-add-pad >/,'offered while there is no cross');assert.doesNotMatch(content.innerHTML,/class="dpad"/);
   const gridOf=()=>{const h=content.innerHTML,a=h.indexOf('edit-grid');return h.slice(a,h.indexOf('</div>',a));};const _g=()=>gridOf().replace(/data-slot="\d+"/g,'');
   const gridBeforePad=gridOf().replace(/data-slot="\d+"/g,'');
   click(content,'[data-add-pad]');
+  assert.match(content.innerHTML,/data-place-row="0"/,'asks where to put it');assert.doesNotMatch(content.innerHTML,/class="dpad"/);assert.equal(saveEnabled(ctx),false,'nothing added until a spot is chosen');
+  place(0);
   assert.match(content.innerHTML,/class="dpad"/);assert.doesNotMatch(content.innerHTML,/data-add-pad/,'gone once the cross exists');
   assert.deepEqual(Object.keys(layout(content,'cells')).map(Number).sort((a,b)=>a-b),[0,1,27,28,29,30,31],'five cross buttons at the far end of the grid');
   assert.equal(gridOf().replace(/data-slot="\d+"/g,''),gridBeforePad,'the grid is unchanged');
@@ -694,7 +697,7 @@ console.log('Editor draws gaps as empty squares, lists every cell (including sta
   assert.match(content.innerHTML.slice(content.innerHTML.indexOf('class="dpad"'),content.innerHTML.indexOf('edit-grid')),/class="cell empty tl"/,'the corners are open squares');
   // Arrows already placed stay where they are; only the missing ones are added.
   ({content,ctx}=setup({...base0,screen:{columns:4,cells:[sc('Up',0),sc('Left',1)],pinned:[]}}));
-  click(content,'[data-add-pad]');
+  click(content,'[data-add-pad]');place(0);
   assert.deepEqual(Object.keys(layout(content,'cells')).map(Number).sort((a,b)=>a-b),[0,1,29,30,31],'Down, Right and OK were added');assert.match(content.innerHTML,/class="dpad"/);
   // A complete cross hides the button; a device without arrows disables it and says why.
   ({content,ctx}=setup({...base0,screen:{columns:4,cells:[],pinned:[]}}));
@@ -703,6 +706,27 @@ console.log('Editor draws gaps as empty squares, lists every cell (including sta
   // No room: refuse rather than half-add.
   ({content,ctx}=setup({...base0,screen:{columns:4,cells:Array.from({length:30},(_,i)=>({deviceId:'bar',command:'X'+i,slot:i})),pinned:[]}}));
   assert.match(content.innerHTML,/data-add-pad disabled/);assert.match(content.innerHTML,/isn’t room for the arrow pad/);
+
+  // The arrow pad can sit between any two rows; the remote follows, and it can be moved or the choice cancelled.
+  ({content,ctx}=setup({...base0,screen:{columns:4,cells:[sc('Back',0),sc('Input',4),sc('Mute',8)],pinned:[]}}));
+  click(content,'[data-add-pad]');
+  assert.deepEqual([...content.innerHTML.matchAll(/data-place-row="(\d+)"/g)].map(m=>+m[1]),[0,1,2,3],'a bar before every row and after the last');
+  click(content,'[data-place-cancel]');assert.doesNotMatch(content.innerHTML,/data-place-row/);assert.doesNotMatch(content.innerHTML,/class="dpad"/);assert.equal(saveEnabled(ctx),false);
+  click(content,'[data-add-pad]');place(2);
+  const order=[content.innerHTML.indexOf('aria-label="Back.'),content.innerHTML.indexOf('aria-label="Input.'),content.innerHTML.indexOf('class="dpad"'),content.innerHTML.indexOf('aria-label="Mute.')];
+  assert.deepEqual(order,[...order].sort((a,b)=>a-b),'Back, Input, then the pad, then Mute');
+  assert.ok(order[2]>order[1]&&order[2]<order[3]);
+  assert.match(content.innerHTML,/data-move-pad/);assert.doesNotMatch(content.innerHTML,/data-add-pad/);
+  assert.equal(JSON.parse(JSON.stringify(ctx.actions.innerHTML)).includes('data-save'),true);
+  click(content,'[data-move-pad]');assert.ok(!content.innerHTML.includes('data-place-row="2"'),'no bar where the pad already is');
+  place(0);assert.ok(content.innerHTML.indexOf('class="dpad"')<content.innerHTML.indexOf('aria-label="Back. Press'),'moved to the top');assert.equal(posts.length,0);
+  await pressSave(ctx);assert.equal(hub.activities[0].screen.crossRow,0);
+  ({content,ctx}=setup({...base0,screen:{columns:4,cells:[sc('Back',0),sc('Input',4),sc('Mute',8)],pinned:[]}}));
+  click(content,'[data-add-pad]');place(1);await pressSave(ctx);
+  assert.equal(hub.activities[0].screen.crossRow,1,'the spot is saved with the layout');
+  state.config=J(hub);
+  const rem=remoteHtml(state.config.activities[0].screen).body;
+  assert.ok(rem.indexOf('aria-label="Back"')<rem.indexOf('class="dpad"')&&rem.indexOf('class="dpad"')<rem.indexOf('aria-label="Input"'),'the remote draws the pad where it was placed');
 
   // Keyboard: an empty square opens the sheet from its normal click (Enter/Space), Delete removes the focused button.
   ({content,ctx}=setup({...base0,screen:{columns:4,cells:[sc('Up',0)],pinned:[]}}));

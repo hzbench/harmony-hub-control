@@ -235,9 +235,13 @@ function crossSplit(entries, occupied) {
   const rest = entries.filter(e=>!members.has(e)).map(e=>({...e, slot:e.slot-vacated.filter(v=>v<e.slot).length}));
   return {crossed, pick, corner, spare, vacated, rest};
 }
-function remoteBlocks(cells) {
+// `crossRow` is how many grid rows sit above the cross (0: at the top).
+const crossRowOf = screen => Number.isInteger(screen?.crossRow)&&screen.crossRow>0 ? Math.min(screen.crossRow,GRID_SLOTS) : 0;
+function remoteBlocks(cells, crossRow=0, columns=4) {
   const {crossed, pick, corner, rest} = crossSplit(visibleEntries(cells, GRID_SLOTS), new Set(withSlots(cells,GRID_SLOTS).map(c=>c.slot)));
-  return [...(crossed?[{kind:'cross',pick,corner}]:[]), ...(rest.length?[{kind:'grid',entries:rest}]:[])];
+  const above = rest.filter(e=>Math.floor(e.slot/columns)<crossRow), below = rest.filter(e=>Math.floor(e.slot/columns)>=crossRow);
+  const grid = entries => entries.length?[{kind:'grid',entries}]:[];
+  return crossed ? [...grid(above), {kind:'cross',pick,corner}, ...grid(below)] : grid(rest);
 }
 function cellButton({cell,control}, extra='', customFace='') {
   const label = control?.[1] || cell.command;
@@ -256,7 +260,7 @@ function gridHtml(entries, columns) {
 }
 function remoteHtml(screen) {
   const columns = screen?.columns || 4;
-  const body = remoteBlocks(screen?.cells).map(block=>block.kind==='cross'?crossHtml(block.pick,block.corner):gridHtml(block.entries,columns)).join('');
+  const body = remoteBlocks(screen?.cells,crossRowOf(screen),columns).map(block=>block.kind==='cross'?crossHtml(block.pick,block.corner):gridHtml(block.entries,columns)).join('');
   // The pinned footer is one row of `columns` slots, in the order set: no cross.
   const pinned = visibleEntries(screen?.pinned, columns);
   return {body, pinned: pinned.length ? gridHtml(pinned,columns) : ''};
@@ -463,8 +467,8 @@ function editorSlots(zone, extent, columns, extraRows=0, capacity=MAX_CELLS) {
 
 // ---- Draft and save ----
 // Compared as strings to tell whether a layout changed.
-const layoutShape = screen => {const s=cloneScreen(screen);return JSON.stringify([s.columns,s.cells,s.pinned]);};
-const cloneScreen = screen => {const columns=screen?.columns||4;return {columns, cells:withSlots(screen?.cells,MAX_CELLS), pinned:withSlots(screen?.pinned,columns)};};
+const layoutShape = screen => {const s=cloneScreen(screen);return JSON.stringify([s.columns,s.crossRow,s.cells,s.pinned]);};
+const cloneScreen = screen => {const columns=screen?.columns||4;return {columns, crossRow:crossRowOf(screen), cells:withSlots(screen?.cells,MAX_CELLS), pinned:withSlots(screen?.pinned,columns)};};
 // The editor always starts from the hub's current layout. `base` is that
 // layout: Save later compares the hub against it, not against whatever it is
 // by then, to notice someone else's change.
@@ -481,7 +485,7 @@ async function submitLayout(id, draft, base, confirmReplace) {
   const activity = (fresh.activities||[]).find(a=>a.id===id);
   if(!activity)throw Error('This activity no longer exists on the hub.');
   if(layoutShape(activity.screen)!==base&&!confirmReplace())return false;
-  activity.screen = {...(activity.screen||{}), columns:draft.columns, cells:draft.cells, pinned:draft.pinned};
+  activity.screen = {...(activity.screen||{}), columns:draft.columns, crossRow:draft.crossRow, cells:draft.cells, pinned:draft.pinned};
   await api('configuration',{revision:fresh.revision, configuration:fresh});
   state.config = await api('configuration');
   return true;
@@ -505,10 +509,27 @@ function editGridHtml(activity, ui) {
   const free = Array.from({length:MAX_CELLS},(_,slot)=>slot).filter(slot=>!vacated.includes(slot));
   const extent = rest.reduce((most,e)=>Math.max(most,e.slot+1),0);
   const slots = editorSlots('cells', extent, columns, ui.extraRows, free.length);
-  const cells = Array.from({length:slots},(_,at)=>{const e=rest.find(x=>x.slot===at);return e?editCellHtml(e.cell,'cells',e.cell.slot):editCellHtml(null,'cells',free[at]);}).join('');
+  const squares = Array.from({length:slots},(_,at)=>{const e=rest.find(x=>x.slot===at);return e?editCellHtml(e.cell,'cells',e.cell.slot):editCellHtml(null,'cells',free[at]);});
+  const rows = Array.from({length:Math.ceil(squares.length/columns)},(_,row)=>squares.slice(row*columns,(row+1)*columns));
   const crossCell = key => {const e=pick[key]||corner[key];return e?editCellHtml(e.cell,'cells',e.cell.slot,key):spare[key]!==undefined?editCellHtml(null,'cells',spare[key],key):'<span></span>';};
-  const cross = crossed ? `<div class="dpad">${CROSS_SQUARES.map(crossCell).join('')}</div>` : '';
-  return `${cross}<div class="cells edit-grid" data-columns="${escape(String(columns))}">${cells}</div>`;
+  const at = Math.min(crossRowOf(activity.screen),rows.length);
+  // Items top to bottom: grid rows, the cross at its row, and (while choosing a
+  // spot) a bar before each row and after the last. Neighbouring rows share one grid.
+  const items = [];
+  for(let row=0;row<=rows.length;row++){
+    if(ui.placing&&!(crossed&&row===at))items.push({bar:row});
+    if(crossed&&row===at)items.push({cross:true});
+    if(row<rows.length)items.push({row:rows[row]});
+  }
+  const out = [];let run = [];
+  const flush = () => {if(run.length)out.push(`<div class="cells edit-grid" data-columns="${escape(String(columns))}">${run.join('')}</div>`);run=[];};
+  for(const item of items){
+    if(item.row){run.push(...item.row);continue;}
+    flush();
+    out.push(item.cross?`<div class="dpad">${CROSS_SQUARES.map(crossCell).join('')}</div>`:`<button class="place-bar" type="button" data-place-row="${item.bar}">Place arrow pad here</button>`);
+  }
+  flush();
+  return out.join('');
 }
 function editPinnedHtml(activity) {
   const list = zoneList(activity,'pinned'), columns = screenOf(activity).columns||4;
@@ -517,9 +538,11 @@ function editPinnedHtml(activity) {
 }
 function editorHtml(model, ui) {
   const full = zoneList(model,'cells').length>=MAX_CELLS, pad = arrowPadPlan(model);
-  return `<p class="edit-hint">Tap an empty square to add a button. Press and hold a button to remove it. The bottom row stays on screen while you use the remote.</p>
+  return `<p class="edit-hint">${ui.placing?'Tap where the arrow pad should go.':'Tap an empty square to add a button. Press and hold a button to remove it. The bottom row stays on screen while you use the remote.'}</p>
     ${editGridHtml(model,ui)}
-    ${pad.crossed?'':`<button class="add-row" type="button" data-add-pad ${pad.add.length?'':'disabled'}>${icon('Plus')}Add arrow pad</button>${pad.reason?`<p class="edit-hint">${pad.reason}</p>`:''}`}
+    ${ui.placing?'<button class="add-row" type="button" data-place-cancel>Cancel</button>'
+      :pad.crossed?`<button class="add-row" type="button" data-move-pad>${icon('Plus')}Move arrow pad</button>`
+      :`<button class="add-row" type="button" data-add-pad ${pad.add.length?'':'disabled'}>${icon('Plus')}Add arrow pad</button>${pad.reason?`<p class="edit-hint">${pad.reason}</p>`:''}`}
     ${full?'<p class="edit-hint">The remote has reached its button limit.</p>':'<button class="add-row" type="button" data-add-row>'+icon('Plus')+'Add row</button>'}
     <div class="pinned">${editPinnedHtml(model)}</div>`;
 }
@@ -535,7 +558,7 @@ function renderEditor(ctx) {
   ctx.setTitle('Edit remote');
   if(!owner())return placeholder(ctx,'Only the hub owner can change remote layouts.');
   let {draft, base} = startDraft(first);
-  const ui = {extraRows:0, dirty:false, saving:false}, sheet = $('sheet');
+  const ui = {extraRows:0, dirty:false, saving:false, placing:false}, sheet = $('sheet');
   // The helpers below take an activity-shaped object; the draft stands in for its screen.
   const model = () => ({id, steps:activity()?.steps||first.steps||[], screen:draft});
   const here = () => ctx.content.isConnected && parseRoute(location.hash).name==='edit' && parseRoute(location.hash).params[0]===id;
@@ -620,7 +643,14 @@ function renderEditor(ctx) {
     const slotButton = event.target.closest('[data-zone]');
     if(slotButton?.classList.contains('empty')){
       if(Date.now()>=suppressClickUntil&&here())openSheet(slotButton.dataset.zone,+slotButton.dataset.slot,slotButton.dataset.corner);
-    } else if(event.target.closest('[data-add-pad]')){if(addArrowPad(model()))changed();}
+    } else if(event.target.closest('[data-add-pad]')){ui.placing='add';draw();}
+    else if(event.target.closest('[data-move-pad]')){ui.placing='move';draw();}
+    else if(event.target.closest('[data-place-cancel]')){ui.placing=false;draw();}
+    else if(event.target.closest('[data-place-row]')){
+      const row = +event.target.closest('[data-place-row]').dataset.placeRow;
+      if(ui.placing==='add'&&!addArrowPad(model())){ui.placing=false;draw();return;}
+      draft.crossRow = row;ui.placing = false;changed();
+    }
     else if(event.target.closest('[data-add-row]')){ui.extraRows++;draw();}
   };
   ctx.actions.onclick = event => {if(event.target.closest('[data-save]'))save();else if(event.target.closest('[data-cancel]'))cancel();};
