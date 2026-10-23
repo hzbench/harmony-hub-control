@@ -46,6 +46,10 @@ const controls = [
   ['channelup','Channel up','ChevronUp',['channelup','programup','pageup','chnext']],['channeldown','Channel down','ChevronDown',['channeldown','programdown','pagedown','chprev']],
   ['rewind','Rewind','Rewind',['rewind','rew']],['play','Play','Play',['play','playpause']],['pause','Pause','Pause',['pause']],['stop','Stop','Square',['stop']],['forward','Fast forward','FastForward',['fastforward','forward']]
 ];
+// Named so a caller that already has a command name in hand (rather than
+// a device's command list to search, like matchCommand() below) doesn't
+// have to re-derive this same norm()-against-aliases comparison inline.
+const aliasMatches = (name,aliases) => aliases.includes(norm(name));
 function matchCommand(commands,aliases) {return aliases.map(alias=>commands.find(c=>norm(c.name)===alias)).find(Boolean);}
 function defaultLayout(commands) {
   return controls.map(([slot,label,,aliases])=>{const command=matchCommand(commands,aliases)?.name;
@@ -65,6 +69,22 @@ function resolveSlotCommand(device,key,aliases) {
   const layout=state.config?.layouts?.[device.id];
   const command=custom?device.commands.find(c=>c.name===custom.command):layout?null:matchCommand(device.commands,aliases);
   return {command,custom};
+}
+// Shared by cellButton() (render) and window.harmonyHardwareVolume()'s
+// activity branch, which both need to turn a screen cell's stored
+// {deviceId,command} back into the live device/command it refers to -
+// and silently skip a cell whose device or command no longer exists
+// (e.g. the device was deleted) rather than acting on a stale reference.
+function resolveCell(c) {
+  const device=state.devices.find(d=>d.id===c.deviceId);
+  const command=device?.commands.find(cmd=>cmd.name===c.command);
+  return command?{device,command}:null;
+}
+// Shared by the device-layout editor and the activity-screen editor's
+// move-up/move-down buttons, which were previously two copies of the
+// same swap-and-redraw logic over different arrays.
+function bindReorder(root,selector,datasetKey,array,draw) {
+  root.querySelectorAll(selector).forEach(e=>e.onclick=()=>{const i=+e.dataset[datasetKey],j=i+(+e.dataset.direction);[array[i],array[j]]=[array[j],array[i]];draw();});
 }
 function remoteButton(slot,device) {
   const [key,label,image,aliases]=controls.find(c=>c[0]===slot);
@@ -105,9 +125,7 @@ function renderActivityScreen(activity) {
   // before this ships to a hub that has `buttons`-based activities saved.
   const screen=activity.screen||{columns:2,cells:[]};
   const cellButton=c=>{
-    const device=state.devices.find(d=>d.id===c.deviceId);
-    const command=device?.commands.find(cmd=>cmd.name===c.command);
-    if(!command)return '';
+    if(!resolveCell(c))return '';
     return `<button class="screen-cell${c.wide?' wide':''}" data-command="${escape(c.command)}" data-device="${escape(c.deviceId)}" aria-label="${escape(c.label||c.command)}" title="${escape(c.label||c.command)}">${escape(c.label||c.command)}</button>`;
   };
   const cells=(screen.cells||[]).map(cellButton).join('');
@@ -159,11 +177,11 @@ window.harmonyHardwareVolume = function(direction) {
     // there's no UI for the owner to say which one the hardware key
     // should control.
     const resolved = (activity.screen?.cells||[])
-      .filter(c => aliases.includes(norm(c.command)))
-      .map(c => ({deviceId: c.deviceId, device: state.devices.find(d => d.id === c.deviceId), command: c.command}))
-      .find(r => r.device?.commands.some(cmd => cmd.name === r.command));
+      .filter(c => aliasMatches(c.command,aliases))
+      .map(c => ({deviceId: c.deviceId, resolved: resolveCell(c)}))
+      .find(r => r.resolved);
     if (!resolved) return;
-    deviceId = resolved.deviceId; command = resolved.command;
+    deviceId = resolved.deviceId; command = resolved.resolved.command.name;
   } else {
     const device = activeDevice();
     if (!device) return;
@@ -288,7 +306,7 @@ function renderLayout() {
     $('add-assignment').onclick=()=>{const control=controls.find(c=>!rows.some(r=>r.slot===c[0]));if(!control)return notice('Every remote control has an assignment.',true);rows.push({slot:control[0],label:control[1],command:''});draw();};
     $('content').querySelectorAll('[data-label]').forEach(e=>e.oninput=()=>rows[+e.dataset.label].label=e.value);
     $('content').querySelectorAll('[data-layout-command]').forEach(e=>e.onchange=()=>rows[+e.dataset.layoutCommand].command=e.value);
-    $('content').querySelectorAll('[data-move]').forEach(e=>e.onclick=()=>{const i=+e.dataset.move,j=i+(+e.dataset.direction);[rows[i],rows[j]]=[rows[j],rows[i]];draw();});
+    bindReorder($('content'),'[data-move]','move',rows,draw);
     $('layout-form').onsubmit=async e=>{e.preventDefault();await busy(e.submitter,'Saving...',async()=>{const config=structuredClone(state.config);config.layouts[device.id]=rows.filter(r=>r.command);await saveConfig(config);writeLocal('harmony-device',device.id);writeLocal('harmony-activity','');show('remote');notice('Remote buttons saved.');});};
   };draw();
 }
@@ -469,7 +487,7 @@ function renderActivityEditor(activity=null) {
     $('screen-columns').onchange=()=>{screen.columns=+$('screen-columns').value;};
     section.querySelectorAll('[data-screen-label]').forEach(e=>e.oninput=()=>{screen.cells[+e.dataset.screenLabel].label=e.value;});
     section.querySelectorAll('[data-screen-wide]').forEach(e=>e.onchange=()=>{screen.cells[+e.dataset.screenWide].wide=e.target.checked;});
-    section.querySelectorAll('[data-screen-move]').forEach(e=>e.onclick=()=>{const i=+e.dataset.screenMove,j=i+(+e.dataset.direction);[screen.cells[i],screen.cells[j]]=[screen.cells[j],screen.cells[i]];draw();});
+    bindReorder(section,'[data-screen-move]','screenMove',screen.cells,draw);
     section.querySelectorAll('[data-screen-remove]').forEach(e=>e.onclick=()=>{screen.cells.splice(+e.dataset.screenRemove,1);draw();});
     section.querySelectorAll('[data-screen-add]').forEach(e=>e.onclick=()=>{if(screen.cells.length>=32)return notice('Custom screen has reached the button limit.',true);const {device,command}=available[+e.dataset.screenAdd];screen.cells.push({deviceId:device.id,command:command.name,label:'',wide:false});draw();});
     $('activity-name').oninput=e=>value.name=e.target.value;

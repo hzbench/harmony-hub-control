@@ -66,14 +66,16 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=8097)
     parser.add_argument("--host", default="127.0.0.1",
-                         help="Bind address. Anything other than 127.0.0.1 exposes this "
-                              "unauthenticated fixture (every request is treated as the owner) "
-                              "to your whole network - only do this on a trusted LAN for a "
-                              "real device/emulator to reach it, and stop it when you're done.")
+                         help="Bind address. Anything other than 127.0.0.1 requires --allow-lan, "
+                              "since it exposes this unauthenticated fixture (every request is "
+                              "treated as the owner, no login) to your whole network.")
+    parser.add_argument("--allow-lan", action="store_true",
+                         help="Required to use --host with anything other than 127.0.0.1/localhost. "
+                              "Only pass this on a trusted LAN, for a real device/emulator to reach "
+                              "this fixture, and stop it when you're done.")
     args = parser.parse_args()
-    if args.host not in ("127.0.0.1", "localhost"):
-        print(f"WARNING: binding to {args.host} exposes this unauthenticated fixture "
-              f"(every request is treated as the owner, no login) to your network. "
-              f"Only do this on a trusted LAN.", flush=True)
+    if args.host not in ("127.0.0.1", "localhost") and not args.allow_lan:
+        parser.error(f"binding to {args.host} exposes this unauthenticated fixture to your "
+                      f"network - pass --allow-lan to confirm that's intended.")
     print(f"Memory-only UI fixture: http://{args.host}:{args.port}/", flush=True)
     HTTPServer((args.host, args.port), Preview).serve_forever()
