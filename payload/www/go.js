@@ -62,6 +62,8 @@ async function loadDevices() {
   const bluetooth=await api('bluetooth/devices');state.devices.push(...(bluetooth.devices||[]).map(d=>({...d,transport:'bluetooth'})));
   // Rokus are an extra: if this one request fails the other devices still show.
   try {const network=await api('network/devices');state.devices.push(...(network.devices||[]).map(d=>({...d,transport:'roku'})));} catch {/* api() has flagged the connection */}
+  // The devices decide what the lock-screen buttons press (a removed Roku, say), so the app hears again.
+  announceRunning();
 }
 
 const SCREEN_HANDLERS = ['onclick','onpointerdown','onpointermove','onpointerup','onpointercancel','onpointerleave','oncontextmenu','onkeydown','onsubmit','onchange'];
@@ -835,7 +837,7 @@ function renderEditor(ctx) {
     ui.saving = true;draw();
     try {
       const saved = await submitLayout(id,draft,base,()=>confirm('This remote was changed on another device since you started editing. Replace it with your version?'));
-      if(saved){base=layoutShape(draft);notice('Saved.');announceRunning();}
+      if(saved){base=layoutShape(draft);notice('Saved.');if(id===activeActivity()?.id)announceRunning();}
     } catch(error) {notice(`Not saved: ${error.message}`,true);}
     finally {ui.saving=false;draw();}
   };
@@ -949,7 +951,6 @@ async function boot() {
     if(needsFullUi(session,state.config))return location.replace('/');
     announceHub();
     await loadDevices();
-    announceRunning();
     if(!location.hash)history.replaceState(null,'',routeHash('activities'));
     show();
   } catch(error) {

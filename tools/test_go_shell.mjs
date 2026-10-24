@@ -976,8 +976,9 @@ console.log('The owner can add, test and remove a Roku; Rokus appear as devices'
   const log=[];context.window.HarmonyNative={setRunningActivity:v=>log.push(v)};
   const tvd={id:'tv',name:'TV',transport:'ir',commands:['VolumeUp','VolumeDown','Play','Mute'].map(name=>({name}))};
   const rk={id:'rk',name:'Roku',transport:'roku',commands:[{name:'Play'}]};
-  state.devices=[tvd,rk];
-  state.config={activities:[{id:'a',name:'Watch',steps:[{deviceId:'tv'}]},{id:'b',name:'Roku only',steps:[{deviceId:'rk'}]},{id:'c',name:'Nothing',steps:[{deviceId:'gone'}]},
+  const bt={id:'bt',name:'Fire',transport:'bluetooth',commands:['Play','VolumeUp'].map(name=>({name}))};
+  state.devices=[tvd,rk,bt];
+  state.config={activities:[{id:'e',name:'Streaming',steps:[{deviceId:'bt'}]},{id:'a',name:'Watch',steps:[{deviceId:'tv'}]},{id:'b',name:'Roku only',steps:[{deviceId:'rk'}]},{id:'c',name:'Nothing',steps:[{deviceId:'gone'}]},
     {id:'d',name:'Custom',steps:[{deviceId:'tv'}],screen:{columns:4,cells:[{deviceId:'rk',command:'Play',slot:0}],pinned:[]}}]};
   const announce=id=>{log.length=0;store.set('harmony-activity','');context.exports.setRunningActivity(id);return log.at(-1);};
   const labels=json=>JSON.parse(json).buttons.map(b=>`${b.label}:${b.deviceId}.${b.command}.${b.transport}`);
@@ -985,6 +986,10 @@ console.log('The owner can add, test and remove a Roku; Rokus appear as devices'
   assert.deepEqual(labels(announce('b')),['Play:rk.Play.roku'],'only the buttons the activity can actually press');
   assert.equal(announce('c'),'','nothing to press: nothing announced');
   assert.deepEqual(labels(announce('d')),['Volume down:tv.VolumeDown.ir','Play:rk.Play.roku','Volume up:tv.VolumeUp.ir'],'a button on the activity\u2019s own screen wins over the devices');
+  assert.deepEqual(labels(announce('e')),['Play:bt.Play.bluetooth','Volume up:bt.VolumeUp.bluetooth'],'a Bluetooth device is announced with its own transport');
+  // Whenever the devices are reloaded the app hears about it: a removed Roku can't stay on the lock screen.
+  store.set('harmony-activity','b');log.length=0;state.devices=[tvd,bt];context.api=async path=>path==='devices'?{devices:[tvd]}:path==='bluetooth/devices'?{devices:[bt]}:{devices:[]};
+  await context.exports.loadDevices();assert.equal(log.at(-1),'','the Roku is gone, so is the button (nothing else for this activity to press)');
   assert.equal(announce(''),'','stopped');assert.equal(announce('missing'),'','an unknown activity announces nothing');
   delete context.window.HarmonyNative;assert.doesNotThrow(()=>context.exports.setRunningActivity('a'),'no app, no problem');
 }
