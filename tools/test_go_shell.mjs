@@ -18,7 +18,7 @@ const el=id=>elements[id]||=({id,dataset:{},classList:{add(){},remove(){}},hidde
 const context=vm.createContext({document:{getElementById:el,title:'',body:{dataset:{}},addEventListener(){},hidden:false},window:{addEventListener(){},scrollTo(){}},location:{hash:'',replace(url){context.replaced=url;}},history:{replaceState(){},pushState(){context.pushed=(context.pushed||0)+1;},back(){context.backed=(context.backed||0)+1;}},
   confirm:message=>{(context.confirmed||(context.confirmed=[])).push(message);return context.confirmAnswer!==false;},navigator:{vibrate(){context.vibrated=(context.vibrated||0)+1;}},localStorage:{getItem:k=>store.get(k)??null,setItem:(k,v)=>store.set(k,v)},setTimeout:()=>0,clearTimeout(){},fetch:async()=>{throw new TypeError('offline');},AbortController,URL,structuredClone});
 const inert=source.replace(/\n  boot\(\);\n\}\s*$/,'\n}');assert.notEqual(inert,source,'boot() auto-run not found');
-vm.runInContext(inert.replace('const state =','var state =')+'\nthis.exports={parseRoute,routeHash,connection,state,needsFullUi,api,show,screens,renderActivities,renderDevices,deviceRemoteHtml,renderDeviceRemote,remoteBlocks,remoteHtml,renderActivityRemote,CONTROLS,controlFor,volumeTarget,editorSlots,availableCommands,addButton,removeButton,editorHtml,renderEditor,screenOf,MAX_CELLS,layoutShape,startDraft,submitLayout,getLeaveGuard:()=>leaveGuard,cloneScreen,withSlots,announceHub,loadDevices,typingPlan,createTyper,openKeyboard,keyboardSetting:keyboardSettingHtml};',context);
+vm.runInContext(inert.replace('const state =','var state =')+'\nthis.exports={parseRoute,routeHash,connection,state,needsFullUi,api,show,screens,renderActivities,renderDevices,deviceRemoteHtml,renderDeviceRemote,remoteBlocks,remoteHtml,renderActivityRemote,CONTROLS,controlFor,volumeTarget,editorSlots,availableCommands,addButton,removeButton,editorHtml,renderEditor,screenOf,MAX_CELLS,layoutShape,startDraft,submitLayout,getLeaveGuard:()=>leaveGuard,cloneScreen,withSlots,announceHub,loadDevices,typingPlan,createTyper,openKeyboard,keyboardSetting:keyboardSettingHtml,setRunningActivity,announceRunning};',context);
 const {parseRoute,routeHash,connection,state,needsFullUi,api,show}=context.exports;
 
 assert.deepEqual(JSON.parse(JSON.stringify(parseRoute(''))),{name:'activities',params:[]});
@@ -64,7 +64,8 @@ const calls=[];let outcome='completed',pending=null;
 context.api=async(path,body)=>{calls.push({path,...body});if(path==='activities/run')return {id:'op'+calls.length};return {};};
 context.operation=async()=>pending?await pending:{state:outcome};
 state.online=true;
-state.devices=[{id:'1',name:'LG C5'},{id:'2',name:'Receiver'}];
+state.devices=[{id:'1',name:'LG C5',transport:'ir',commands:['VolumeUp','VolumeDown','Play'].map(name=>({name}))},{id:'2',name:'Receiver'}];
+const announced=[];context.window.HarmonyNative={setRunningActivity:v=>announced.push(v)};
 state.config={activities:[
   {id:'watch',name:'Watch <TV>',steps:[{deviceId:'1'},{deviceId:'2'},{deviceId:'1'}]},
   {id:'empty',name:'Empty',steps:[]}]};
@@ -83,6 +84,7 @@ console.log('Activities home lists activities with their devices, escaped, plus 
 await click({open:'watch'});
 assert.deepEqual(calls.map(c=>[c.path,c.activityId,c.fixState]),[['activities/run','watch',false]]);
 assert.equal(store.get('harmony-activity'),'watch');
+assert.deepEqual(announced.map(v=>v&&JSON.parse(v)),[{id:'watch',name:'Watch <TV>',buttons:[{key:'volumedown',label:'Volume down',deviceId:'1',command:'VolumeDown',transport:'ir'},{key:'play',label:'Play',deviceId:'1',command:'Play',transport:'ir'},{key:'volumeup',label:'Volume up',deviceId:'1',command:'VolumeUp',transport:'ir'}]}],'starting an activity tells the app which buttons to keep on the lock screen');
 assert.equal(context.location.hash,'#/activity/watch');
 draw();
 assert.match(content.innerHTML,/Running/);assert.match(content.innerHTML,/data-stop/);
@@ -97,17 +99,19 @@ calls.length=0;context.location.hash='#/activities';
 await click({fix:'empty'});
 assert.deepEqual(calls.map(c=>[c.activityId,c.fixState]),[['empty',true]]);
 assert.equal(store.get('harmony-activity'),'empty');assert.equal(context.location.hash,'#/activities');
+assert.equal(announced.at(-1),'','an activity with nothing to press has no lock-screen buttons');
 assert.match(el('notice').textContent,/Device state fixed/);
 console.log('Fix device state re-runs with fixState, stays on the list and remembers the activity');
 
 calls.length=0;
 await click({stop:''});
 assert.deepEqual(calls.map(c=>[c.activityId,c.fixState]),[['-1',false]]);
-assert.equal(store.get('harmony-activity'),'');
+assert.equal(store.get('harmony-activity'),'');assert.equal(announced.at(-1),'','stopping clears them');
 console.log('Stop sends the hub power-off request and clears the running activity');
 
 store.set('harmony-activity','watch');calls.length=0;outcome='cancelled';context.location.hash='#/activities';draw();
-await click({open:'empty'});
+const announcedBefore=announced.length;
+await click({open:'empty'});assert.equal(announced.length,announcedBefore,'a cancelled start announces nothing');
 assert.equal(store.get('harmony-activity'),'watch');assert.equal(context.location.hash,'#/activities');
 assert.match(el('notice').textContent,/Cancelled/);assert.equal(el('notice').dataset.error,'true');
 outcome='completed';
@@ -967,6 +971,29 @@ console.log('The owner can name the hub and the app is told');
   assert.equal(X.screens.roku.parent,'setup');
 }
 console.log('The owner can add, test and remove a Roku; Rokus appear as devices');
+// Which commands the lock-screen buttons send: the same choice the hardware volume keys make.
+{
+  const log=[];context.window.HarmonyNative={setRunningActivity:v=>log.push(v)};
+  const tvd={id:'tv',name:'TV',transport:'ir',commands:['VolumeUp','VolumeDown','Play','Mute'].map(name=>({name}))};
+  const rk={id:'rk',name:'Roku',transport:'roku',commands:[{name:'Play'}]};
+  const bt={id:'bt',name:'Fire',transport:'bluetooth',commands:['Play','VolumeUp'].map(name=>({name}))};
+  state.devices=[tvd,rk,bt];
+  state.config={activities:[{id:'e',name:'Streaming',steps:[{deviceId:'bt'}]},{id:'a',name:'Watch',steps:[{deviceId:'tv'}]},{id:'b',name:'Roku only',steps:[{deviceId:'rk'}]},{id:'c',name:'Nothing',steps:[{deviceId:'gone'}]},
+    {id:'d',name:'Custom',steps:[{deviceId:'tv'}],screen:{columns:4,cells:[{deviceId:'rk',command:'Play',slot:0}],pinned:[]}}]};
+  const announce=id=>{log.length=0;store.set('harmony-activity','');context.exports.setRunningActivity(id);return log.at(-1);};
+  const labels=json=>JSON.parse(json).buttons.map(b=>`${b.label}:${b.deviceId}.${b.command}.${b.transport}`);
+  assert.deepEqual(labels(announce('a')),['Volume down:tv.VolumeDown.ir','Play:tv.Play.ir','Volume up:tv.VolumeUp.ir']);
+  assert.deepEqual(labels(announce('b')),['Play:rk.Play.roku'],'only the buttons the activity can actually press');
+  assert.equal(announce('c'),'','nothing to press: nothing announced');
+  assert.deepEqual(labels(announce('d')),['Volume down:tv.VolumeDown.ir','Play:rk.Play.roku','Volume up:tv.VolumeUp.ir'],'a button on the activity\u2019s own screen wins over the devices');
+  assert.deepEqual(labels(announce('e')),['Play:bt.Play.bluetooth','Volume up:bt.VolumeUp.bluetooth'],'a Bluetooth device is announced with its own transport');
+  // Whenever the devices are reloaded the app hears about it: a removed Roku can't stay on the lock screen.
+  store.set('harmony-activity','b');log.length=0;state.devices=[tvd,bt];context.api=async path=>path==='devices'?{devices:[tvd]}:path==='bluetooth/devices'?{devices:[bt]}:{devices:[]};
+  await context.exports.loadDevices();assert.equal(log.at(-1),'','the Roku is gone, so is the button (nothing else for this activity to press)');
+  assert.equal(announce(''),'','stopped');assert.equal(announce('missing'),'','an unknown activity announces nothing');
+  delete context.window.HarmonyNative;assert.doesNotThrow(()=>context.exports.setRunningActivity('a'),'no app, no problem');
+}
+console.log('The running activity and its lock-screen buttons are announced to the app');
 // Typing: what is sent for each change, in order, in chunks.
 {
   assert.equal(X.typingPlan('','abc'),'abc');assert.equal(X.typingPlan('abc','abcd'),'d');assert.equal(X.typingPlan('abc','ab'),'\b');

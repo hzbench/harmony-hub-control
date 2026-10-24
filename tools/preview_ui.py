@@ -65,6 +65,7 @@ class Preview(BaseHTTPRequestHandler):
             return self.reply({"error": "Invalid request size"}, 400)
         body = json.loads(self.rfile.read(length))
         if self.path == "/api/v1/commands/send":
+            sys.stderr.write("SENT %s\n" % json.dumps(body, sort_keys=True))  # so a run can show what was pressed
             return self.reply({"id": "fixture-no-transmission"})
         if self.path == "/api/v1/commands/type":
             sys.stderr.write("TYPED %r\n" % body.get("text"))  # so a run can show what the UI sent

@@ -62,6 +62,8 @@ async function loadDevices() {
   const bluetooth=await api('bluetooth/devices');state.devices.push(...(bluetooth.devices||[]).map(d=>({...d,transport:'bluetooth'})));
   // Rokus are an extra: if this one request fails the other devices still show.
   try {const network=await api('network/devices');state.devices.push(...(network.devices||[]).map(d=>({...d,transport:'roku'})));} catch {/* api() has flagged the connection */}
+  // The devices decide what the lock-screen buttons press (a removed Roku, say), so the app hears again.
+  announceRunning();
 }
 
 const SCREEN_HANDLERS = ['onclick','onpointerdown','onpointermove','onpointerup','onpointercancel','onpointerleave','oncontextmenu','onkeydown','onsubmit','onchange'];
@@ -81,6 +83,20 @@ const screens = {
 // remembers the last one it started in localStorage.
 const ACTIVITY_KEY = 'harmony-activity';
 const activeActivity = () => state.config?.activities?.find(a=>a.id===readLocal(ACTIVITY_KEY));
+// The Android app keeps Volume − / Play / Volume + buttons on the lock screen while an
+// activity runs. It cannot work out which command each one sends, so the page does:
+// the same choice the hardware volume keys make. An empty string means nothing is running.
+const LOCK_SCREEN_BUTTONS = [['volumedown','Volume down'],['play','Play'],['volumeup','Volume up']];
+function announceRunning() {
+  const activity = activeActivity();
+  const buttons = activity ? LOCK_SCREEN_BUTTONS.flatMap(([slot,label])=>{
+    const target = volumeTarget(activity,slot);
+    return target ? [{key:slot, label, deviceId:target.device.id, command:target.command, transport:target.device.transport||'ir'}] : [];
+  }) : [];
+  try {window.HarmonyNative?.setRunningActivity?.(buttons.length ? JSON.stringify({id:activity.id, name:activity.name, buttons}) : '');} catch {/* no native bridge */}
+}
+// Remember which activity is running (or none, with '') and tell the app.
+function setRunningActivity(id) {writeLocal(ACTIVITY_KEY,id);announceRunning();}
 const activityDevices = activity => [...new Set((activity.steps||[]).map(s=>s.deviceId).filter(Boolean))]
   .map(id=>state.devices.find(d=>d.id===id)?.name).filter(Boolean);
 let activityOperation = null;  // {id, activityId} while a start/stop is in flight
@@ -227,14 +243,14 @@ function renderActivities(ctx) {
     if(activityOperation)return;
     if(button.dataset.open){
       if(activeActivity()?.id===button.dataset.open){location.hash=routeHash('activity',button.dataset.open);return;}
-      if(await run(button.dataset.open)){writeLocal(ACTIVITY_KEY,button.dataset.open);location.hash=routeHash('activity',button.dataset.open);}
+      if(await run(button.dataset.open)){setRunningActivity(button.dataset.open);location.hash=routeHash('activity',button.dataset.open);}
     } else if(button.dataset.fix) {
       // Re-sends the activity's start steps without the usual skip-if-already-on
       // logic; the activity counts as running afterwards, and we stay on the list.
-      if(await run(button.dataset.fix,{fixState:true})){writeLocal(ACTIVITY_KEY,button.dataset.fix);redraw();say('Device state fixed. It is still an estimate.');}
+      if(await run(button.dataset.fix,{fixState:true})){setRunningActivity(button.dataset.fix);redraw();say('Device state fixed. It is still an estimate.');}
     } else if('stop' in button.dataset) {
       // "-1" is the hub's power-off request: it runs the running activity's exit steps.
-      if(await run('-1')){writeLocal(ACTIVITY_KEY,'');redraw();}
+      if(await run('-1')){setRunningActivity('');redraw();}
     }
   };
 }
@@ -461,7 +477,7 @@ function volumeTarget(activity, slot) {
     .map(c=>resolveCell(c)).find(Boolean);
   if(fromScreen)return {device:fromScreen.device, command:fromScreen.command.name};
   for(const id of new Set((activity.steps||[]).map(s=>s.deviceId).filter(Boolean))) {
-    const device=state.devices.find(d=>d.id===id), command=device&&matchCommand(device.commands,aliases);
+    const device=state.devices.find(d=>d.id===id), command=device&&matchCommand(device.commands||[],aliases);
     if(command)return {device, command:command.name};
   }
   return null;
@@ -821,7 +837,7 @@ function renderEditor(ctx) {
     ui.saving = true;draw();
     try {
       const saved = await submitLayout(id,draft,base,()=>confirm('This remote was changed on another device since you started editing. Replace it with your version?'));
-      if(saved){base=layoutShape(draft);notice('Saved.');}
+      if(saved){base=layoutShape(draft);notice('Saved.');if(id===activeActivity()?.id)announceRunning();}
     } catch(error) {notice(`Not saved: ${error.message}`,true);}
     finally {ui.saving=false;draw();}
   };
