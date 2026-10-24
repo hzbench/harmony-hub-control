@@ -250,6 +250,19 @@ console.log('Remote view hides volume and stale cells, ignores label/wide, shows
 const pinnedView=remoteHtml({columns:4,cells:[cell('Back')],pinned:[cell('Mute'),cell('Gone'),cell('VolumeUp'),cell('Input')]});
 assert.equal((pinnedView.pinned.match(/data-command=/g)||[]).length,2);
 assert.doesNotMatch(pinnedView.body,/Mute/);
+// The fixed row's buttons share the full width, whatever the count and wherever the gaps were.
+for(const count of [1,2,3,4]){
+  const row=remoteHtml({columns:4,cells:[],pinned:['Right','Up','Down','Left'].slice(0,count).map(c=>cell(c))}).pinned;
+  assert.match(row,/^<div class="cells pinned-row">/);assert.doesNotMatch(row,/data-columns|<span><\/span>/,`${count} buttons: no empty grid squares`);
+  assert.equal((row.match(/data-command=/g)||[]).length,count);
+  assert.doesNotMatch(row,/\[object|undefined/,`${count} buttons: nothing but real faces`);assert.equal((row.match(/<button class="cell " type="button"/g)||[]).length,count,'plain cell buttons, no stray class');assert.equal((row.match(/<svg/g)||[]).length,count);
+}
+{
+  const gapped=remoteHtml({columns:4,cells:[],pinned:[{...cell('Mute'),slot:0},{...cell('Input'),slot:3}]}).pinned;
+  assert.equal((gapped.match(/data-command=/g)||[]).length,2);assert.doesNotMatch(gapped,/<span><\/span>/,'a gap left by a removed button does not leave a hole');
+  assert.ok(gapped.indexOf('Mute')<gapped.indexOf('Input'),'and they stay in slot order');
+  const reversed=remoteHtml({columns:4,cells:[],pinned:[{...cell('Input'),slot:3},{...cell('Mute'),slot:0}]}).pinned;assert.ok(reversed.indexOf('Mute')<reversed.indexOf('Input'),'slot order, not list order');
+}
 // Pinning all four arrows keeps them as a row in the order set, not a cross.
 const arrowRow=remoteHtml({columns:4,cells:[],pinned:['Right','Up','Down','Left'].map(c=>cell(c))}).pinned;
 assert.doesNotMatch(arrowRow,/class="dpad"/);
@@ -479,7 +492,7 @@ const filled=(html,zone)=>[...html.matchAll(new RegExp(`class="cell(?: (?!empty)
 const emptied=(html,zone)=>[...html.matchAll(new RegExp(`class="cell empty(?: (?:ok|tl|tr|bl|br))?" type="button" data-zone="${zone}" data-slot="(\\d+)"`,'g'))].map(m=>+m[1]);
 assert.deepEqual(filled(eh,'cells'),[0,1,2,5]);   // Up,VolumeUp,HDMI 1 packed into 0..2 (they had no slots); Gone at 5
 assert.deepEqual(emptied(eh,'cells'),[3,4,6,7],'slots between buttons are empty squares');
-assert.deepEqual(filled(eh,'pinned'),[2]);assert.deepEqual(emptied(eh,'pinned'),[0,1,3]);
+assert.deepEqual(filled(eh,'pinned'),[0],'the fixed row has no gaps: its button sits in slot 0');assert.deepEqual(emptied(eh,'pinned'),[1],'with one add square after it');
 assert.match(eh,/class="cell missing" type="button" data-zone="cells" data-slot="5"/);
 assert.match(eh,/Gone \(its device or command no longer exists\)\. Press and hold to remove\./);
 assert.match(eh,/aria-label="Volume up\. Press and hold to remove\."/);
@@ -491,7 +504,7 @@ assert.deepEqual(emptied(X.editorHtml({id:'w',steps:[],screen:editAct},{extraRow
 const fullAct={id:'f',steps:[],screen:{columns:4,cells:Array.from({length:32},(_,i)=>sc('C'+i,i)),pinned:[]}};
 const fh=X.editorHtml(fullAct,{extraRows:0});assert.doesNotMatch(fh,/data-add-row/);assert.match(fh,/button limit/);
 const twoCol=X.editorHtml({id:'x',steps:[],screen:{columns:2,cells:[],pinned:[]}},{extraRows:0}).split('class="pinned"')[1];
-assert.equal(emptied(twoCol,'pinned').length,2,'a 2-column footer has two slots');
+assert.deepEqual(emptied(twoCol,'pinned'),[0],'an empty 2-column footer offers one add square');
 assert.doesNotMatch(remoteHtml({columns:4,cells:[],pinned:[cell('Mute')]}).pinned,/Always visible/i);
 console.log('Editor draws gaps as empty squares, lists every cell (including stale and volume ones) and never sends commands');
 
@@ -575,8 +588,8 @@ console.log('Editor draws gaps as empty squares, lists every cell (including sta
   assert.equal(sheet.open,true);assert.match(sheet.innerHTML,/TV: Down/);assert.doesNotMatch(sheet.innerHTML,/TV: Up</);assert.doesNotMatch(sheet.innerHTML,/TV: Volume/);
   await choose('TV: Down');
   assert.equal(sheet.open,false);assert.deepEqual(layout(content,'cells'),{0:'Up',6:'Down'},'added where it was tapped, not at the first free slot');
-  tapSlot(content,'pinned',2);await choose('TV: Mute');
-  assert.deepEqual(layout(content,'pinned'),{2:'Mute'});assert.equal(posts.length,0);
+  tapSlot(content,'pinned',0);await choose('TV: Mute');
+  assert.deepEqual(layout(content,'pinned'),{0:'Mute'});assert.equal(posts.length,0);
   // Cancel and backdrop close the sheet without changing anything.
   tapSlot(content,'cells',3);assert.equal(sheet.open,true);
   sheet.onclick({target:{closest:sel=>sel==='[data-sheet-cancel]'?{}:null}});assert.equal(sheet.open,false);
@@ -599,7 +612,7 @@ console.log('Editor draws gaps as empty squares, lists every cell (including sta
   assert.equal(posts.length,0);
   await pressSave(ctx);
   assert.equal(posts.length,1,'exactly one hub write for the whole session');
-  assert.deepEqual(posts[0].cells,[sc('Down',6)]);assert.deepEqual(posts[0].pinned,[sc('Mute',2)]);
+  assert.deepEqual(posts[0].cells,[sc('Down',6)]);assert.deepEqual(posts[0].pinned,[sc('Mute',0)]);
   assert.equal(el('notice').textContent,'Saved.');assert.equal(saveEnabled(ctx),false);
   assert.equal(state.config.activities[0].screen.cells.length,1,'the remote view now sees the new layout');
   await pressSave(ctx);assert.equal(posts.length,1,'Save with nothing changed does nothing');
@@ -700,6 +713,26 @@ console.log('Editor draws gaps as empty squares, lists every cell (including sta
   ({content,ctx}=setup({...base0,screen:{columns:4,cells:[sc('Up',0),sc('Left',1)],pinned:[]}}));
   click(content,'[data-add-pad]');place(0);
   assert.deepEqual(Object.keys(layout(content,'cells')).map(Number).sort((a,b)=>a-b),[0,1,29,30,31],'Down, Right and OK were added');assert.match(content.innerHTML,/class="dpad"/);
+  // The editor's fixed row matches the remote: buttons share the width, plus one "+" for the next free slot.
+  {
+    const pinnedHtml=c=>c.innerHTML.split('class="pinned"')[1];
+    ({content,ctx}=setup({...base0,screen:{columns:4,cells:[],pinned:[sc('Back',0)]}}));
+    assert.match(pinnedHtml(content),/class="cells pinned-row edit-grid"/);assert.deepEqual(layout(content,'pinned'),{0:'Back'});assert.deepEqual(empties(content,'pinned'),[1],'one + square, right after the button');
+    ({content,ctx}=setup({...base0,screen:{columns:4,cells:[],pinned:[sc('Back',0),sc('Input',1),sc('Mute',2),sc('OK',3)]}}));
+    assert.deepEqual(empties(content,'pinned'),[],'a full row offers no more squares');
+    // Removing one in the middle closes the gap; a new button goes after the last one, where the + is.
+    ({content,ctx}=setup({...base0,screen:{columns:4,cells:[],pinned:[sc('Back',0),sc('Input',1),sc('Mute',2)]}}));
+    down(content,slotBtn(content,'pinned',1));advance(600);await settle();
+    assert.deepEqual(layout(content,'pinned'),{0:'Back',1:'Mute'},'the rest close up');assert.deepEqual(empties(content,'pinned'),[2]);
+    advance(800);tapSlot(content,'pinned',2);await choose('TV: Input');
+    assert.deepEqual(layout(content,'pinned'),{0:'Back',1:'Mute',2:'Input'},'the new one is on the right');assert.deepEqual(empties(content,'pinned'),[3]);
+    // A layout saved with a gap at the front (a removed first button) still adds on the right.
+    ({content,ctx}=setup({...base0,screen:{columns:4,cells:[],pinned:[sc('Mute',1)]}}));
+    assert.deepEqual(layout(content,'pinned'),{0:'Mute'},'old gaps are closed when the editor opens');assert.equal(saveEnabled(ctx),false,'which is not a change in itself');
+    tapSlot(content,'pinned',1);await choose('TV: Back');
+    assert.deepEqual(layout(content,'pinned'),{0:'Mute',1:'Back'},'the + is on the right, and so is the new button');
+    await pressSave(ctx);assert.deepEqual(hub.activities[0].screen.pinned,[sc('Mute',0),sc('Back',1)],'saved in order, packed');
+  }
   // Arrows on the bottom row move into the pad instead of reading as "no arrow keys".
   ({content,ctx}=setup({...base0,screen:{columns:4,cells:[],pinned:['Up','Down','Left','Right'].map((c,i)=>sc(c,i))}}));
   assert.doesNotMatch(content.innerHTML,/data-add-pad disabled/);assert.doesNotMatch(content.innerHTML,/arrow keys/);

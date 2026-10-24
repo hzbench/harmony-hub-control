@@ -126,3 +126,5 @@ button.header-action{background:transparent}
 .editor .pinned{box-shadow:0 -10px 14px -12px rgba(0,0,0,.45)}
 .help-list{margin:8px 0 4px;padding-left:20px;line-height:1.7;font-size:15px}
 body[data-screen=edit] h1{font-size:22px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cells.pinned-row{display:flex}
+.pinned-row>*{flex:1 1 0;min-width:0}
