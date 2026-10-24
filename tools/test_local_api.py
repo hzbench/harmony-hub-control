@@ -407,7 +407,7 @@ def run():
                     self.reply(200, b"<device-info><friendly-device-name>Fake Roku</friendly-device-name></device-info>" if self.path == "/query/device-info" else b"")
                 def do_POST(self):
                     seen.append(("POST", self.path))
-                    self.reply(403 if self.path == "/keypress/Search" else 200)
+                    self.reply(403 if self.path in ("/keypress/Search", "/keypress/Lit_Z") else 200)
             fake = http.server.ThreadingHTTPServer(("127.0.0.1", roku_port), FakeRoku)
             threading.Thread(target=fake.serve_forever, daemon=True).start()
             def roku_config(devices):
@@ -447,13 +447,70 @@ def run():
             result = roku_send("roku_box", "Search")
             assert result["state"] == "failed" and "network control" in result["result"]["error"], result
             assert roku_send("roku_gone", "Home")["state"] == "failed"
+            # Typing: one key press per character, in order; Backspace and Enter are keys too.
+            def roku_type(device, text, expect=202):
+                status, op, _ = request("commands/type", {"deviceId": device, "text": text}, cookie, csrf)
+                assert status == expect, (status, op)
+                if expect != 202: return None
+                for _ in range(200):
+                    result = request("operations?id=" + op["id"], cookie=cookie)[1]
+                    if result["state"] in ("completed", "failed", "cancelled"): return result
+                    time.sleep(.05)
+                raise AssertionError("typing did not finish")
+            assert request("commands/type", {"deviceId": "roku_tv", "text": "a"})[0] == 401
+            assert request("network/devices", cookie=cookie)[1]["devices"][0]["keyboard"] is True
+            for bad in ("", "tab\there", "cr\rhere", "del\x7fhere", "x" * 65, "c1\u0085here", "sep\u2028here"):
+                roku_type("roku_tv", bad, 400)
+            assert request("commands/type", {"deviceId": "bad id", "text": "a"}, cookie, csrf)[0] == 400
+            assert request("commands/type", {"deviceId": "roku_tv"}, cookie, csrf)[0] == 400
+            assert request("commands/type", cookie=cookie, csrf=csrf, raw='{"deviceId":"roku_tv","text":"ab\\u0000cd"}')[0] == 400, "an embedded NUL must not silently cut the text"
+            del seen[:]
+            result = roku_type("roku_tv", "Hi \u20ac!\b\n")
+            assert result["state"] == "completed", result
+            assert [p for m, p in seen if m == "POST"] == ["/keypress/Lit_H", "/keypress/Lit_i", "/keypress/Lit_%20", "/keypress/Lit_%E2%82%AC",
+                                                           "/keypress/Lit_%21", "/keypress/Backspace", "/keypress/Enter"], seen
+            # Characters that are special in a URL are percent-encoded.
+            del seen[:]
+            assert roku_type("roku_tv", "100% a+b/c?")["state"] == "completed"
+            assert [p for m, p in seen] == ["/keypress/Lit_1", "/keypress/Lit_0", "/keypress/Lit_0", "/keypress/Lit_%25", "/keypress/Lit_%20", "/keypress/Lit_a",
+                                           "/keypress/Lit_%2B", "/keypress/Lit_b", "/keypress/Lit_%2F", "/keypress/Lit_c", "/keypress/Lit_%3F"], seen
+            # A key the Roku refuses stops the rest, and the result says how far it got.
+            del seen[:]
+            result = roku_type("roku_tv", "abZd")
+            assert result["state"] == "failed" and result["result"]["error"].startswith("Typed 2 of 4 characters. The Roku refused a key"), result
+            assert result["result"]["typed"] == 2 and result["result"]["total"] == 4
+            assert [p for m, p in seen] == ["/keypress/Lit_a", "/keypress/Lit_b", "/keypress/Lit_Z"], seen
+            # What was typed (a password, say) is not kept once the operation has ended.
+            done = roku_type("roku_tv", "hunter2")
+            assert done["state"] == "completed" and done["request"] == {"deviceId": "roku_tv", "characters": 7} and "hunter2" not in json.dumps(done), done
+            assert "hunter2" not in json.dumps(result) and result["request"].get("characters") == 4, result
+            del seen[:]
+            assert roku_type("roku_box", "x" * 64)["state"] == "completed" and len(seen) == 64, "players can type too"
+            result = roku_type("roku_gone", "a")
+            assert result["state"] == "failed" and "no longer set up" in result["result"]["error"], result
+            # Two requests in a row are typed in the order they were sent.
+            del seen[:]
+            first = request("commands/type", {"deviceId": "roku_tv", "text": "ab"}, cookie, csrf)[1]["id"]
+            last = request("commands/type", {"deviceId": "roku_tv", "text": "cd"}, cookie, csrf)[1]["id"]
+            for op_id in (first, last):
+                for _ in range(200):
+                    if request("operations?id=" + op_id, cookie=cookie)[1]["state"] == "completed": break
+                    time.sleep(.05)
+            assert [p for m, p in seen] == ["/keypress/Lit_a", "/keypress/Lit_b", "/keypress/Lit_c", "/keypress/Lit_d"], seen
             assert roku_config([tv, dict(box, host="127.0.0.2")]) == 200
             result = roku_send("roku_box", "Home")
             assert result["state"] == "failed" and "reach the Roku" in result["result"]["error"], result
+            result = roku_type("roku_box", "abc")
+            assert result["state"] == "failed" and result["result"]["error"].startswith("Typed 0 of 3 characters. Could not reach the Roku"), result
             # A Roku command can be an activity step; an unknown transport still cannot.
             current = request("configuration", cookie=cookie)[1]
             current["activities"] = [{"id": "watch", "name": "Watch", "steps": [{"deviceId": "roku_tv", "command": "Home", "transport": "roku"}], "exitSteps": []}]
             assert request("configuration", {"revision": current["revision"], "configuration": current}, cookie, csrf)[0] == 200
+            # An activity may name the device whose keyboard the remote types into.
+            for keyboard, expected in (({"deviceId": "roku_tv"}, 200), ("roku_tv", 400), ({}, 400), ({"deviceId": ""}, 400), ({"deviceId": "Living Room"}, 400), ({"deviceId": "x" * 65}, 400)):
+                current = request("configuration", cookie=cookie)[1]; current["activities"][0]["keyboard"] = keyboard
+                assert request("configuration", {"revision": current["revision"], "configuration": current}, cookie, csrf)[0] == expected, keyboard
+            assert request("configuration", cookie=cookie)[1]["activities"][0]["keyboard"] == {"deviceId": "roku_tv"}
             current = request("configuration", cookie=cookie)[1]
             current["activities"][0]["steps"][0]["transport"] = "carrier-pigeon"
             assert request("configuration", {"revision": current["revision"], "configuration": current}, cookie, csrf)[0] == 400

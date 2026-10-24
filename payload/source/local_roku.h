@@ -147,6 +147,87 @@ static cJSON *execute_roku(const cJSON *body) {
     cJSON_Delete(config); return result;
 }
 
+/* Text typed on the phone. Printable characters, other UTF-8 characters, Backspace
+   (U+0008) and Enter (newline). At most ROKU_TYPE_MAX characters per request. */
+#define ROKU_TYPE_MAX 64
+#define ROKU_TYPE_MS 8000  /* start no new key press after this; the last one can still take LOCAL_ROKU_TIMEOUT_MS */
+/* Length in bytes of the UTF-8 character at `p`, or 0 if it is not well formed. */
+static size_t roku_utf8_length(const unsigned char *p) {
+    size_t n, i;
+    if (p[0] < 0x80) return 1;
+    if (p[0] >= 0xC2 && p[0] <= 0xDF) n = 2; else if (p[0] >= 0xE0 && p[0] <= 0xEF) n = 3; else if (p[0] >= 0xF0 && p[0] <= 0xF4) n = 4; else return 0;
+    for (i = 1; i < n; i++) if ((p[i] & 0xC0) != 0x80) return 0;
+    if ((p[0] == 0xE0 && p[1] < 0xA0) || (p[0] == 0xED && p[1] > 0x9F) || (p[0] == 0xF0 && p[1] < 0x90) || (p[0] == 0xF4 && p[1] > 0x8F)) return 0;
+    return n;
+}
+static int roku_type_valid(const char *text) {
+    const unsigned char *p = (const unsigned char *)text; size_t units = 0;
+    if (!text || !p[0]) return 0;
+    while (*p) {
+        size_t n = roku_utf8_length(p);
+        if (!n || (n == 1 && *p < 0x80 && (*p == 0x7F || (*p < 0x20 && *p != '\b' && *p != '\n')))) return 0;
+        if (p[0] == 0xC2 && p[1] >= 0x80 && p[1] <= 0x9F) return 0;                    /* C1 controls */
+        if (p[0] == 0xE2 && p[1] == 0x80 && (p[2] == 0xA8 || p[2] == 0xA9)) return 0;   /* line/paragraph separators */
+        if (++units > ROKU_TYPE_MAX) return 0;
+        p += n;
+    }
+    return 1;
+}
+
+/* The ECP path for the character (or Backspace/Enter) at `p`, which is `n` bytes. */
+static void roku_key_path(const unsigned char *p, size_t n, char *path, size_t size) {
+    size_t at, i;
+    if (*p == '\b') { snprintf(path, size, "/keypress/Backspace"); return; }
+    if (*p == '\n') { snprintf(path, size, "/keypress/Enter"); return; }
+    at = (size_t)snprintf(path, size, "/keypress/Lit_");
+    for (i = 0; i < n && at < size; i++) {
+        if (p[i] < 0x80 && isalnum(p[i])) at += (size_t)snprintf(path + at, size - at, "%c", p[i]);
+        else at += (size_t)snprintf(path + at, size - at, "%%%02X", p[i]);
+    }
+}
+static size_t roku_type_count(const char *text) {
+    const unsigned char *p = (const unsigned char *)text; size_t n = 0, len;
+    while (*p && (len = roku_utf8_length(p))) { p += len; n++; }
+    return n;
+}
+/* Typed text can be a password: once the operation ends only its length stays in the stored record. */
+static void roku_redact_typed(cJSON *op) {
+    cJSON *request = lj_get(op, "request"); size_t count;
+    if (!request) return;
+    count = roku_type_count(lj_str(request, "text"));
+    cJSON_DeleteItemFromObjectCaseSensitive(request, "text");
+    cJSON_AddNumberToObject(request, "characters", (double)count);
+}
+
+/* Runs a queued "roku-type" operation: one key press per character, in order.
+   Stops at the first one the Roku does not take and says how far it got. */
+static cJSON *execute_roku_type(const cJSON *body) {
+    const char *id = lj_str(body, "deviceId"), *text = lj_str(body, "text"); const unsigned char *p = (const unsigned char *)text;
+    char reply[256], err[160] = "", path[96], message[256]; cJSON *config = local_config(), *result; const cJSON *device = config ? roku_find(config, id) : NULL;
+    size_t done = 0, total = roku_type_count(text); struct timespec start, now;
+    if (!device) { cJSON_Delete(config); return command_result(0, "This Roku is no longer set up on the hub."); }
+    if (!roku_type_valid(text)) { cJSON_Delete(config); return command_result(0, "That text can't be typed."); }
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    while (*p) {
+        size_t n = roku_utf8_length(p); int status;
+        roku_key_path(p, n, path, sizeof(path));
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        if ((now.tv_sec - start.tv_sec) * 1000 + (now.tv_nsec - start.tv_nsec) / 1000000 > ROKU_TYPE_MS) { snprintf(err, sizeof(err), "The Roku was too slow."); status = -1; }
+        else status = roku_http(lj_str(device, "host"), "POST", path, reply, sizeof(reply), err, sizeof(err));
+        if (status != 200) {
+            snprintf(message, sizeof(message), "Typed %u of %u characters. %s", (unsigned)done, (unsigned)total, status < 0 ? err : "The Roku refused a key. Turn on network control in its settings.");
+            result = command_result(0, message);
+            /* So a client can tell how much arrived and avoid typing it twice. */
+            cJSON_AddNumberToObject(result, "typed", (double)done); cJSON_AddNumberToObject(result, "total", (double)total);
+            cJSON_Delete(config); return result;
+        }
+        done++; p += n;
+    }
+    result = command_result(1, "typed"); cJSON_AddStringToObject(result, "deviceId", id);
+    cJSON_AddNumberToObject(result, "typed", (double)done); cJSON_AddNumberToObject(result, "total", (double)total);
+    cJSON_Delete(config); return result;
+}
+
 /* GET /api/v1/network/devices: the same shape the remote screens already use for
    other devices, without the address. */
 static void local_network_devices(int fd) {
@@ -155,6 +236,7 @@ static void local_network_devices(int fd) {
         cJSON *item = cJSON_CreateObject(), *commands = cJSON_CreateArray(); size_t i;
         cJSON_AddStringToObject(item, "id", lj_str(d, "id")); cJSON_AddStringToObject(item, "name", lj_str(d, "name"));
         cJSON_AddStringToObject(item, "type", "Roku"); cJSON_AddStringToObject(item, "model", lj_str(d, "model"));
+        cJSON_AddBoolToObject(item, "keyboard", 1);
         for (i = 0; i < ROKU_COMMAND_COUNT; i++) if (!roku_commands[i].tv_only || roku_is_tv(d)) {
             cJSON *c = cJSON_CreateObject(); cJSON_AddStringToObject(c, "name", roku_commands[i].name); cJSON_AddItemToArray(commands, c);
         }
