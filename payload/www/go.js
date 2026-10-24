@@ -89,7 +89,7 @@ function announceRunning() {
   const activity = activeActivity();
   const buttons = activity ? LOCK_SCREEN_BUTTONS.flatMap(([slot,label])=>{
     const target = volumeTarget(activity,slot);
-    return target ? [{label, deviceId:target.device.id, command:target.command, transport:target.device.transport||'ir'}] : [];
+    return target ? [{key:slot, label, deviceId:target.device.id, command:target.command, transport:target.device.transport||'ir'}] : [];
   }) : [];
   try {window.HarmonyNative?.setRunningActivity?.(buttons.length ? JSON.stringify({id:activity.id, name:activity.name, buttons}) : '');} catch {/* no native bridge */}
 }

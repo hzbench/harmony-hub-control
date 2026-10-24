@@ -84,7 +84,7 @@ console.log('Activities home lists activities with their devices, escaped, plus 
 await click({open:'watch'});
 assert.deepEqual(calls.map(c=>[c.path,c.activityId,c.fixState]),[['activities/run','watch',false]]);
 assert.equal(store.get('harmony-activity'),'watch');
-assert.deepEqual(announced.map(v=>v&&JSON.parse(v)),[{id:'watch',name:'Watch <TV>',buttons:[{label:'Volume down',deviceId:'1',command:'VolumeDown',transport:'ir'},{label:'Play',deviceId:'1',command:'Play',transport:'ir'},{label:'Volume up',deviceId:'1',command:'VolumeUp',transport:'ir'}]}],'starting an activity tells the app which buttons to keep on the lock screen');
+assert.deepEqual(announced.map(v=>v&&JSON.parse(v)),[{id:'watch',name:'Watch <TV>',buttons:[{key:'volumedown',label:'Volume down',deviceId:'1',command:'VolumeDown',transport:'ir'},{key:'play',label:'Play',deviceId:'1',command:'Play',transport:'ir'},{key:'volumeup',label:'Volume up',deviceId:'1',command:'VolumeUp',transport:'ir'}]}],'starting an activity tells the app which buttons to keep on the lock screen');
 assert.equal(context.location.hash,'#/activity/watch');
 draw();
 assert.match(content.innerHTML,/Running/);assert.match(content.innerHTML,/data-stop/);
