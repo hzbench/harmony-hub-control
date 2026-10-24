@@ -18,7 +18,7 @@ const el=id=>elements[id]||=({id,dataset:{},classList:{add(){},remove(){}},hidde
 const context=vm.createContext({document:{getElementById:el,title:'',body:{dataset:{}},addEventListener(){},hidden:false},window:{addEventListener(){},scrollTo(){}},location:{hash:'',replace(url){context.replaced=url;}},history:{replaceState(){},pushState(){context.pushed=(context.pushed||0)+1;},back(){context.backed=(context.backed||0)+1;}},
   confirm:message=>{(context.confirmed||(context.confirmed=[])).push(message);return context.confirmAnswer!==false;},navigator:{vibrate(){context.vibrated=(context.vibrated||0)+1;}},localStorage:{getItem:k=>store.get(k)??null,setItem:(k,v)=>store.set(k,v)},setTimeout:()=>0,clearTimeout(){},fetch:async()=>{throw new TypeError('offline');},AbortController,URL,structuredClone});
 const inert=source.replace(/\n  boot\(\);\n\}\s*$/,'\n}');assert.notEqual(inert,source,'boot() auto-run not found');
-vm.runInContext(inert.replace('const state =','var state =')+'\nthis.exports={parseRoute,routeHash,connection,state,needsFullUi,api,show,screens,renderActivities,renderDevices,deviceRemoteHtml,renderDeviceRemote,remoteBlocks,remoteHtml,renderActivityRemote,CONTROLS,controlFor,volumeTarget,editorSlots,availableCommands,addButton,removeButton,editorHtml,renderEditor,screenOf,MAX_CELLS,layoutShape,startDraft,submitLayout,getLeaveGuard:()=>leaveGuard,cloneScreen,withSlots};',context);
+vm.runInContext(inert.replace('const state =','var state =')+'\nthis.exports={parseRoute,routeHash,connection,state,needsFullUi,api,show,screens,renderActivities,renderDevices,deviceRemoteHtml,renderDeviceRemote,remoteBlocks,remoteHtml,renderActivityRemote,CONTROLS,controlFor,volumeTarget,editorSlots,availableCommands,addButton,removeButton,editorHtml,renderEditor,screenOf,MAX_CELLS,layoutShape,startDraft,submitLayout,getLeaveGuard:()=>leaveGuard,cloneScreen,withSlots,announceHub};',context);
 const {parseRoute,routeHash,connection,state,needsFullUi,api,show}=context.exports;
 
 assert.deepEqual(JSON.parse(JSON.stringify(parseRoute(''))),{name:'activities',params:[]});
@@ -274,6 +274,7 @@ assert.equal(el('back').dataset.href,'#/activity/watch');
 context.location.hash='#/activity/watch';show();
 assert.equal(el('back').dataset.href,'#/activities');assert.equal(context.document.body.dataset.reserveNotice,'true');
 context.location.hash='#/devices';show();assert.equal(context.document.body.dataset.reserveNotice,'false');
+context.location.hash='#/setup';show();assert.equal(context.document.body.dataset.reserveNotice,'true','Setup holds space for its saved/error notice so the form does not jump');context.location.hash='#/devices';show();
 console.log('Back arrows return to the right parent; only remotes reserve space for send status');
 
 // ---- Hardware volume ----
@@ -787,4 +788,29 @@ console.log('Editing changes only a local draft in fixed slots; Save is one writ
   assert.match(content.innerHTML,/IR codes/);
 }
 console.log('Setup links into the original pages');
+// The owner can name the hub; the name is saved on the hub and announced to the app.
+{
+  const announced=[];context.window.HarmonyNative={setHubName:n=>announced.push(n)};
+  let hubCfg={revision:4,hubName:'Old <name>',activities:[]};const posts=[];
+  context.api=async(path,body)=>{if(path!=='configuration')return {};if(!body)return J(hubCfg);posts.push(J(body));hubCfg={...J(body.configuration),revision:body.revision+1};return {ok:true};};
+  state.config=J(hubCfg);state.session={role:'owner'};
+  const input={value:''};const content={innerHTML:'',querySelector:sel=>sel==='#hub-name'?input:null};
+  X.screens.setup.render({content,actions:{},params:[],setTitle(){}});
+  assert.match(content.innerHTML,/id="hub-name" name="hub-name" value="Old &lt;name&gt;"/,'shows the current name, escaped');
+  input.value='  Living Room ';let prevented=false;
+  await content.onsubmit({preventDefault(){prevented=true;}});
+  assert.equal(prevented,true);assert.deepEqual(announced,['Living Room']);
+  assert.equal(posts[0].revision,4);assert.equal(posts[0].configuration.hubName,'Living Room','trimmed, one revision-checked write');
+  assert.equal(el('notice').textContent,'Hub name saved.');
+  input.value='';await content.onsubmit({preventDefault(){}});assert.deepEqual(announced,['Living Room','']);assert.equal(el('notice').textContent,'Hub name cleared.');
+  // A rejected save says so and does not announce.
+  context.api=async()=>{throw Error('Request failed (400)');};input.value='x';await content.onsubmit({preventDefault(){}});
+  assert.equal(el('notice').textContent,'Request failed (400)');assert.equal(announced.length,2);
+  // Non-owners get no form.
+  state.session={role:'control'};const plain={innerHTML:''};X.screens.setup.render({content:plain,actions:{},params:[],setTitle(){}});
+  assert.doesNotMatch(plain.innerHTML,/hub-name/);
+  announced.length=0;state.config={hubName:'Den'};X.announceHub();assert.deepEqual(announced,['Den']);
+  delete context.window.HarmonyNative;assert.doesNotThrow(()=>X.announceHub());
+}
+console.log('The owner can name the hub and the app is told');
 console.log('Switching screens clears the previous screen’s handlers');

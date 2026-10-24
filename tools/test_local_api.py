@@ -423,6 +423,14 @@ def run():
             subprocess.run([binary, "--rollback"], check=True)
             assert all(path.read_bytes() == raw for path, raw in installed.items())
             assert not (local / "update.pending").exists()
+            # The hub's display name is optional, short and printable.
+            named = request("configuration", cookie=cookie)[1]
+            for bad in (7, "x" * 41, "tab\there", 'quote"d'):
+                broken_name = dict(named); broken_name["hubName"] = bad
+                assert request("configuration", {"revision": named["revision"], "configuration": broken_name}, cookie, csrf)[0] == 400, bad
+            named["hubName"] = "Living Room"
+            assert request("configuration", {"revision": named["revision"], "configuration": named}, cookie, csrf)[0] == 200
+            assert request("configuration", cookie=cookie)[1]["hubName"] == "Living Room"
             # Duplicate framing, embedded NUL and oversize requests are bounded.
             for headers, body in [("Content-Length: 2\r\nContent-Length: 2\r\n", b"{}"), ("Content-Length: 3\r\n", b"{\0}"), ("Transfer-Encoding: chunked\r\n", b"0\r\n\r\n")]:
                 with socket.create_connection(("127.0.0.1", port)) as sock:

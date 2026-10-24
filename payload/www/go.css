@@ -101,3 +101,9 @@ dialog.sheet h2{font-size:15px;margin:0 0 6px}
 .save-button:disabled{background:var(--control);color:var(--muted);opacity:1}
 .add-row:disabled{opacity:.45}
 .place-bar{background:transparent;border:2px dashed var(--accent);color:var(--accent);min-height:36px;font-size:13px;font-weight:600}
+.hub-name{display:flex;flex-direction:column;gap:6px;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:12px 16px;margin-bottom:12px}
+.hub-name label{font-size:13px;font-weight:600;color:var(--muted)}
+.hub-name-row{display:flex;gap:8px}
+.hub-name input{flex:1;min-width:0;font:inherit;color:inherit;background:var(--control);border:1px solid var(--line);border-radius:10px;padding:0 12px;min-height:44px}
+.hub-name small{font-size:13px;color:var(--muted)}
+.hub-name .save-button{padding:0 16px}

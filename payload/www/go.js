@@ -62,14 +62,14 @@ async function loadDevices() {
   const bluetooth=await api('bluetooth/devices');state.devices.push(...(bluetooth.devices||[]).map(d=>({...d,transport:'bluetooth'})));
 }
 
-const SCREEN_HANDLERS = ['onclick','onpointerdown','onpointermove','onpointerup','onpointercancel','onpointerleave','oncontextmenu','onkeydown'];
+const SCREEN_HANDLERS = ['onclick','onpointerdown','onpointermove','onpointerup','onpointercancel','onpointerleave','oncontextmenu','onkeydown','onsubmit'];
 const screens = {
   // render(ctx) fills ctx.content; ctx.params are the decoded route params.
   // tab: which bottom tab it belongs to (tab screens show the connectivity
   // icon and no back arrow); parent: where a drill-in screen's back arrow goes.
   activities: {title:'Activities', tab:'activities', render:renderActivities},
   devices: {title:'Devices', tab:'devices', render:renderDevices},
-  setup: {title:'Setup', tab:'setup', render:renderSetup},
+  setup: {title:'Setup', tab:'setup', reserveNotice:true, render:renderSetup},
   activity: {title:'Activity', parent:'activities', reserveNotice:true, render:renderActivityRemote},
   edit: {title:'Edit remote', parent:'activity', parentParams:params=>params.slice(0,1), reserveNotice:true, render:renderEditor},
   device: {title:'Device', parent:'devices', reserveNotice:true, render:renderDeviceRemote},
@@ -98,8 +98,32 @@ const SETUP_LINKS = [
   ['/#activities','SlidersHorizontal','Activities','Create activities and edit their start and power-off steps'],
   ['/#settings','Settings','Settings','Controllers, backups, Wi-Fi, MQTT and updates'],
 ];
+const HUB_NAME_MAX = 40;
+// The Android app shows the hub's name in its toolbar; anywhere else this does nothing.
+function announceHub() {
+  try {window.HarmonyNative?.setHubName(state.config?.hubName||'');} catch {/* no native bridge */}
+}
+function hubNameForm() {
+  return `<form class="hub-name"><label for="hub-name">Hub name</label>
+    <div class="hub-name-row"><input id="hub-name" name="hub-name" value="${escape(state.config?.hubName||'')}" maxlength="${HUB_NAME_MAX}" placeholder="Living room" autocomplete="off" autocapitalize="words"><button class="save-button" type="submit">Save</button></div>
+    <small>Shown at the top of the app. Leave blank to show the hub’s address.</small></form>`;
+}
+async function saveHubName(name) {
+  const fresh = await api('configuration');
+  fresh.hubName = name;
+  await api('configuration',{revision:fresh.revision, configuration:fresh});
+  state.config = await api('configuration');
+  announceHub();
+}
 function renderSetup(ctx) {
-  ctx.content.innerHTML = SETUP_LINKS.map(([href,glyph,name,hint])=>`<div class="row"><a class="row-main" href="${href}"><span class="row-icon neutral">${icon(glyph)}</span><span class="row-text"><strong>${name}</strong><small>${hint}</small></span>${icon('ChevronRight')}</a></div>`).join('');
+  ctx.content.innerHTML = (owner()?hubNameForm():'')+SETUP_LINKS.map(([href,glyph,name,hint])=>`<div class="row"><a class="row-main" href="${href}"><span class="row-icon neutral">${icon(glyph)}</span><span class="row-text"><strong>${name}</strong><small>${hint}</small></span>${icon('ChevronRight')}</a></div>`).join('');
+  if(!owner())return;
+  ctx.content.onsubmit = async event => {
+    event.preventDefault();
+    const name = ctx.content.querySelector('#hub-name').value.trim();
+    try {await saveHubName(name);notice(name?'Hub name saved.':'Hub name cleared.');}
+    catch(error) {notice(error.message,true);}
+  };
 }
 function renderActivities(ctx) {
   const activities = state.config.activities||[];
@@ -712,6 +736,7 @@ async function boot() {
     if(needsFullUi(session))return location.replace('/');
     state.config=await api('configuration');
     if(needsFullUi(session,state.config))return location.replace('/');
+    announceHub();
     await loadDevices();
     if(!location.hash)history.replaceState(null,'',routeHash('activities'));
     show();

@@ -605,6 +605,11 @@ static int local_validate_config(const cJSON *o) {
             (strcmp(status, "untested") && strcmp(status, "responded") && strcmp(status, "no-response")) ||
             (!strcmp(status, "responded") && !safe_label(lj_str(a, "testedCommand")))) return 0;
     }
+    {   /* The hub's display name (optional, shown in the app); empty means unset. */
+        cJSON *hub_name = lj_get(o, "hubName");
+        if (hub_name && (!cJSON_IsString(hub_name) || strlen(hub_name->valuestring) > 40 ||
+            (hub_name->valuestring[0] && !safe_label(hub_name->valuestring)))) return 0;
+    }
     if (!cJSON_IsObject(o) || lj_int(o, "schemaVersion", 0) != 1 || !cJSON_IsArray(activities) ||
         cJSON_GetArraySize(activities) > 16 || !cJSON_IsObject(layouts) || !cJSON_IsNumber(revision) ||
         revision->valuedouble != revision->valueint || revision->valueint < 1 || revision->valueint >= 2000000000 ||
