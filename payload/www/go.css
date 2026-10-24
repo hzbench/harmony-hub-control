@@ -86,7 +86,7 @@ body[data-reserve-notice=true] #notice[hidden]{display:block!important;visibilit
 .add-row{background:transparent;border:2px dashed var(--line);color:var(--muted);min-height:48px;font-size:13px;font-weight:600;display:flex;gap:6px;align-items:center;justify-content:center}
 .add-row svg{height:16px;width:16px}
 .editor .pinned{margin-top:auto}
-dialog.sheet{border:0;padding:10px 20px max(28px,env(safe-area-inset-bottom));margin:auto auto 0;width:100%;max-width:520px;max-height:60vh;overflow:auto;background:var(--surface);color:var(--ink);border-radius:20px 20px 0 0}
+dialog.sheet{--sheet-bottom:max(28px,env(safe-area-inset-bottom));border:0;padding:10px 20px var(--sheet-bottom);margin:auto auto 0;width:100%;max-width:520px;max-height:60vh;overflow:auto;background:var(--surface);color:var(--ink);border-radius:20px 20px 0 0}
 dialog.sheet::backdrop{background:rgba(16,18,20,.4)}
 .sheet-handle{width:36px;height:4px;border-radius:2px;background:var(--line);margin:6px auto 14px}
 dialog.sheet h2{font-size:15px;margin:0 0 6px}
@@ -133,6 +133,7 @@ body[data-screen=edit] h1{font-size:22px;white-space:nowrap;overflow:hidden;text
 .channel-row input{width:22px;height:22px;accent-color:var(--accent);flex-shrink:0}
 .channel-row.blocked{color:var(--muted)}
 .channel-row small{color:var(--muted);font-size:12px;margin-left:6px}
-.sheet-actions{position:sticky;bottom:calc(-1 * max(28px,env(safe-area-inset-bottom)));margin-bottom:calc(-1 * max(28px,env(safe-area-inset-bottom)));padding:8px 0 max(28px,env(safe-area-inset-bottom));background:var(--surface);display:flex;flex-direction:column}
+/* Pulls the Save bar over the sheet's own bottom padding so a long list never shows beneath it. */
+.sheet-actions{position:sticky;bottom:calc(-1 * var(--sheet-bottom));margin-bottom:calc(-1 * var(--sheet-bottom));padding:8px 0 var(--sheet-bottom);background:var(--surface);display:flex;flex-direction:column}
 .sheet-actions .save-button{width:100%;min-height:48px}
 dialog.sheet .add-row{width:100%}

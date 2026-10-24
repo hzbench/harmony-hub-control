@@ -175,7 +175,7 @@ const ROKU_BUILTIN_NAMES = ['home','back','up','down','left','right','ok','menu'
 // Roku reported, or null before it was asked. A channel can't be picked when its name would clash
 // with a built-in command or another pick, or when the limit is reached.
 function channelChoices(favorites, installed) {
-  const list = installed ? installed.map(c=>({...c})) : [...favorites].map(([id,name])=>({id,name}));
+  const list = installed ? installed.filter(c=>c&&typeof c.id==='string'&&typeof c.name==='string').map(c=>({...c})) : [...favorites].map(([id,name])=>({id,name}));
   if(installed)for(const [id,name] of favorites)if(!list.some(c=>c.id===id))list.push({id,name,gone:true});
   const builtin = new Set(ROKU_BUILTIN_NAMES), taken = new Set([...favorites.values()].map(name=>name.toLowerCase()));
   return list.map(c=>{
@@ -222,15 +222,19 @@ function renderRoku(ctx) {
   const openChannels = device => {
     const sheet = $('sheet'), favorites = new Map((device.channels||[]).map(c=>[c.id,c.name]));
     let installed = null, busy = false;
-    const status = text => {sheet.querySelector('[data-channel-status]').textContent = text;};
-    const redraw = () => {sheet.querySelector('[data-channel-list]').innerHTML = channelChoices(favorites,installed).map(channelRowHtml).join('') || '<li class="sheet-note">None chosen yet.</li>';};
+    // An answer can arrive after the sheet was closed (or reused for something else): then there is nothing to update.
+    const status = text => {const node = sheet.open && sheet.querySelector('[data-channel-status]');if(node)node.textContent = text;};
+    const redraw = () => {const node = sheet.open && sheet.querySelector('[data-channel-list]');if(node)node.innerHTML = channelChoices(favorites,installed).map(channelRowHtml).join('') || '<li class="sheet-note">None chosen yet.</li>';};
     presentSheet(sheet, channelsSheetHtml(device.name), async event => {
       if(busy)return;
       if(event.target.closest('[data-find-channels]')) {
         busy = true;status('Asking the Roku…');
         try {
           const queued = await api('commands/send',{deviceId:device.id, command:'ListApps', transport:'roku', mode:'tap'});
-          installed = (await operation(queued.id,15)).result?.apps||[];
+          const apps = (await operation(queued.id,15)).result?.apps;
+          // No list at all means the Roku did not answer properly, which is not the same as having no channels.
+          if(!Array.isArray(apps))throw Error('The Roku did not list its channels.');
+          installed = apps;
           status(`Found ${installed.length} channel${installed.length===1?'':'s'}.`);redraw();
         } catch(error) {status(error.message);}
         finally {busy = false;}
@@ -244,13 +248,12 @@ function renderRoku(ctx) {
         } catch(error) {status(error.message);}
         finally {busy = false;}
       }
-    });
-    sheet.onchange = event => {
+    }, event => {
       const box = event.target.closest?.('[data-channel]');
-      if(!box)return;
+      if(!box||busy)return;  // not while a save is running: what is saved is what was ticked when it started
       if(box.checked)favorites.set(box.dataset.channel,box.dataset.name);else favorites.delete(box.dataset.channel);
       redraw();
-    };
+    });
     redraw();
   };
   ctx.content.onclick = async event => {
@@ -860,9 +863,9 @@ let sheetPushed = false;  // the open add sheet owns one history entry, so Back 
 // Shows `html` in the shared bottom sheet. The open sheet owns one history entry, so
 // the Back gesture closes just the sheet. Callers deal with their own Back hook.
 // Tapping the backdrop or a [data-sheet-cancel] button closes it; `onClick` sees the other taps.
-function presentSheet(sheet, html, onClick) {
+function presentSheet(sheet, html, onClick, onChange=null) {
   sheet.innerHTML = html;
-  sheet.onchange = null;
+  sheet.onchange = onChange;
   sheet.onclick = event => {
     if(event.target===sheet||event.target.closest('[data-sheet-cancel]'))return sheet.close();
     return onClick?.(event);
