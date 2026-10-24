@@ -940,15 +940,17 @@ console.log('The owner can add, test and remove a Roku; Rokus appear as devices'
   sentTexts.length=0;typer=X.createTyper('kb');typer.change('a'.repeat(150));await open();await open();await open();await open();
   assert.deepEqual(sentTexts.map(t=>t.length),[64,64,22]);
   // A failure is shown, drops what was waiting, and typing carries on afterwards.
-  sentTexts.length=0;el('notice').textContent='';typer=X.createTyper('kb');failNext=true;
+  sentTexts.length=0;el('notice').textContent='';let resets=0;typer=X.createTyper('kb',()=>{resets++;});failNext=true;
   typer.change('a');typer.change('ab');typer.change('abc');await settle();await open();await open();
-  assert.equal(el('notice').textContent,'Typed 0 of 1 characters. Could not reach the Roku.');assert.equal(el('notice').dataset.error,'true');assert.deepEqual(sentTexts,['a'],'the queued letters were dropped, not retried');
-  typer.change('abcd');await open();assert.deepEqual(sentTexts,['a','d'],'later changes are relative to what was typed');
+  assert.equal(el('notice').textContent,'Typed 0 of 1 characters. Could not reach the Roku. The box was cleared; check what reached the device.');assert.equal(el('notice').dataset.error,'true');assert.deepEqual(sentTexts,['a'],'the queued letters were dropped, not retried');
+  assert.equal(resets,1,'the field is cleared so the screen matches what the typer now assumes');
+  typer.change('d');await open();assert.deepEqual(sentTexts,['a','d'],'typing starts again from an empty baseline');
+  typer.change('');await open();assert.deepEqual(sentTexts,['a','d','\b'],'and backspaces only what was typed since');
   // The Keyboard button: only where there is a device that can type.
   const kb={id:'kb',name:'Den <Roku>',type:'Roku',transport:'roku',keyboard:true,commands:[{name:'Home'}]};
   state.devices=[{id:'tv',name:'TV',commands:[{name:'Up'}]},kb];state.session={role:'control'};
   state.config={activities:[{id:'w',name:'Watch',steps:[],screen:{columns:4,cells:[],pinned:[]},keyboard:{deviceId:'kb'}},{id:'n',name:'No kb',steps:[],screen:{columns:4,cells:[],pinned:[]}},{id:'g',name:'Gone',steps:[],screen:{columns:4,cells:[],pinned:[]},keyboard:{deviceId:'gone'}},{id:'t',name:'TV kb',steps:[],screen:{columns:4,cells:[],pinned:[]},keyboard:{deviceId:'tv'}}]};
-  const remoteCtx=(render,id)=>{const ctx={content:{innerHTML:'',querySelectorAll:()=>[]},actions:{innerHTML:'',onclick:null},params:[id],setTitle(){}};X[render](ctx);return ctx;};
+  const remoteCtx=(render,id)=>{const ctx={content:{innerHTML:'',querySelectorAll:()=>[],querySelector(sel){const has=sel==='[data-keyboard]'&&this.innerHTML.includes('data-keyboard');return has?{addEventListener:(type,fn)=>{(this.listeners||={})[type]=fn;}}:null;}},actions:{innerHTML:'',onclick:null},params:[id],setTitle(){}};X[render](ctx);return ctx;};
   const withKb=remoteCtx('renderActivityRemote','w');
   assert.match(withKb.content.innerHTML,/<div class="pinned"><button type="button" class="keyboard-button" data-keyboard aria-label="Type on Den &lt;Roku&gt;">/,'anyone, not only the owner, gets the button, in the fixed bar');
   assert.equal(withKb.actions.innerHTML,'','and it is not in the header');
@@ -963,12 +965,16 @@ console.log('The owner can add, test and remove a Roku; Rokus appear as devices'
   const input={value:'',focused:false,focus(){this.focused=true;}};
   const sheet=Object.assign(el('sheet'),{open:false,innerHTML:'',onclick:null,onclose:null,showModal(){this.open=true;},close(){const was=this.open;this.open=false;if(was)this.onclose?.();},querySelector:sel=>sel==='#keyboard-input'?input:null});
   sentTexts.length=0;const kbCtx=remoteCtx('renderActivityRemote','w');
-  kbCtx.content.onclick({target:{closest:sel=>sel==='[data-keyboard]'?{}:null}});
+  kbCtx.content.listeners.click();
   assert.equal(sheet.open,true);assert.equal(input.focused,true);assert.match(sheet.innerHTML,/Type on Den &lt;Roku&gt;/);assert.match(sheet.innerHTML,/autocorrect="off"/);
   input.value='hi';input.oninput();await settle();await open();assert.deepEqual(sentTexts,['hi']);
   let prevented=false;input.onkeydown({key:'Enter',preventDefault(){prevented=true;}});await settle();await open();
   assert.equal(prevented,true);assert.equal(input.value,'','Enter clears the field');assert.deepEqual(sentTexts,['hi','\n']);
   input.onkeydown({key:'a',preventDefault(){throw Error('other keys are left alone');}});
+  input.value='z';input.oninput();await settle();await open();sentTexts.length=0;let broke=false;
+  input.onbeforeinput({inputType:'insertLineBreak',preventDefault(){broke=true;}});await settle();await open();
+  assert.equal(broke,true);assert.deepEqual(sentTexts,['\n'],'a soft keyboard that reports Enter only as a line break still presses Enter');assert.equal(input.value,'');
+  input.onbeforeinput({inputType:'insertText',preventDefault(){throw Error('ordinary typing is left alone');}});
   assert.equal(context.window.harmonyHandleBack(),true,'hardware Back closes the sheet first');assert.equal(sheet.open,false);assert.equal(context.window.harmonyHandleBack(),false);
   context.operation=async()=>({state:'completed'});
 }

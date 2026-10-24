@@ -471,24 +471,27 @@ window.harmonyHardwareVolume = function(direction) {
     .finally(()=>{hardwareVolumeBusy=false;});
 };
 
+function bindKeyboard(ctx, device) {
+  ctx.content.querySelector?.('[data-keyboard]')?.addEventListener('click',()=>openKeyboard(device));
+}
 function renderDeviceRemote(ctx) {
   const device=state.devices.find(d=>d.id===ctx.params[0]);
   if(!device){ctx.setTitle('Device');return placeholder(ctx,'This device no longer exists.');}
   ctx.setTitle(device.name);
   const html=deviceRemoteHtml(device);
-  const typing=keyboardButton(ctx,device);
+  const typing=keyboardButton(device);
   ctx.content.innerHTML=`<div class="remote">${html||'<div class="placeholder"><p>This device has no commands yet.</p></div>'}</div>${typing?`<div class="pinned">${typing}</div>`:''}`;
-  bindCommands(ctx.content);
+  bindCommands(ctx.content);bindKeyboard(ctx,device);
 }
 function renderActivityRemote(ctx) {
   const activity=(state.config.activities||[]).find(a=>a.id===ctx.params[0]);
   if(!activity){ctx.setTitle('Activity');return placeholder(ctx,'This activity no longer exists.');}
   ctx.setTitle(activity.name);
   if(owner())ctx.actions.innerHTML=`<a class="header-action" href="${routeHash('edit',activity.id)}" aria-label="Edit remote layout" title="Edit remote layout">${icon('Pencil')}</a>`;
-  const typing = keyboardButton(ctx, state.devices.find(d=>d.id===activity.keyboard?.deviceId));
+  const keyboardDevice = state.devices.find(d=>d.id===activity.keyboard?.deviceId), typing = keyboardButton(keyboardDevice);
   const {body,pinned}=remoteHtml(activity.screen);
   ctx.content.innerHTML=`<div class="remote">${body||'<div class="placeholder"><p>No buttons on this remote yet.</p></div>'}</div>${pinned||typing?`<div class="pinned">${typing}${pinned}</div>`:''}`;
-  bindCommands(ctx.content);
+  bindCommands(ctx.content);bindKeyboard(ctx,keyboardDevice);
 }
 // ---- Keyboard: type on a device from the phone ----
 const TYPE_CHUNK = 64;  // the hub accepts this many characters per request
@@ -503,7 +506,7 @@ function typingPlan(sent, next) {
 }
 // One typing session. Changes are sent in order, one request at a time; whatever
 // is typed while a request is running goes out together in the next one.
-function createTyper(deviceId) {
+function createTyper(deviceId, onReset=()=>{}) {
   let sent = '', pending = [], busy = false;
   async function flush() {
     if(busy)return;
@@ -512,7 +515,11 @@ function createTyper(deviceId) {
       while(pending.length) {
         const text = pending.splice(0,TYPE_CHUNK).join('');
         try {const queued=await api('commands/type',{deviceId,text});await operation(queued.id,15);}
-        catch(error) {pending = [];notice(error.message,true);}
+        catch(error) {
+          // What reached the device is unknown now, so start over rather than type relative to a guess.
+          pending = [];sent = '';onReset();
+          notice(`${error.message} The box was cleared; check what reached the device.`,true);
+        }
       }
     } finally {busy = false;}
   }
@@ -523,14 +530,17 @@ function createTyper(deviceId) {
   };
 }
 function openKeyboard(device) {
-  const sheet = $('sheet'), typer = createTyper(device.id);
+  const sheet = $('sheet');
   sheet.innerHTML = `<div class="sheet-handle" aria-hidden="true"></div><h2 id="sheet-title">Type on ${escape(device.name)}</h2>
     <input id="keyboard-input" class="keyboard-input" type="text" enterkeyhint="send" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="Text to type on ${escape(device.name)}">
     <p class="sheet-note">Open a text field on the device first. Letters go as you type them, and Enter presses Enter.</p>
     <button type="button" class="sheet-cancel sheet-done" data-sheet-cancel>Done</button>`;
-  const input = sheet.querySelector('#keyboard-input');
+  const input = sheet.querySelector('#keyboard-input'), typer = createTyper(device.id,()=>{input.value = '';});
+  const enter = event => {event.preventDefault();typer.enter();input.value = '';};
   input.oninput = () => typer.change(input.value);
-  input.onkeydown = event => {if(event.key==='Enter'){event.preventDefault();typer.enter();input.value = '';}};
+  input.onkeydown = event => {if(event.key==='Enter')enter(event);};
+  // Some soft keyboards report their Enter key only as a line-break edit.
+  input.onbeforeinput = event => {if(event.inputType==='insertLineBreak')enter(event);};
   sheet.onclick = event => {if(event.target===sheet||event.target.closest('[data-sheet-cancel]'))sheet.close();};
   sheet.showModal();
   history.pushState({sheet:true},'');sheetPushed = true;
@@ -541,10 +551,10 @@ function openKeyboard(device) {
   input.focus();
 }
 // The remote's Keyboard button, shown above the fixed row when this device (or the
-// activity's keyboard device) can type. Empty when it can't.
-function keyboardButton(ctx, device) {
+// activity's keyboard device) can type. Empty when it can't. bindKeyboard() wires it
+// up once the markup is on the page.
+function keyboardButton(device) {
   if(!device?.keyboard)return '';
-  ctx.content.onclick = event => {if(event.target.closest('[data-keyboard]'))openKeyboard(device);};
   return `<button type="button" class="keyboard-button" data-keyboard aria-label="Type on ${escape(device.name)}">${icon('Keyboard')}Keyboard</button>`;
 }
 // ---- Edit remote layout (activities only) ----
