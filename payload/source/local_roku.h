@@ -170,6 +170,16 @@ static int roku_attr(const char *tag, const char *end, const char *name, char *o
     memcpy(out, at, (size_t)(close - at)); out[close - at] = 0;
     return 1;
 }
+/* Appends the UTF-8 form of code point `cp` at `out`; returns the byte count, or 0 for a code point
+   that has no business in a channel name (controls, surrogates, out of range). */
+static size_t roku_utf8_encode(unsigned long cp, char *out) {
+    if (cp < 0x20 || cp == 0x7F || (cp >= 0x80 && cp < 0xA0) || (cp >= 0xD800 && cp <= 0xDFFF) || cp > 0x10FFFF) return 0;
+    if (cp < 0x80) { out[0] = (char)cp; return 1; }
+    if (cp < 0x800) { out[0] = (char)(0xC0 | (cp >> 6)); out[1] = (char)(0x80 | (cp & 0x3F)); return 2; }
+    if (cp < 0x10000) { out[0] = (char)(0xE0 | (cp >> 12)); out[1] = (char)(0x80 | ((cp >> 6) & 0x3F)); out[2] = (char)(0x80 | (cp & 0x3F)); return 3; }
+    out[0] = (char)(0xF0 | (cp >> 18)); out[1] = (char)(0x80 | ((cp >> 12) & 0x3F)); out[2] = (char)(0x80 | ((cp >> 6) & 0x3F)); out[3] = (char)(0x80 | (cp & 0x3F));
+    return 4;
+}
 static void roku_unescape(char *s) {
     static const struct { const char *entity, *text; } table[] = {{"&amp;", "&"}, {"&lt;", "<"}, {"&gt;", ">"}, {"&quot;", "\""}, {"&apos;", "'"}, {"&#39;", "'"}};
     char *out = s; size_t i;
@@ -178,18 +188,28 @@ static void roku_unescape(char *s) {
             size_t n = strlen(table[i].entity);
             if (!strncmp(s, table[i].entity, n)) { *out++ = table[i].text[0]; s += n; goto next; }
         }
+        if (s[0] == '&' && s[1] == '#') {   /* &#233; or &#xE9; */
+            char *end; int hex = s[2] == 'x' || s[2] == 'X'; unsigned long cp = strtoul(s + 2 + hex, &end, hex ? 16 : 10);
+            if (*end == ';' && end > s + 2 + hex && end - s <= 10) {
+                size_t n = roku_utf8_encode(cp, out);
+                if (n) { out += n; s = end + 1; goto next; }
+            }
+        }
         *out++ = *s++;
     next:;
     }
     *out = 0;
 }
-static cJSON *roku_parse_apps(const char *xml) {
+static cJSON *roku_parse_apps(const char *xml, int *skipped) {
     cJSON *apps = cJSON_CreateArray(); const char *p = xml;
+    *skipped = 0;
     while (cJSON_GetArraySize(apps) < ROKU_APPS_MAX && (p = strstr(p, "<app "))) {
         const char *open_end = strchr(p, '>'), *close; char id[40], type[24], name[160];
         if (!open_end) break;
+        if (open_end > p && open_end[-1] == '/') { p = open_end + 1; continue; }   /* <app .../> has no name */
         close = strstr(open_end, "</app>");
         if (!close) break;
+        { const char *next_app = strstr(open_end, "<app "); if (next_app && next_app < close) { p = next_app; continue; } }   /* never read into the next tag */
         if (roku_attr(p, open_end, "id", id, sizeof(id)) && roku_attr(p, open_end, "type", type, sizeof(type)) && !strcmp(type, "appl") &&
             (size_t)(close - open_end - 1) < sizeof(name)) {
             cJSON *seen; int dup = 0;
@@ -198,7 +218,7 @@ static cJSON *roku_parse_apps(const char *xml) {
             cJSON_ArrayForEach(seen, apps) if (!strcmp(lj_str(seen, "id"), id)) dup = 1;
             if (!dup && roku_channel_id_ok(id) && roku_channel_name_ok(name)) {
                 cJSON *item = cJSON_CreateObject(); cJSON_AddStringToObject(item, "id", id); cJSON_AddStringToObject(item, "name", name); cJSON_AddItemToArray(apps, item);
-            }
+            } else if (!dup) (*skipped)++;
         }
         p = close + 6;
     }
@@ -227,9 +247,10 @@ static cJSON *execute_roku(const cJSON *body) {
         if (!xml) { cJSON_Delete(config); return command_result(0, "Not enough memory to list channels."); }
         status = roku_http(lj_str(device, "host"), "GET", "/query/apps", xml, ROKU_APPS_BUFFER, err, sizeof(err));
         if (status == 200) {
-            cJSON *apps = roku_parse_apps(xml);
+            int skipped; cJSON *apps = roku_parse_apps(xml, &skipped);
             snprintf(message, sizeof(message), "%d channels", cJSON_GetArraySize(apps));
             result = command_result(1, message); cJSON_AddItemToObject(result, "apps", apps);
+            cJSON_AddNumberToObject(result, "skipped", skipped);   /* channels whose id or name can't be used as a button */
         } else result = command_result(0, status < 0 ? err : "The Roku refused the request. Turn on network control in its settings.");
         free(xml); cJSON_Delete(config); return result;
     }

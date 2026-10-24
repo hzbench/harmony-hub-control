@@ -400,7 +400,8 @@ def run():
             seen = []
             apps_xml = [b'<apps><app id="12" type="appl" version="4.2">Netflix</app><app id="2285" type="appl" version="2.1">Hulu &amp; More</app>'
                         b'<app id="tvinput.hdmi1" type="tvin" version="1.0.0">HDMI 1</app><app id="bad id" type="appl" version="1">Spaced</app>'
-                        b'<app id="13" type="appl" version="1">Quote "x"</app><app id="12" type="appl" version="9">Netflix again</app></apps>']
+                        b'<app id="13" type="appl" version="1">Quote "x"</app><app id="12" type="appl" version="9">Netflix again</app>'
+                        b'<app id="20" type="appl" version="1"/><app id="21" type="appl" version="1">Caf&#233; &#x26; Bar</app></apps>']
             class FakeRoku(http.server.BaseHTTPRequestHandler):
                 def log_message(self, *args): pass
                 def reply(self, status, body=b""):
@@ -529,8 +530,14 @@ def run():
             assert result["state"] == "failed" and "still installed" in result["result"]["error"], result
             # Asking the Roku what is installed: real channels only, tidy names, no repeats.
             result = roku_send("roku_tv", "ListApps")
-            assert result["state"] == "completed" and result["result"]["reply"] == "2 channels", result
-            assert result["result"]["apps"] == [{"id": "12", "name": "Netflix"}, {"id": "2285", "name": "Hulu & More"}], result["result"]["apps"]
+            assert result["state"] == "completed" and result["result"]["reply"] == "3 channels", result
+            assert result["result"]["apps"] == [{"id": "12", "name": "Netflix"}, {"id": "2285", "name": "Hulu & More"}, {"id": "21", "name": "Caf\u00e9 & Bar"}], result["result"]["apps"]
+            assert result["result"]["skipped"] == 2, "an unusable id and a name with a quote are counted, not silently lost"
+            # A self-closing <app/> has no name and must not swallow the app after it.
+            apps_xml[0] = b'<apps><app id="1" type="appl" version="1"/><app id="2" type="appl" version="1">Two</app></apps>'
+            assert roku_send("roku_tv", "ListApps")["result"]["apps"] == [{"id": "2", "name": "Two"}]
+            apps_xml[0] = b'<apps><app id="1" type="appl" version="1">Un<app id="2" type="appl" version="1">Two</app></apps>'
+            assert roku_send("roku_tv", "ListApps")["result"]["apps"] == [{"id": "2", "name": "Two"}], "a broken tag is not read into the next one"
             apps_xml[0] = ("<apps>" + "".join(f'<app id="{1000 + i}" type="appl" version="1">Channel {i}</app>' for i in range(60)) + "</apps>").encode()
             result = roku_send("roku_tv", "ListApps")
             assert result["state"] == "completed" and len(result["result"]["apps"]) == 40, "at most 40, and the result still fits the operation record"
