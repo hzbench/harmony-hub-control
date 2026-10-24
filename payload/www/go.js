@@ -441,8 +441,13 @@ function removeButton(activity, zone, slot) {
 }
 // "Add arrow pad": puts the whole cross on the remote in one tap. Arrows already
 // in the grid stay; the missing ones (and OK, when a device has it) come from the
-// activity's devices and take the highest free slots, which leaves the grid as it
+// activity's devices (or the bottom row) and take the highest free slots, which leaves the grid as it
 // was because a cross member's slot never shows as a grid square.
+// An arrow on the bottom row can't be offered again, so the pad takes it from there.
+function pinnedArrow(activity, key) {
+  const cell = zoneList(activity,'pinned').find(c=>controlFor(c.command)?.[0]===key);
+  return cell && {device:{id:cell.deviceId}, command:cell.command, control:controlFor(cell.command), pinnedSlot:cell.slot};
+}
 function arrowPadPlan(activity) {
   const list = zoneList(activity,'cells'), offered = availableCommands(activity);
   const has = key => list.some(c=>controlFor(c.command)?.[0]===key);
@@ -450,7 +455,7 @@ function arrowPadPlan(activity) {
   const add = [];
   for(const key of CROSS){
     if(has(key))continue;
-    const found = offered.find(o=>o.control?.[0]===key);
+    const found = offered.find(o=>o.control?.[0]===key) || pinnedArrow(activity,key);
     if(found)add.push(found);
     else if(key!=='ok')return {add:[], reason:'This activity’s devices don’t have all four arrow keys.'};
   }
@@ -461,7 +466,10 @@ function addArrowPad(activity) {
   const {add} = arrowPadPlan(activity), list = zoneList(activity,'cells');
   const free = Array.from({length:MAX_CELLS},(_,n)=>MAX_CELLS-1-n).filter(n=>!list.some(c=>c.slot===n));
   if(!add.length||free.length<add.length)return false;
-  add.forEach((o,i)=>addButton(activity,'cells',free[i],o.device.id,o.command));
+  add.forEach((o,i)=>{
+    if(o.pinnedSlot!==undefined)removeButton(activity,'pinned',o.pinnedSlot);
+    addButton(activity,'cells',free[i],o.device.id,o.command);
+  });
   return true;
 }
 // How many slots to draw: out to a full row beyond the last used slot (so there
