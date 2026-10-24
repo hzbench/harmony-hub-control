@@ -534,7 +534,7 @@ function openKeyboard(device) {
   presentSheet(sheet, `<div class="sheet-handle" aria-hidden="true"></div><h2 id="sheet-title">Type on ${escape(device.name)}</h2>
     <input id="keyboard-input" class="keyboard-input" type="text" enterkeyhint="send" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="Text to type on ${escape(device.name)}">
     <p class="sheet-note">Open a text field on the device first. Letters go as you type them, and Enter presses Enter.</p>
-    <button type="button" class="sheet-cancel sheet-done" data-sheet-cancel>Done</button>`, event => {if(event.target===sheet||event.target.closest('[data-sheet-cancel]'))sheet.close();});
+    <button type="button" class="sheet-cancel sheet-done" data-sheet-cancel>Done</button>`);
   const input = sheet.querySelector('#keyboard-input'), typer = createTyper(device.id,()=>{input.value = '';});
   const enter = event => {event.preventDefault();typer.enter();input.value = '';};
   input.oninput = () => typer.change(input.value);
@@ -755,9 +755,13 @@ const LONG_PRESS_MS = 350, MOVE_SLOP = 10;
 let sheetPushed = false;  // the open add sheet owns one history entry, so Back closes just the sheet
 // Shows `html` in the shared bottom sheet. The open sheet owns one history entry, so
 // the Back gesture closes just the sheet. Callers deal with their own Back hook.
+// Tapping the backdrop or a [data-sheet-cancel] button closes it; `onClick` sees the other taps.
 function presentSheet(sheet, html, onClick) {
   sheet.innerHTML = html;
-  sheet.onclick = onClick;
+  sheet.onclick = event => {
+    if(event.target===sheet||event.target.closest('[data-sheet-cancel]'))return sheet.close();
+    onClick?.(event);
+  };
   sheet.showModal();
   history.pushState({sheet:true},'');sheetPushed = true;
   sheet.onclose = () => {if(sheetPushed){sheetPushed = false;history.back();}};
@@ -779,7 +783,7 @@ function renderEditor(ctx) {
   const draw = focus => {
     if(!here())return;
     ui.dirty = layoutShape(draft)!==base;
-    ctx.actions.innerHTML = `<button type="button" class="header-action" data-help aria-label="How editing works" title="How editing works">${icon('CircleHelp')}</button><button type="button" class="cancel-button" data-cancel ${ui.saving?'disabled':''}>Cancel</button><button type="button" class="save-button" data-save ${ui.dirty&&!ui.saving?'':'disabled'}>${ui.saving?'Saving…':'Save'}</button>`;
+    ctx.actions.innerHTML = `<button type="button" class="header-action" data-help aria-label="How editing works" title="How editing works" ${ui.saving?'disabled':''}>${icon('CircleHelp')}</button><button type="button" class="cancel-button" data-cancel ${ui.saving?'disabled':''}>Cancel</button><button type="button" class="save-button" data-save ${ui.dirty&&!ui.saving?'':'disabled'}>${ui.saving?'Saving…':'Save'}</button>`;
     ctx.content.innerHTML = `<div class="editor">${editorHtml(model(),ui)}</div>`;
     if(focus)ctx.content.querySelector(`[data-zone="${focus.zone}"][data-slot="${focus.slot}"]`)?.focus();
   };
@@ -815,13 +819,12 @@ function renderEditor(ctx) {
         :`<p>${(model().steps).some(s=>s.deviceId)?'Every command from this activity’s devices is already on the remote.':'This activity has no devices yet. Add one to its start actions under Manage activities.'}</p>`}
       <button type="button" class="sheet-cancel" data-sheet-cancel>Cancel</button>`,
     event => {
-        if(event.target===sheet||event.target.closest('[data-sheet-cancel]'))return sheet.close();
-        const pick = event.target.closest('[data-pick]');if(!pick)return;
-        const o = options[+pick.dataset.pick];sheet.close();
-        if(addButton(model(),zone,slot,o.device.id,o.command,corner))changed({zone,slot});
-      });
+      const pick = event.target.closest('[data-pick]');if(!pick)return;
+      const o = options[+pick.dataset.pick];sheet.close();
+      if(addButton(model(),zone,slot,o.device.id,o.command,corner))changed({zone,slot});
+    });
   };
-  const openHelp = () => presentSheet(sheet, editorHelpHtml(), event => {if(event.target===sheet||event.target.closest('[data-sheet-cancel]'))sheet.close();});
+  const openHelp = () => presentSheet(sheet, editorHelpHtml());
   // Removing leaves an empty slot where the finger was: ignore the click that
   // the finger lifting would otherwise send to it.
   let suppressClickUntil = 0;

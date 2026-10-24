@@ -761,6 +761,14 @@ console.log('Editor draws gaps as empty squares, lists every cell (including sta
     assert.equal(saveEnabled(ctx),false,'reading the help changes nothing');
     assert.equal(context.window.harmonyHandleBack(),true,'Back closes the help first');assert.equal(sheet.open,false);
     ctx.actions.onclick({target:{closest:sel=>sel==='[data-help]'?{}:null}});sheet.onclick({target:{closest:sel=>sel==='[data-sheet-cancel]'?{}:null}});assert.equal(sheet.open,false,'Done closes it');
+    // No help while a save is running; the sheet would be left open across the redraw.
+    {
+      ({content,ctx}=setup(base0));const drawn=[];Object.defineProperty(ctx.actions,'innerHTML',{configurable:true,set(v){drawn.push(v);},get(){return drawn.at(-1)||'';}});
+      down(content,slotBtn(content,'cells',0));advance(600);await settle();
+      await pressSave(ctx);
+      assert.ok(drawn.some(h=>/data-help[^>]*disabled/.test(h)&&/Saving…/.test(h)),'help is disabled while "Saving…" is shown');
+      assert.doesNotMatch(drawn.at(-1),/data-help[^>]*disabled/,'and available again afterwards');
+    }
     // The one hint that stays is the one that is needed mid-task.
     click(content,'[data-add-pad]');assert.match(content.innerHTML,/<p class="edit-hint">Tap where the arrow pad should go\.<\/p>/);
     click(content,'[data-place-cancel]');assert.doesNotMatch(content.innerHTML,/class="edit-hint"/);
