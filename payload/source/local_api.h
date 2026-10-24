@@ -508,6 +508,7 @@ static int local_coordinator(void) {
                 result = execute_ir_hold(body);
             } else if (strcmp(kind, "tap") == 0) result = execute_ir_tap(body);
             else if (strcmp(kind, "roku") == 0) result = execute_roku(body);
+            else if (strcmp(kind, "roku-type") == 0) result = execute_roku_type(body);
             else if (strcmp(kind, "bluetooth") == 0) {
                 char msg[1024]; int lock = lock_ir(msg, sizeof(msg)), rc = -1;
                 if (lock >= 0) { rc = send_bt_saved_command(lj_str(body, "deviceId"), lj_str(body, "command"), msg, sizeof(msg)); close(lock); }
@@ -632,6 +633,10 @@ static int local_validate_config(const cJSON *o) {
         if (!safe_run_id(lj_str(a, "id")) || strlen(lj_str(a, "id")) > 64 || !safe_label(lj_str(a, "name")) || strlen(lj_str(a, "name")) > 64) return 0;
         for (b = a->next; b; b = b->next) if (strcmp(lj_str(a, "id"), lj_str(b, "id")) == 0) return 0;
         if (!cJSON_IsArray(steps) || cJSON_GetArraySize(steps) > 64 || !cJSON_IsArray(exits) || cJSON_GetArraySize(exits) > 64) return 0;
+        {   /* Optional: the device whose keyboard the remote's Keyboard button types into. */
+            cJSON *keyboard = lj_get(a, "keyboard");
+            if (keyboard && (!cJSON_IsObject(keyboard) || !safe_label(lj_str(keyboard, "deviceId")) || strlen(lj_str(keyboard, "deviceId")) > 64)) return 0;
+        }
         /* `buttons` is the pre-existing per-slot layout `screen` replaced for
            new activities; it's kept here, unmigrated, only so activities
            saved under the old system continue to validate and round-trip
@@ -951,6 +956,7 @@ static int local_dispatch(int fd, const struct request *r) {
     }
     owner = !(strncmp(r->path, "/api/v1/operations", 18) == 0 ||
         !strcmp(r->path, "/api/v1/commands/send") ||
+        !strcmp(r->path, "/api/v1/commands/type") ||
         !strcmp(r->path, "/api/v1/activities/run") ||
         (get && !strcmp(r->path, "/api/v1/activities/state")) ||
         (get && (!strcmp(r->path, "/api/v1/devices") || !strcmp(r->path, "/api/v1/bluetooth/devices") || !strcmp(r->path, "/api/v1/network/devices") || !strcmp(r->path, "/api/v1/configuration"))));
@@ -968,7 +974,17 @@ static int local_dispatch(int fd, const struct request *r) {
     else if (!strcmp(r->path, "/api/v1/controllers")) local_controllers(fd, r, &ctl, body);
     else if (!strncmp(r->path, "/api/v1/operations", 18)) local_operations(fd, r, body, &ctl);
     else if (!strcmp(r->path, "/api/v1/activities/run") && !get) local_activity_run(fd, body, &ctl);
-    else if (!strcmp(r->path, "/api/v1/commands/send") && !get) {
+    else if (!strcmp(r->path, "/api/v1/commands/type") && !get) {
+        int lock = local_lock();
+        if (!safe_run_id(lj_str(body, "deviceId")) || strlen(lj_str(body, "deviceId")) > 64 || !roku_type_valid(lj_str(body, "text")) || r->body_len > 2048)
+            local_error(fd, "400 Bad Request", "Invalid text to type.");
+        else if (lock < 0) local_error(fd, "409 Conflict", "Command queue is busy.");
+        else {
+            out = local_enqueue(body, &ctl, "roku-type");
+            if (out) { lj_reply(fd, "202 Accepted", out); cJSON_Delete(out); } else local_error(fd, "429 Too Many Requests", "Command queue is full.");
+        }
+        if (lock >= 0) close(lock);
+    } else if (!strcmp(r->path, "/api/v1/commands/send") && !get) {
         const char *kind = !strcmp(lj_str(body, "transport"), "bluetooth") ? "bluetooth" : !strcmp(lj_str(body, "transport"), "roku") ? "roku" : !strcmp(lj_str(body, "mode"), "hold") ? "hold" : "tap";
         int lock = local_lock();
         if (!safe_label(lj_str(body, "deviceId")) || strlen(lj_str(body, "deviceId")) > 64 || !safe_label(lj_str(body, "command")) || strlen(lj_str(body, "command")) > 127 || r->body_len > 2048)

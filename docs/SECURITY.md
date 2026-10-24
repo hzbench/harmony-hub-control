@@ -37,7 +37,7 @@ change one (it is part of the configuration, so it is revision-checked and
 backed up with it). The hub only contacts private-network IPv4 addresses
 (10/8, 172.16/12, 192.168/16) on that fixed port, so a configuration cannot
 point the hub at arbitrary hosts. Controllers can send a saved Roku's commands
-but cannot change its address.
+but cannot change its address. Typed text is limited to 64 characters per request, printable characters plus Backspace and Enter, and is sent one key press at a time.
 
 ## Data And Recovery
 
