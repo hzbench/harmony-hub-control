@@ -14,6 +14,8 @@ is kept (owner-only file) in ~/.config/harmony-hub/ so later runs just work.
 """
 import argparse
 import base64
+import binascii
+import hashlib
 import http.client
 import json
 import os
@@ -37,7 +39,10 @@ class HubError(Exception):
 class Hub:
     def __init__(self, host, port=DEFAULT_PORT, token="", csrf=""):
         # The hub checks the Host header against its own numeric address, so names are resolved here.
-        self.ip = socket.gethostbyname(host)
+        try:
+            self.ip = socket.gethostbyname(host)
+        except OSError as error:
+            raise HubError(f"Can't find the hub '{host}' ({error}).")
         self.port = port
         self.token = token
         self.csrf = csrf
@@ -104,8 +109,11 @@ def pair(hub, name="push_release", wait=90, say=print, sleep=time.sleep, now=tim
     say("Press the Pair button on the hub now.")
     deadline = now() + wait
     while now() < deadline:
-        if role(hub) == "owner":
-            return
+        try:
+            if role(hub) == "owner":
+                return
+        except HubError:
+            pass   # a dropped answer while waiting for the button is not the end of pairing
         sleep(1)
     raise HubError("The Pair button was not pressed in time. Run this again and press it when asked.")
 
@@ -124,11 +132,16 @@ def connect(host, port=DEFAULT_PORT, state_dir=None, claim_code="", say=print, *
     hub = Hub(host, port)
     path = credentials_path(hub.ip, port, state_dir)
     if path.exists():
-        saved = json.loads(path.read_text())
-        hub.token, hub.csrf = saved["token"], saved["csrf"]
-        if role(hub) == "owner":
-            return hub
-        say("The saved pairing no longer works; pairing again.")
+        try:
+            saved = json.loads(path.read_text())
+            hub.token, hub.csrf = saved["token"], saved["csrf"]
+        except (OSError, ValueError, KeyError, TypeError):
+            hub.token = hub.csrf = ""
+            say(f"The saved pairing in {path} is unreadable; pairing again.")
+        else:
+            if role(hub) == "owner":
+                return hub
+            say("The saved pairing no longer works; pairing again.")
     if claim_code:
         claim(hub, claim_code)
     else:
@@ -143,12 +156,21 @@ def connect(host, port=DEFAULT_PORT, state_dir=None, claim_code="", say=print, *
 # ---- The release ----
 
 def load_release(path):
-    release = json.loads(Path(path).read_text())
-    for key in ("manifest", "signature", "files"):
-        if key not in release:
-            raise HubError(f"{path} is not a release bundle (no '{key}').")
-    manifest = json.loads(release["manifest"])
-    missing = [e["name"] for e in manifest["files"] if e["name"] not in release["files"]]
+    try:
+        release = json.loads(Path(path).read_text())
+    except OSError as error:
+        raise HubError(f"Can't read {path} ({error.strerror or error}).")
+    except ValueError:
+        raise HubError(f"{path} is not a release bundle (not JSON; was the download cut short?).")
+    try:
+        if not all(isinstance(release.get(k), t) for k, t in (("manifest", str), ("signature", str), ("files", dict))):
+            raise ValueError
+        manifest = json.loads(release["manifest"])
+        names = [entry["name"] for entry in manifest["files"]]
+        manifest["version"]
+    except (ValueError, KeyError, TypeError, AttributeError):
+        raise HubError(f"{path} is not a release bundle (damaged manifest or file list).")
+    missing = [name for name in names if not isinstance(release["files"].get(name), str)]
     if missing:
         raise HubError("The bundle is missing files it lists: " + ", ".join(missing))
     return release, manifest
@@ -156,12 +178,17 @@ def load_release(path):
 
 def upload(hub, release, manifest, say=print):
     """Stage the bundle on the hub and ask it to activate it. The hub restarts about two seconds later."""
+    blobs = []
+    for entry in manifest["files"]:   # decode everything first, so a damaged file is found before the hub is told anything
+        try:
+            blobs.append((entry["name"], base64.b64decode(release["files"][entry["name"]], validate=True)))
+        except binascii.Error:
+            raise HubError(f"{entry['name']} in the bundle is damaged.")
     hub.call("updates/begin", {"manifest": release["manifest"], "signature": release["signature"]})
-    for entry in manifest["files"]:
-        raw = base64.b64decode(release["files"][entry["name"]])
+    for name, raw in blobs:
         for offset in range(0, len(raw), CHUNK_BYTES):
-            hub.call("updates/chunk", {"name": entry["name"], "offset": offset, "hex": raw[offset:offset + CHUNK_BYTES].hex()})
-        say(f"  uploaded {entry['name']} ({len(raw):,} bytes)")
+            hub.call("updates/chunk", {"name": name, "offset": offset, "hex": raw[offset:offset + CHUNK_BYTES].hex()})
+        say(f"  uploaded {name} ({len(raw):,} bytes)")
     hub.call("updates/apply", {})
 
 
@@ -220,10 +247,13 @@ def download_release(tag="", repo=REPO, say=print):
         raise HubError(f"Expected one hub-release-*.json in the release, found {len(bundles)}.")
     checksum = Path(str(bundles[0]) + ".sha256")
     if checksum.exists():
-        import hashlib
-        expected = checksum.read_text().split()[0]
-        if hashlib.sha256(bundles[0].read_bytes()).hexdigest() != expected:
+        words = checksum.read_text().split()
+        if not words:
+            raise HubError("The release's checksum file is empty. Not installing it.")
+        if hashlib.sha256(bundles[0].read_bytes()).hexdigest() != words[0]:
             raise HubError("The downloaded bundle does not match its published checksum. Not installing it.")
+    else:
+        say("Warning: this release has no published checksum, so the download was not checked.")
     say(f"Downloaded {bundles[0].name}")
     return bundles[0]
 

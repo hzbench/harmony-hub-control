@@ -1077,7 +1077,7 @@ console.log('The owner can add, test and remove a Roku; Rokus appear as devices'
 console.log('The running activity and its lock-screen buttons are announced to the app');
 // Software update: read a release file, upload it in chunks, wait through the restart, report what happened.
 {
-  X.pauses.wait=async()=>{};
+  let clock=0;X.pauses.wait=async ms=>{clock+=ms;};X.pauses.now=()=>clock;   // time only passes when the code waits
   const big=Buffer.alloc(25600,7), small=Buffer.from('hello');
   const manifest=JSON.stringify({version:'0.2.0',files:[{name:'big.bin',size:big.length},{name:'small',size:small.length}]});
   const releaseOf=(over={})=>({manifest,signature:'ab',files:{'big.bin':big.toString('base64'),small:small.toString('base64')},...over});
@@ -1086,7 +1086,10 @@ console.log('The running activity and its lock-screen buttons are announced to t
   assert.equal(X.parseRelease(text()).manifest.version,'0.2.0');
   for(const [input,words] of [['not json',/not JSON/],['[]',/not a hub release bundle/],[text({signature:undefined}),/not a hub release bundle/],
       [text({manifest:'{'}),/manifest is damaged/],[text({files:{small:'aGk='}}),/missing files it lists: big.bin/],
-      [text({manifest:JSON.stringify({files:[]})}),/no version or file list/]])
+      [text({manifest:JSON.stringify({files:[]})}),/no version or file list/],
+      [text({files:null}),/not a hub release bundle/],[text({files:'x'}),/not a hub release bundle/],[text({files:[]}),/not a hub release bundle/],
+      [text({manifest:'null'}),/no version or file list/],[text({manifest:JSON.stringify({version:'1',files:'x'})}),/no version or file list/],
+      [text({manifest:JSON.stringify({version:'1',files:[null]})}),/no version or file list/],[text({manifest:JSON.stringify({version:'1',files:[{size:1}]})}),/no version or file list/]])
     assert.throws(()=>X.parseRelease(input),words,String(input).slice(0,40));
   // The upload: begin, every chunk in order, apply, then the wait.
   const calls=[],said=[];let sessionUp=['up','down','down','up'],statuses=[{pending:true},{pending:false,version:'0.2.0',result:'Release passed startup health checks'}];
@@ -1105,13 +1108,19 @@ console.log('The running activity and its lock-screen buttons are announced to t
   assert.ok(chunks.every(c=>c.hex.length<=32768&&c.hex.length%2===0));
   assert.equal(Buffer.from(chunks.filter(c=>c.name==='big.bin').map(c=>c.hex).join(''),'hex').equals(big),true,'the hub receives exactly the signed bytes');
   assert.ok(said.some(t=>/Uploading big.bin… 100%/.test(t))&&said.some(t=>/restarting/.test(t))&&said.some(t=>/startup check/.test(t)));
+  // A damaged file is found before the hub is told anything.
+  for(const files of [{'big.bin':'***not base64***',small:small.toString('base64')},{'big.bin':Buffer.alloc(10).toString('base64'),small:small.toString('base64')}]) {
+    const sent=[];context.api=async path=>{sent.push(path);return {};};
+    await assert.rejects(()=>X.installRelease(X.parseRelease(text({files})),()=>{}),/big\.bin in that release is (damaged|not the size)/);
+    assert.deepEqual(sent,[],'nothing is sent for a damaged bundle');
+  }
   // The other endings.
   const ending=async(session,status,version='0.2.0')=>{sessionUp=session;statuses=status;context.api=async path=>{if(path==='session'){const s=sessionUp.length>1?sessionUp.shift():sessionUp[0];if(s==='down')throw new TypeError('offline');return {};}if(path==='updates/status'){const s=statuses.length>1?statuses.shift():statuses[0];if(s instanceof Error)throw s;return s;}return {};};return J(await X.waitForHub(version,()=>{}));};
   assert.equal((await ending(['up','down','up'],[{pending:false,version:'0.1.0',result:'Rolled back after a failed health check'}])).outcome,'rolled-back');
   assert.equal((await ending(['up','down','up'],[{pending:false,version:'0.1.5',result:''}])).outcome,'unclear');
   assert.equal((await ending(['up','down','up'],[new TypeError('x'),{pending:true},{pending:false,version:'0.2.0',result:'ok'}])).outcome,'ok','a status that fails while the hub starts is retried');
-  await assert.rejects(()=>ending(['down'],[{pending:false,version:'0.2.0'}]),/has not come back after five minutes/);
-  await assert.rejects(()=>ending(['up','down','up'],[{pending:true}]),/startup check has not finished/);
+  clock=0;await assert.rejects(()=>ending(['down'],[{pending:false,version:'0.2.0'}]),/has not come back after five minutes/);assert.ok(clock>=300000&&clock<=310000,'waits five minutes of real time, however long each request takes');
+  clock=0;await assert.rejects(()=>ending(['up','down','up'],[{pending:true}]),/startup check has not finished/);assert.ok(clock>=180000&&clock<=190000+60000);
   // The screen.
   const nodes={'[data-update-version]':{textContent:''},'[data-update-status]':{textContent:''},'[data-install-update]':{disabled:true},'[data-reload]':{hidden:true}};
   const content={innerHTML:'',isConnected:true,querySelector:sel=>nodes[sel]||null};
@@ -1135,6 +1144,7 @@ console.log('The running activity and its lock-screen buttons are announced to t
   context.api=async(path,body)=>{calls2.push(path);if(path==='updates/apply')phase='restarting';if(path==='session'){if(phase==='restarting'){phase='back';throw new TypeError('offline');}return {};}if(path==='updates/status')return phase==='back'?{pending:false,version:'0.2.0',result:'Release passed startup health checks'}:startStatus;return {ok:true};};
   await click('[data-install-update]');
   assert.equal(nodes['[data-update-status]'].textContent,'Updated: the hub is running version 0.2.0.');assert.equal(nodes['[data-reload]'].hidden,false,'offers to reload into the new version');
+  assert.equal(nodes['[data-install-update]'].disabled,true,'the same file is not installed twice');
   assert.equal(calls2.includes('updates/begin')&&calls2.includes('updates/apply'),true);
   let reloaded=false;context.location.reload=()=>{reloaded=true;};await click('[data-reload]');assert.equal(reloaded,true);
   // A rollback is reported as a failure, in words.

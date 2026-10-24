@@ -89,6 +89,9 @@ with tempfile.TemporaryDirectory() as directory:
         assert "not pressed in time" in str(error)
     else:
         raise AssertionError("pairing without a press should time out")
+    # One dropped answer while waiting for the button does not end pairing.
+    hub = FakeHub(["pending", "down", "up"]); clock = Clock()
+    pr.pair(hub, say=quiet(), sleep=clock.sleep, now=clock.now); assert (hub.token, hub.csrf) == ("tok-1", "csrf-1")
     # A claim code works for a hub with no owner, and a phone-only (control) pairing is not enough.
     hub = FakeHub(["up"]); pr.claim(hub, "123456"); assert (hub.token, hub.csrf) == ("tok-2", "csrf-2")
     path = pr.credentials_path("10.0.0.5", 8080, state)
@@ -106,16 +109,38 @@ with tempfile.TemporaryDirectory() as directory:
     (d / "good.json").write_text(json.dumps(good))
     release, parsed = pr.load_release(d / "good.json")
     assert parsed["version"] == "0.2.0" and release["signature"] == "00"
-    for name, text, words in (("no-sig.json", json.dumps({"manifest": manifest, "files": {}}), "no 'signature'"),
-                              ("missing.json", json.dumps({**good, "files": {}}), "missing files"),
-                              ("junk.json", "not json", None)):
+    bad = (("no-sig.json", json.dumps({"manifest": manifest, "files": {}}), "damaged manifest"),
+           ("missing.json", json.dumps({**good, "files": {}}), "missing files"),
+           ("junk.json", "not json", "not JSON"),
+           ("truncated.json", json.dumps(good)[:40], "not JSON"),
+           ("list.json", "[]", "damaged manifest"),
+           ("null-files.json", json.dumps({**good, "files": None}), "damaged manifest"),
+           ("no-files-key.json", json.dumps({**good, "manifest": json.dumps({"version": "1"})}), "damaged manifest"),
+           ("no-version.json", json.dumps({**good, "manifest": json.dumps({"files": []})}), "damaged manifest"),
+           ("bad-entry.json", json.dumps({**good, "manifest": json.dumps({"version": "1", "files": [None]})}), "damaged manifest"),
+           ("manifest-null.json", json.dumps({**good, "manifest": "null"}), "damaged manifest"))
+    for name, text, words in bad:
         (d / name).write_text(text)
         try:
             pr.load_release(d / name)
-        except (pr.HubError, ValueError) as error:
-            assert words is None or words in str(error), error
+        except pr.HubError as error:   # a clean message, never a traceback
+            assert words in str(error), (name, str(error))
         else:
             raise AssertionError(name)
+    try:
+        pr.load_release(d / "does-not-exist.json")
+    except pr.HubError as error:
+        assert "Can't read" in str(error) and "lost contact" not in str(error)
+    else:
+        raise AssertionError("a missing file is explained")
+    # A damaged file in a bundle is refused before anything is sent.
+    hub = FakeHub(["up"])
+    try:
+        pr.upload(hub, {**good, "files": {"a": "***"}}, json.loads(manifest), say=quiet())
+    except pr.HubError as error:
+        assert "damaged" in str(error) and hub.calls == [], "nothing is sent for a damaged bundle"
+    else:
+        raise AssertionError("damaged base64")
     # The upload sends exactly the signed bytes, in order, in chunks the hub accepts.
     big = bytes(range(256)) * 100   # 25,600 bytes: four chunks (three full, one partial)
     manifest = json.dumps({"version": "0.2.0", "files": [{"name": "big", "size": len(big), "sha512": hashlib.sha512(big).hexdigest()}, {"name": "a", "size": 5, "sha512": ""}]})
