@@ -492,7 +492,7 @@ const filled=(html,zone)=>[...html.matchAll(new RegExp(`class="cell(?: (?!empty)
 const emptied=(html,zone)=>[...html.matchAll(new RegExp(`class="cell empty(?: (?:ok|tl|tr|bl|br))?" type="button" data-zone="${zone}" data-slot="(\\d+)"`,'g'))].map(m=>+m[1]);
 assert.deepEqual(filled(eh,'cells'),[0,1,2,5]);   // Up,VolumeUp,HDMI 1 packed into 0..2 (they had no slots); Gone at 5
 assert.deepEqual(emptied(eh,'cells'),[3,4,6,7],'slots between buttons are empty squares');
-assert.deepEqual(filled(eh,'pinned'),[2]);assert.deepEqual(emptied(eh,'pinned'),[0],'one add square, for the first free slot');
+assert.deepEqual(filled(eh,'pinned'),[0],'the fixed row has no gaps: its button sits in slot 0');assert.deepEqual(emptied(eh,'pinned'),[1],'with one add square after it');
 assert.match(eh,/class="cell missing" type="button" data-zone="cells" data-slot="5"/);
 assert.match(eh,/Gone \(its device or command no longer exists\)\. Press and hold to remove\./);
 assert.match(eh,/aria-label="Volume up\. Press and hold to remove\."/);
@@ -720,12 +720,18 @@ console.log('Editor draws gaps as empty squares, lists every cell (including sta
     assert.match(pinnedHtml(content),/class="cells pinned-row edit-grid"/);assert.deepEqual(layout(content,'pinned'),{0:'Back'});assert.deepEqual(empties(content,'pinned'),[1],'one + square, right after the button');
     ({content,ctx}=setup({...base0,screen:{columns:4,cells:[],pinned:[sc('Back',0),sc('Input',1),sc('Mute',2),sc('OK',3)]}}));
     assert.deepEqual(empties(content,'pinned'),[],'a full row offers no more squares');
-    // Removing one in the middle: the rest stay, and the + takes the gap, so a new button lands where the old one was.
+    // Removing one in the middle closes the gap; a new button goes after the last one, where the + is.
     ({content,ctx}=setup({...base0,screen:{columns:4,cells:[],pinned:[sc('Back',0),sc('Input',1),sc('Mute',2)]}}));
     down(content,slotBtn(content,'pinned',1));advance(600);await settle();
-    assert.deepEqual(layout(content,'pinned'),{0:'Back',2:'Mute'});assert.deepEqual(empties(content,'pinned'),[1]);
-    advance(800);tapSlot(content,'pinned',1);await choose('TV: Input');
-    assert.deepEqual(layout(content,'pinned'),{0:'Back',1:'Input',2:'Mute'});assert.deepEqual(empties(content,'pinned'),[3]);
+    assert.deepEqual(layout(content,'pinned'),{0:'Back',1:'Mute'},'the rest close up');assert.deepEqual(empties(content,'pinned'),[2]);
+    advance(800);tapSlot(content,'pinned',2);await choose('TV: Input');
+    assert.deepEqual(layout(content,'pinned'),{0:'Back',1:'Mute',2:'Input'},'the new one is on the right');assert.deepEqual(empties(content,'pinned'),[3]);
+    // A layout saved with a gap at the front (a removed first button) still adds on the right.
+    ({content,ctx}=setup({...base0,screen:{columns:4,cells:[],pinned:[sc('Mute',1)]}}));
+    assert.deepEqual(layout(content,'pinned'),{0:'Mute'},'old gaps are closed when the editor opens');assert.equal(saveEnabled(ctx),false,'which is not a change in itself');
+    tapSlot(content,'pinned',1);await choose('TV: Back');
+    assert.deepEqual(layout(content,'pinned'),{0:'Mute',1:'Back'},'the + is on the right, and so is the new button');
+    await pressSave(ctx);assert.deepEqual(hub.activities[0].screen.pinned,[sc('Mute',0),sc('Back',1)],'saved in order, packed');
   }
   // Arrows on the bottom row move into the pad instead of reading as "no arrow keys".
   ({content,ctx}=setup({...base0,screen:{columns:4,cells:[],pinned:['Up','Down','Left','Right'].map((c,i)=>sc(c,i))}}));

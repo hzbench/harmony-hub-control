@@ -301,6 +301,12 @@ const NAMED_IN_LIST = ['volumeup','volumedown','channelup','channeldown'];
 const GRID_SLOTS = 32;  // keep in step with the server's 32-cell limit
 // Buttons carry the grid slot they sit in (`slot`, 0-based). Lists saved before
 // that existed fill the lowest free slots in order. Returns copies, sorted by slot.
+// The fixed row has no gaps: its buttons sit in slots 0..n-1 in order, so the "+"
+// at its right end is also where a new button goes.
+function packSlots(list) {
+  list.sort((a,b)=>a.slot-b.slot).forEach((c,i)=>{c.slot = i;});
+  return list;
+}
 function withSlots(list, capacity) {
   const used = new Set(), placed = [], loose = [];
   for(const c of list||[]) {
@@ -604,6 +610,7 @@ function removeButton(activity, zone, slot) {
   }
   list.splice(at,1);
   if(closeUp)for(const c of list)if(c.slot>slot)c.slot--;
+  if(zone==='pinned')packSlots(list);
   return true;
 }
 // "Add arrow pad": puts the whole cross on the remote in one tap. Arrows already
@@ -634,7 +641,11 @@ function addArrowPad(activity) {
   const free = Array.from({length:MAX_CELLS},(_,n)=>MAX_CELLS-1-n).filter(n=>!list.some(c=>c.slot===n));
   if(!add.length||free.length<add.length)return false;
   add.forEach((o,i)=>{
-    if(o.pinnedSlot!==undefined)removeButton(activity,'pinned',o.pinnedSlot);
+    if(o.pinnedSlot!==undefined) {
+      // Look it up now: taking an earlier one out of the fixed row has already shifted the rest.
+      const held = zoneList(activity,'pinned').find(c=>c.deviceId===o.device.id&&c.command===o.command);
+      if(held)removeButton(activity,'pinned',held.slot);
+    }
     addButton(activity,'cells',free[i],o.device.id,o.command);
   });
   return true;
@@ -653,7 +664,7 @@ function editorSlots(zone, extent, columns, extraRows=0, capacity=MAX_CELLS) {
 const layoutShape = screen => {const s=cloneScreen(screen);return JSON.stringify([s.columns,s.crossRow,s.cells,s.pinned,s.keyboard]);};
 // What the editor compares: the layout plus the keyboard device, which lives on the activity itself.
 const editedShape = activity => layoutShape({...activity.screen, keyboard:activity.keyboard?.deviceId||''});
-const cloneScreen = screen => {const columns=screen?.columns||4;return {columns, crossRow:crossRowOf(screen), cells:withSlots(screen?.cells,MAX_CELLS), pinned:withSlots(screen?.pinned,columns), keyboard:screen?.keyboard||''};};
+const cloneScreen = screen => {const columns=screen?.columns||4;return {columns, crossRow:crossRowOf(screen), cells:withSlots(screen?.cells,MAX_CELLS), pinned:packSlots(withSlots(screen?.pinned,columns)), keyboard:screen?.keyboard||''};};
 // The editor always starts from the hub's current layout. `base` is that
 // layout: Save later compares the hub against it, not against whatever it is
 // by then, to notice someone else's change.
@@ -722,8 +733,7 @@ function editGridHtml(activity, ui) {
 function editPinnedHtml(activity) {
   const list = zoneList(activity,'pinned'), columns = screenOf(activity).columns||4;
   const cells = [...list].sort((a,b)=>a.slot-b.slot).map(c=>editCellHtml(c,'pinned',c.slot));
-  const free = Array.from({length:columns},(_,slot)=>slot).find(slot=>!list.some(c=>c.slot===slot));
-  if(free!==undefined)cells.push(editCellHtml(null,'pinned',free));
+  if(list.length<columns)cells.push(editCellHtml(null,'pinned',list.length));
   return `<div class="cells pinned-row edit-grid">${cells.join('')}</div>`;
 }
 // The device whose keyboard this remote's Keyboard button types into.
