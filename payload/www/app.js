@@ -209,7 +209,7 @@ function beginHold(button,pointerId=null) {
   button.classList.add('is-held');button.setAttribute('aria-pressed','true');
   hold.timer=setTimeout(async()=>{
     const device=state.devices.find(d=>d.id===button.dataset.device);
-    if(device.transport==='bluetooth'){stopHold(true);return;}
+    if(device.transport!=='ir'){stopHold(true);return;}
     hold.started=true;
     try {
       const queued=await api('commands/send',{deviceId:device.id,command:button.dataset.command,transport:'ir',mode:'hold'});hold.id=queued.id;
@@ -248,7 +248,7 @@ function drawer() {
 $('close-drawer').addEventListener('click',()=>{stopHold(false);$('drawer').close();});
 $('drawer').addEventListener('close',()=>stopHold(false));
 function renderDevices() {
-  mount(`<div class="toolbar">${owner()?'<button data-action="add-device" class="primary">'+icon('Plus')+' Add device</button>':''}</div><div class="list">${state.devices.map(d=>`<div class="list-row"><div class="text"><strong>${escape(d.name)}</strong>${d.name===`${d.manufacturer} ${d.model}`?'':`<small>${escape(d.manufacturer||'Bluetooth')} ${escape(d.model||d.type||'')}</small>`}<small>${d.commands.length} commands${d.transport==='ir'?' - '+escape(deviceTestStatus(d)):''}</small></div><div class="row-actions"><button data-action="open-device" data-id="${escape(d.id)}" title="Open ${escape(d.name)} remote">${icon('Radio')}</button>${owner()?'<button data-action="edit-device" data-id="'+escape(d.id)+'" title="Edit '+escape(d.name)+'">'+icon('SlidersHorizontal')+'</button>':''}</div></div>`).join('')||'<p>No saved devices.</p>'}</div>`);
+  mount(`<div class="toolbar">${owner()?'<button data-action="add-device" class="primary">'+icon('Plus')+' Add device</button>':''}</div><div class="list">${state.devices.map(d=>`<div class="list-row"><div class="text"><strong>${escape(d.name)}</strong>${d.name===`${d.manufacturer} ${d.model}`?'':`<small>${d.transport==='roku'?(d.model==='tv'?'Roku TV':'Roku player'):escape(d.manufacturer||'Bluetooth')+' '+escape(d.model||d.type||'')}</small>`}<small>${d.commands.length} commands${d.transport==='ir'?' - '+escape(deviceTestStatus(d)):''}</small></div><div class="row-actions"><button data-action="open-device" data-id="${escape(d.id)}" title="Open ${escape(d.name)} remote">${icon('Radio')}</button>${owner()&&d.transport!=='roku'?'<button data-action="edit-device" data-id="'+escape(d.id)+'" title="Edit '+escape(d.name)+'">'+icon('SlidersHorizontal')+'</button>':''}</div></div>`).join('')||'<p>No saved devices.</p>'}</div>${state.devices.some(d=>d.transport==='roku')?'<p>Rokus are managed under <a href="/go/#/roku">Setup › Roku</a>.</p>':''}`);
 }
 function deviceTestStatus(device) {
   if(!device.commands.length)return 'No commands yet';
@@ -505,6 +505,7 @@ async function renderSettings() {
 async function loadDevices() {
   const inventory=await api('devices');state.devices=(inventory.devices||[]).map(d=>({...d,transport:'ir'}));
   const bluetooth=await api('bluetooth/devices');state.devices.push(...(bluetooth.devices||[]).map(d=>({...d,transport:'bluetooth'})));
+  const network=await api('network/devices');state.devices.push(...(network.devices||[]).map(d=>({...d,transport:'roku'})));
 }
 function show(view) {
   if(state.draft&&!confirm('Discard this unsaved device setup?'))return;

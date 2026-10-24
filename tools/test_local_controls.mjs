@@ -63,6 +63,12 @@ for(const stop of ['pointerup','keyup','pointercancel','lostpointercapture','blu
   assert.equal(t.calls.filter(c=>c.action==='cancel').length,1);
   assert.equal(t.calls.filter(c=>c.path==='commands/send').length,1,'release must not send an extra tap');
 }
+// Only IR has a held transmission: holding a Bluetooth or Roku button is one tap on release.
+for(const transport of ['bluetooth','roku']){
+  t=setup();t.state.devices[0].transport=transport;t.event('pointerdown');await t.advance(1600);t.event('pointerup');t.event('click');await t.flush();
+  assert.deepEqual(t.calls.filter(c=>c.path==='commands/send').map(c=>[c.mode,c.transport]),[['tap',transport]],transport+' hold sends a single tap');
+  assert.equal(t.state.hold,null);
+}
 console.log('New remote ('+name+'): touch, keyboard, long-hold release, pointer cancellation and synthetic-click suppression passed');
 
 for(const stop of ['blur','pagehide','visibilitychange']){

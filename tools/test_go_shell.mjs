@@ -784,7 +784,7 @@ console.log('Editing changes only a local draft in fixed slots; Save is one writ
 {
   const content={innerHTML:''};
   X.screens.setup.render({content,actions:{},params:[],setTitle(){}});
-  assert.deepEqual([...content.innerHTML.matchAll(/<a class="row-main" href="([^"]+)"/g)].map(m=>m[1]),['/#devices','/#activities','/#settings']);
+  assert.deepEqual([...content.innerHTML.matchAll(/<a class="row-main" href="([^"]+)"/g)].map(m=>m[1]),['#/roku','/#devices','/#activities','/#settings']);
   assert.match(content.innerHTML,/IR codes/);
 }
 console.log('Setup links into the original pages');
@@ -813,4 +813,52 @@ console.log('Setup links into the original pages');
   delete context.window.HarmonyNative;assert.doesNotThrow(()=>X.announceHub());
 }
 console.log('The owner can name the hub and the app is told');
+// Roku screen: the owner adds, tests and removes Rokus; each change is one revision-checked write.
+{
+  let hubCfg={revision:7,networkDevices:[{id:'roku_a',name:'Den <TV>',kind:'roku',model:'tv',host:'192.168.1.50'}],activities:[]};
+  const writes=[],sent=[];let netFail=false;
+  context.api=async(path,body)=>{
+    if(path==='configuration'){if(!body)return J(hubCfg);writes.push(J(body));hubCfg={...J(body.configuration),revision:body.revision+1};return {ok:true};}
+    if(path==='network/devices')return {devices:(hubCfg.networkDevices||[]).map(d=>({id:d.id,name:d.name,type:'Roku',commands:[{name:'Home'}]}))};
+    if(path==='devices'||path==='bluetooth/devices')return {devices:[]};
+    if(path==='commands/send'){sent.push(J(body));if(netFail)throw Error('Could not reach the Roku.');return {id:'op1'};}
+    if(path.startsWith('operations'))return {state:'completed',result:{ok:true,reply:'Den Roku'}};
+    return {};
+  };
+  context.operation=async()=>({state:'completed',result:{ok:true,reply:'Den Roku'}});
+  state.config=J(hubCfg);state.session={role:'owner'};context.location.hash='#/roku';
+  const fields={'#roku-name':{value:''},'#roku-model':{value:'tv'},'#roku-host':{value:''}};
+  const content={innerHTML:'',isConnected:true,querySelector:sel=>fields[sel]};
+  X.screens.roku.render({content,actions:{},params:[],setTitle(){}});
+  assert.match(content.innerHTML,/Den &lt;TV&gt;/,'lists Rokus, escaped');assert.match(content.innerHTML,/192\.168\.1\.50/);
+  const submit=async(name,model,host)=>{fields['#roku-name'].value=name;fields['#roku-model'].value=model;fields['#roku-host'].value=host;await content.onsubmit({preventDefault(){}});};
+  // Bad input never reaches the hub.
+  for(const host of ['8.8.8.8','roku.local','192.168.1','192.168.1.300','172.32.0.1','']){await submit('Bed',"player",host);assert.equal(writes.length,0,host);assert.equal(el('notice').dataset.error,'true');}
+  await submit('  ','tv','192.168.1.60');assert.equal(writes.length,0);assert.equal(el('notice').textContent,'Give the Roku a name.');
+  // A good one is a single write that keeps the others, and then shows up as a device.
+  await submit(' Bedroom ','player','10.1.2.3');
+  assert.equal(writes.length,1);assert.equal(writes[0].revision,7);
+  assert.deepEqual(writes[0].configuration.networkDevices.map(d=>[d.name,d.model,d.host,d.kind]),[['Den <TV>','tv','192.168.1.50','roku'],['Bedroom','player','10.1.2.3','roku']]);
+  assert.match(writes[0].configuration.networkDevices[1].id,/^roku_[0-9a-f]{8}$/);
+  assert.deepEqual(state.devices.map(d=>[d.name,d.transport]),[['Den <TV>','roku'],['Bedroom','roku']],'Rokus are loaded as devices');
+  assert.match(content.innerHTML,/Bedroom/);
+  // Test sends the connection query, not a key.
+  await content.onclick({target:{closest:sel=>sel==='[data-roku-test]'?{dataset:{rokuTest:'roku_a'}}:null}});
+  assert.deepEqual(sent[0],{deviceId:'roku_a',command:'DeviceInfo',transport:'roku',mode:'tap'});assert.equal(el('notice').textContent,'Connected to Den Roku.');
+  netFail=true;await content.onclick({target:{closest:sel=>sel==='[data-roku-test]'?{dataset:{rokuTest:'roku_a'}}:null}});
+  assert.equal(el('notice').textContent,'Could not reach the Roku.');assert.equal(el('notice').dataset.error,'true');
+  // Remove asks first; saying no changes nothing.
+  const removeClick=id=>content.onclick({target:{closest:sel=>sel==='[data-roku-remove]'?{dataset:{rokuRemove:id}}:null}});
+  context.confirmAnswer=false;await removeClick('roku_a');assert.equal(writes.length,1);
+  context.confirmAnswer=true;await removeClick('roku_a');
+  assert.equal(writes.length,2);assert.deepEqual(writes[1].configuration.networkDevices.map(d=>d.name),['Bedroom']);assert.doesNotMatch(content.innerHTML,/Den &lt;TV&gt;/);
+  // The hub's own error is shown and the list is not changed.
+  const before=writes.length,failing=context.api;context.api=async(p,b)=>{if(p==='configuration'&&b)throw Error('Maximum of 8');return failing(p,b);};
+  await submit('X','tv','192.168.1.9');assert.equal(el('notice').textContent,'Maximum of 8');assert.equal(writes.length,before);context.api=failing;
+  // Only the owner can change Rokus.
+  state.session={role:'control'};const plain={innerHTML:''};X.screens.roku.render({content:plain,actions:{},params:[],setTitle(){}});
+  assert.match(plain.innerHTML,/Only the hub owner/);assert.doesNotMatch(plain.innerHTML,/roku-name/);
+  assert.equal(X.screens.roku.parent,'setup');
+}
+console.log('The owner can add, test and remove a Roku; Rokus appear as devices');
 console.log('Switching screens clears the previous screen’s handlers');

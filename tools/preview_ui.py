@@ -19,6 +19,17 @@ devices = [{"id": "1", "name": "LG C5", "manufacturer": "LG", "model": "C5", "ty
             "commands": [{"name": name} for name in ["PowerOn", "PowerOff", "VolumeUp", "VolumeDown", "Mute"]]}]
 
 
+ROKU_COMMANDS = ["Home", "Back", "Up", "Down", "Left", "Right", "OK", "Menu", "Replay", "Rewind", "Play", "Fast forward", "Search"]
+ROKU_TV_COMMANDS = ["Power", "Power on", "Power off", "Volume up", "Volume down", "Mute", "Channel up", "Channel down", "TV tuner", "HDMI 1", "HDMI 2", "HDMI 3", "HDMI 4", "AV"]
+
+
+def network_devices():
+    """Rokus saved in the fixture's configuration, in the shape the hub lists them (no address)."""
+    return [{"id": d["id"], "name": d["name"], "type": "Roku", "model": d["model"],
+             "commands": [{"name": n} for n in ROKU_COMMANDS + (ROKU_TV_COMMANDS if d["model"] == "tv" else [])]}
+            for d in configuration.get("networkDevices", [])]
+
+
 class Preview(BaseHTTPRequestHandler):
     def reply(self, value, status=200):
         body = json.dumps(value).encode()
@@ -32,7 +43,8 @@ class Preview(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         responses = {"/api/v1/session": {"role": "owner", "id": "fixture", "csrf": "fixture"},
                      "/api/v1/configuration": configuration, "/api/v1/devices": {"devices": devices},
-                     "/api/v1/bluetooth/devices": {"devices": []}, "/api/v1/operations": {"state": "completed"}}
+                     "/api/v1/bluetooth/devices": {"devices": []}, "/api/v1/network/devices": {"devices": network_devices()},
+                     "/api/v1/operations": {"state": "completed", "result": {"ok": True, "reply": "Fixture Roku"}}}
         if path in responses:
             return self.reply(responses[path])
         name = {"/": "index.html", "/go": "go.html", "/go/": "go.html"}.get(path) or (path[4:] if path.startswith("/go/") else path[1:])
