@@ -950,15 +950,20 @@ console.log('The owner can add, test and remove a Roku; Rokus appear as devices'
   state.config={activities:[{id:'w',name:'Watch',steps:[],screen:{columns:4,cells:[],pinned:[]},keyboard:{deviceId:'kb'}},{id:'n',name:'No kb',steps:[],screen:{columns:4,cells:[],pinned:[]}},{id:'g',name:'Gone',steps:[],screen:{columns:4,cells:[],pinned:[]},keyboard:{deviceId:'gone'}},{id:'t',name:'TV kb',steps:[],screen:{columns:4,cells:[],pinned:[]},keyboard:{deviceId:'tv'}}]};
   const remoteCtx=(render,id)=>{const ctx={content:{innerHTML:'',querySelectorAll:()=>[]},actions:{innerHTML:'',onclick:null},params:[id],setTitle(){}};X[render](ctx);return ctx;};
   const withKb=remoteCtx('renderActivityRemote','w');
-  assert.match(withKb.actions.innerHTML,/data-keyboard aria-label="Keyboard" title="Type on Den &lt;Roku&gt;"/,'anyone, not only the owner, gets the button');assert.doesNotMatch(withKb.actions.innerHTML,/Edit remote layout/);
-  for(const id of ['n','g','t'])assert.doesNotMatch(remoteCtx('renderActivityRemote',id).actions.innerHTML,/data-keyboard/,id+': no button without a device that can type');
-  state.session={role:'owner'};assert.match(remoteCtx('renderActivityRemote','w').actions.innerHTML,/data-keyboard[\s\S]*Edit remote layout/,'the owner also keeps the edit pencil');
-  assert.match(remoteCtx('renderDeviceRemote','kb').actions.innerHTML,/data-keyboard/,'a Roku opened on its own has it too');assert.doesNotMatch(remoteCtx('renderDeviceRemote','tv').actions.innerHTML,/data-keyboard/);
+  assert.match(withKb.content.innerHTML,/<div class="pinned"><button type="button" class="keyboard-button" data-keyboard aria-label="Type on Den &lt;Roku&gt;">/,'anyone, not only the owner, gets the button, in the fixed bar');
+  assert.equal(withKb.actions.innerHTML,'','and it is not in the header');
+  for(const id of ['n','g','t'])assert.doesNotMatch(remoteCtx('renderActivityRemote',id).content.innerHTML,/data-keyboard/,id+': no button without a device that can type');
+  state.session={role:'owner'};assert.match(remoteCtx('renderActivityRemote','w').actions.innerHTML,/Edit remote layout/,'the owner keeps the edit pencil in the header');state.session={role:'control'};
+  assert.match(remoteCtx('renderDeviceRemote','kb').content.innerHTML,/<div class="pinned"><button[^>]*data-keyboard/,'a Roku opened on its own has it too');assert.doesNotMatch(remoteCtx('renderDeviceRemote','tv').content.innerHTML,/data-keyboard/);
+  // With a fixed row, the button sits directly above it.
+  state.config.activities.push({id:'p',name:'Pinned',steps:[],screen:{columns:4,cells:[],pinned:[{deviceId:'tv',command:'Up',slot:0}]},keyboard:{deviceId:'kb'}});
+  const withPinned=remoteCtx('renderActivityRemote','p').content.innerHTML;
+  assert.ok(withPinned.indexOf('data-keyboard')>withPinned.indexOf('class="pinned"')&&withPinned.indexOf('data-keyboard')<withPinned.indexOf('aria-label="Up"'),'above the fixed row\u2019s buttons, inside the same bar');
   // Tapping it opens the sheet with the input focused; typing goes to the hub.
   const input={value:'',focused:false,focus(){this.focused=true;}};
   const sheet=Object.assign(el('sheet'),{open:false,innerHTML:'',onclick:null,onclose:null,showModal(){this.open=true;},close(){const was=this.open;this.open=false;if(was)this.onclose?.();},querySelector:sel=>sel==='#keyboard-input'?input:null});
   sentTexts.length=0;const kbCtx=remoteCtx('renderActivityRemote','w');
-  kbCtx.actions.onclick({target:{closest:sel=>sel==='[data-keyboard]'?{}:null}});
+  kbCtx.content.onclick({target:{closest:sel=>sel==='[data-keyboard]'?{}:null}});
   assert.equal(sheet.open,true);assert.equal(input.focused,true);assert.match(sheet.innerHTML,/Type on Den &lt;Roku&gt;/);assert.match(sheet.innerHTML,/autocorrect="off"/);
   input.value='hi';input.oninput();await settle();await open();assert.deepEqual(sentTexts,['hi']);
   let prevented=false;input.onkeydown({key:'Enter',preventDefault(){prevented=true;}});await settle();await open();

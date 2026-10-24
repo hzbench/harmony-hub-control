@@ -118,5 +118,6 @@ dialog.sheet h2{font-size:15px;margin:0 0 6px}
 .keyboard-setting select{appearance:auto}
 .keyboard-setting small,.sheet-note{font-size:13px;color:var(--muted);margin:0}
 .keyboard-input{margin:8px 0 6px}
-button.header-action{background:transparent}
 .sheet-done{padding-left:4px;justify-content:center;color:var(--accent);font-weight:600}
+.keyboard-button{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;min-height:52px;background:var(--control);font-weight:600}
+.keyboard-button svg{height:20px;width:20px}

@@ -476,18 +476,18 @@ function renderDeviceRemote(ctx) {
   if(!device){ctx.setTitle('Device');return placeholder(ctx,'This device no longer exists.');}
   ctx.setTitle(device.name);
   const html=deviceRemoteHtml(device);
-  ctx.actions.innerHTML=keyboardAction(ctx,device);
-  ctx.content.innerHTML=`<div class="remote">${html||'<div class="placeholder"><p>This device has no commands yet.</p></div>'}</div>`;
+  const typing=keyboardButton(ctx,device);
+  ctx.content.innerHTML=`<div class="remote">${html||'<div class="placeholder"><p>This device has no commands yet.</p></div>'}</div>${typing?`<div class="pinned">${typing}</div>`:''}`;
   bindCommands(ctx.content);
 }
 function renderActivityRemote(ctx) {
   const activity=(state.config.activities||[]).find(a=>a.id===ctx.params[0]);
   if(!activity){ctx.setTitle('Activity');return placeholder(ctx,'This activity no longer exists.');}
   ctx.setTitle(activity.name);
-  const typing = keyboardAction(ctx, state.devices.find(d=>d.id===activity.keyboard?.deviceId));
-  ctx.actions.innerHTML = typing+(owner()?`<a class="header-action" href="${routeHash('edit',activity.id)}" aria-label="Edit remote layout" title="Edit remote layout">${icon('Pencil')}</a>`:'');
+  if(owner())ctx.actions.innerHTML=`<a class="header-action" href="${routeHash('edit',activity.id)}" aria-label="Edit remote layout" title="Edit remote layout">${icon('Pencil')}</a>`;
+  const typing = keyboardButton(ctx, state.devices.find(d=>d.id===activity.keyboard?.deviceId));
   const {body,pinned}=remoteHtml(activity.screen);
-  ctx.content.innerHTML=`<div class="remote">${body||'<div class="placeholder"><p>No buttons on this remote yet.</p></div>'}</div>${pinned?`<div class="pinned">${pinned}</div>`:''}`;
+  ctx.content.innerHTML=`<div class="remote">${body||'<div class="placeholder"><p>No buttons on this remote yet.</p></div>'}</div>${pinned||typing?`<div class="pinned">${typing}${pinned}</div>`:''}`;
   bindCommands(ctx.content);
 }
 // ---- Keyboard: type on a device from the phone ----
@@ -540,11 +540,12 @@ function openKeyboard(device) {
   window.harmonyHandleBack = () => {if(sheet.open){sheet.close();return true;}return false;};
   input.focus();
 }
-// The remote's Keyboard button, when this device (or the activity's keyboard device) can type.
-function keyboardAction(ctx, device) {
+// The remote's Keyboard button, shown above the fixed row when this device (or the
+// activity's keyboard device) can type. Empty when it can't.
+function keyboardButton(ctx, device) {
   if(!device?.keyboard)return '';
-  ctx.actions.onclick = event => {if(event.target.closest('[data-keyboard]'))openKeyboard(device);};
-  return `<button type="button" class="header-action" data-keyboard aria-label="Keyboard" title="Type on ${escape(device.name)}">${icon('Keyboard')}</button>`;
+  ctx.content.onclick = event => {if(event.target.closest('[data-keyboard]'))openKeyboard(device);};
+  return `<button type="button" class="keyboard-button" data-keyboard aria-label="Type on ${escape(device.name)}">${icon('Keyboard')}Keyboard</button>`;
 }
 // ---- Edit remote layout (activities only) ----
 // The editor works on a local draft of activity.screen: `cells` (the scrolling
