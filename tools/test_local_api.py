@@ -575,10 +575,13 @@ def run():
             assert request("updates/chunk", {"name": "app.js", "offset": 5, "hex": "78"}, cookie, csrf)[0] == 409
             assert request("updates/apply", {}, cookie, csrf)[0] == 403
             contents = {name: b"signed test asset" for name in names}
-            contents["migrations.json"] = b'{"from":1,"to":1}'
+            contents["migrations.json"] = b'{"from":1,"to":1,"version":"test-2"}'
             release = json.dumps({"schemaVersion": 1, "platform": "pimento-4.15.600", "version": "test-2", "files": [{"name": n, "size": len(raw), "sha512": hashlib.sha512(raw).hexdigest()} for n, raw in contents.items()]}, separators=(",", ":"))
             assert request("updates/begin", {"manifest": release, "signature": key.sign(release.encode()).hex()}, cookie, csrf)[0] == 200
             installed = {}
+            # Before anything is installed the hub reports no version (and only the owner may ask).
+            assert request("updates/status")[0] == 401
+            assert request("updates/status", cookie=cookie)[1] == {"ok": True, "version": "", "pending": False, "result": ""}
             for name, raw in contents.items():
                 assert request("updates/chunk", {"name": name, "offset": 0, "hex": raw.hex()}, cookie, csrf)[0] == 200
                 path = defs["CODEX_BIN_DIR"] / name if name.startswith("codex_") and name != "codexmqtt.lua" else www / name if name in ["index.html", "app.css", "app.js", "icons.svg", "profiles.js", "go.html", "go.css", "go.js"] else local / name if name == "migrations.json" else base / name
@@ -589,9 +592,22 @@ def run():
             (defs["LOCAL_UPDATE_STAGE"] / "app.js").write_bytes(contents["app.js"])
             assert request("updates/apply", {}, cookie, csrf)[0] == 200
             assert all(path.read_bytes() != raw for path, raw in installed.items())
+            # The version rides in the installed migrations.json, so it is what is running, and it is
+            # pending until the startup health check passes.
+            assert request("updates/status", cookie=cookie)[1] == {"ok": True, "version": "test-2", "pending": True, "result": ""}
             subprocess.run([binary, "--rollback"], check=True)
             assert all(path.read_bytes() == raw for path, raw in installed.items())
             assert not (local / "update.pending").exists()
+            # A rollback takes the version back with the rest of the release and says why.
+            assert request("updates/status", cookie=cookie)[1] == {"ok": True, "version": "", "pending": False, "result": "Rolled back after a failed health check"}
+            # An unprintable or over-long version in a bad file is not echoed.
+            (local / "migrations.json").write_text('{"from":1,"to":1,"version":"' + "x" * 40 + '"}')
+            assert request("updates/status", cookie=cookie)[1]["version"] == ""
+            (local / "update.result").write_text("Release passed startup health checks\n")
+            assert request("updates/status", cookie=cookie)[1]["result"] == "Release passed startup health checks"
+            (local / "migrations.json").write_bytes(contents["migrations.json"]); (local / "update.result").unlink()
+            assert request("updates/status", cookie=cookie)[1]["version"] == "test-2"
+            (local / "migrations.json").write_bytes(b"previous version")
             # The hub's display name is optional, short and printable.
             named = request("configuration", cookie=cookie)[1]
             for bad in (7, "x" * 41, "tab\there", 'quote"d'):

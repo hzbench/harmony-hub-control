@@ -53,6 +53,7 @@ address and port; DNS aliases and cross-origin requests are rejected.
 | network/wifi, network/confirm | POST | Owner network trial/confirmation |
 | maintenance/reboot | POST | Owner normal reboot |
 | updates/begin, updates/chunk, updates/apply | POST | Owner signed release activation |
+| updates/status | GET | Owner: installed software `version`, `pending` health check, last `result` |
 
 ## Commands And Holds
 

@@ -1,0 +1,157 @@
+name: Hub release
+
+# Push a tag like v0.2.0 (on a commit that is on main and passed the Test workflow) to build the
+# hub's native programs, sign a release bundle, and publish it as a GitHub Release. Install it with
+# tools/push_release.py or from the app's Setup > Software update.
+# Run by hand from main (Actions > Hub release > Run workflow) to build and sign a bundle as a
+# downloadable artifact only, without publishing anything.
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+  workflow_dispatch:
+
+permissions:
+  contents: write   # to create the release
+  actions: read     # to look up whether the Test workflow passed
+
+concurrency:
+  group: hub-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # The pinned MIPS/uClibc toolchain the repo's build notes use (docs/BUILD.md). The hash is checked,
+  # so a changed download can't silently change what runs on the hub.
+  TOOLCHAIN_NAME: mips32--uclibc--stable-2017.05-toolchains-1-1
+  TOOLCHAIN_SHA256: a75aeb0f82eaeaf1989a7dfdf80219486b5ed1470c29c6f253fbcf824922c29f
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # to tell whether a tag is on main
+
+      - name: Check this commit may be released
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            # Only reviewed, tested code is signed with the release key.
+            git fetch --quiet origin main
+            git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
+              || { echo "::error::$GITHUB_REF_NAME is not on main. Merge first, then tag the merge commit."; exit 1; }
+            passed=$(gh run list --workflow Test --commit "$GITHUB_SHA" --status success --json databaseId --jq length)
+            [[ "$passed" -gt 0 ]] || { echo "::error::The Test workflow has not passed on this commit."; exit 1; }
+          else
+            [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "::error::Run this workflow from main."; exit 1; }
+          fi
+
+      - name: Work out the version
+        id: version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            [[ "$GITHUB_REF_NAME" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]] || { echo "::error::The tag must look like v1.2.3"; exit 1; }
+            name="${BASH_REMATCH[1]}"
+          else
+            name="0.0.0-dev-${GITHUB_SHA::7}"
+          fi
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "Building $name"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install the signing library
+        run: pip install cryptography==50.0.2
+
+      - name: Release bundle tests
+        run: python3 tools/test_release_bundle.py
+
+      - name: Cache the compiler
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: ~/toolchain
+          key: ${{ env.TOOLCHAIN_NAME }}-${{ env.TOOLCHAIN_SHA256 }}
+
+      - name: Fetch the MIPS compiler
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          mkdir -p ~/toolchain && cd ~/toolchain
+          curl -fsSL -o toolchain.tar.bz2 "https://toolchains.bootlin.com/downloads/releases/toolchains/mips32/tarballs/$TOOLCHAIN_NAME.tar.bz2"
+          echo "$TOOLCHAIN_SHA256  toolchain.tar.bz2" | sha256sum -c -
+          tar -xf toolchain.tar.bz2 && rm toolchain.tar.bz2
+
+      - name: Build the hub's native programs
+        shell: bash
+        run: |
+          cc=$(ls "$HOME"/toolchain/*/bin/mips-buildroot-linux-uclibc-gcc | head -1)
+          python3 tools/build_payload.py --cc "$cc" --output build/output
+          # They must really be static 32-bit big-endian MIPS programs, small enough for the updater.
+          for f in codex_webui codex_hbus codex_hal_ltcp codex_bthid_keyboard codex_portal; do
+            kind=$(file -b "build/output/$f")
+            [[ "$kind" == *"MSB executable, MIPS"* && "$kind" == *"statically linked"* ]] || { echo "::error::$f is not a static big-endian MIPS program: $kind"; exit 1; }
+            (( $(stat -c %s "build/output/$f") <= 1500000 )) || { echo "::error::$f is larger than the updater allows"; exit 1; }
+          done
+          # A program built from older source would pass the checks above and still be wrong.
+          # (To a file first: "strings | grep -q" can fail under pipefail when grep exits early.)
+          strings -a build/output/codex_webui > "$RUNNER_TEMP/webui-strings.txt"
+          for word in hubName networkDevices ListApps updates/status; do
+            grep -q -- "$word" "$RUNNER_TEMP/webui-strings.txt" || { echo "::error::codex_webui lacks '$word': built from the wrong source?"; exit 1; }
+          done
+
+      - name: Sign the release bundle
+        id: bundle
+        shell: bash
+        env:
+          KEY_PEM: ${{ secrets.HUB_RELEASE_KEY_PEM }}
+          PUBLIC_KEY: ${{ vars.HUB_RELEASE_PUBLIC_KEY }}
+          VERSION: ${{ steps.version.outputs.name }}
+        run: |
+          [[ -n "$KEY_PEM" ]] || { echo "::error::The secret HUB_RELEASE_KEY_PEM is not set (see docs/BUILD.md, Releases from GitHub)"; exit 1; }
+          [[ -n "$PUBLIC_KEY" ]] || { echo "::error::The variable HUB_RELEASE_PUBLIC_KEY is not set (see docs/BUILD.md, Releases from GitHub)"; exit 1; }
+          printf '%s\n' "$KEY_PEM" > "$RUNNER_TEMP/release-key.pem"
+          chmod 600 "$RUNNER_TEMP/release-key.pem"
+          out="hub-release-$VERSION.json"
+          python3 tools/release_bundle.py --key "$RUNNER_TEMP/release-key.pem" --bin-dir build/output --version "$VERSION" --out "$out"
+          # The key that signed it must be the one the hubs were given, and the result must verify with it.
+          python3 - "$out" "$PUBLIC_KEY" <<'PY'
+          import json, sys
+          sys.path.insert(0, "tools")
+          import release_bundle as rb
+          manifest = rb.verify(json.load(open(sys.argv[1])), sys.argv[2].strip())
+          print("Verified", manifest["version"], "with", len(manifest["files"]), "files")
+          PY
+          rm -f "$RUNNER_TEMP/release-key.pem"
+          sha256sum "$out" > "$out.sha256"
+          echo "file=$out" >> "$GITHUB_OUTPUT"
+
+      - name: Remove the signing key from the runner
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/release-key.pem"
+
+      - name: Publish the release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release create "$GITHUB_REF_NAME" "${{ steps.bundle.outputs.file }}" "${{ steps.bundle.outputs.file }}.sha256" \
+            --title "Hub software ${{ steps.version.outputs.name }}" --generate-notes --verify-tag
+
+      - name: Keep the bundle as a download (hand-run builds)
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.bundle.outputs.file }}
+          path: |
+            ${{ steps.bundle.outputs.file }}
+            ${{ steps.bundle.outputs.file }}.sha256
+          retention-days: 7

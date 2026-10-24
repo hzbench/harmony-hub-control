@@ -83,7 +83,7 @@ static int local_rollback(void) {
         snprintf(path, sizeof(path), LOCAL_UPDATE_BACKUP "/%s", local_release_files[i].name);
         if (local_copy(path, local_release_files[i].path) || chmod(local_release_files[i].path, local_release_files[i].mode)) rc = -1;
     }
-    if (!rc) { unlink(LOCAL_ROOT "/update.pending"); write_file_atomic(LOCAL_ROOT "/update.result", "Rolled back after a failed health check", 37); sync(); }
+    if (!rc) { unlink(LOCAL_ROOT "/update.pending"); { static const char message[] = "Rolled back after a failed health check"; write_file_atomic(LOCAL_ROOT "/update.result", message, sizeof(message) - 1); } sync(); }
     return rc;
 }
 static int local_health(void) {
@@ -114,6 +114,20 @@ static int local_update_health(void) {
         if (!file || local_file_hash(file->path, hash) || local_hex(lj_str(entry, "sha512"), expected, 64) || crypto_verify64(hash, expected)) rc = 1;
     }
     cJSON_Delete(manifest); return rc;
+}
+/* GET /api/v1/updates/status. The installed version travels inside the bundle's migrations.json
+   ("version"), which is replaced and rolled back together with the rest of a release, so it can
+   never disagree with what is running. `pending` is true until the startup health check has
+   passed; `result` is what that check last wrote ("Release passed..." or "Rolled back..."). */
+static void local_update_status(int fd) {
+    cJSON *out = cJSON_CreateObject(), *migration = lj_read(LOCAL_ROOT "/migrations.json", 4096); char result[160] = "";
+    const char *version = lj_str(migration, "version");
+    if (read_text(LOCAL_ROOT "/update.result", result, sizeof(result)) > 0) chomp(result);
+    cJSON_AddBoolToObject(out, "ok", 1);
+    cJSON_AddStringToObject(out, "version", (version[0] && strlen(version) <= 32 && safe_label(version)) ? version : "");
+    cJSON_AddBoolToObject(out, "pending", access(LOCAL_ROOT "/update.pending", F_OK) == 0);
+    cJSON_AddStringToObject(out, "result", safe_label(result) ? result : "");
+    lj_reply(fd, "200 OK", out); cJSON_Delete(out); cJSON_Delete(migration);
 }
 static void local_updates(int fd, const struct request *r, const cJSON *body) {
     int lock = local_lock(); cJSON *manifest = NULL, *reply = cJSON_CreateObject(); char *raw = NULL, signature[160];

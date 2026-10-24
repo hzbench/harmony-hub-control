@@ -113,6 +113,32 @@ stock listener restrictions use owner SSH, not browser updates. Schema 1
 currently supports identity migrations only; reject later schemas until a
 tested migration is supplied.
 
+### Releases from GitHub
+
+`.github/workflows/hub-release.yml` builds and signs a release for you, so nobody needs a MIPS
+compiler or the signing key on their own machine.
+
+- **Publish:** merge to main, then tag the merge commit (`git tag v0.2.0 && git push origin v0.2.0`).
+  The workflow refuses a tag whose commit is not on main or has not passed the *Test* workflow. It
+  compiles the five native programs with the pinned Bootlin MIPS/uClibc toolchain (its SHA-256 is
+  checked), confirms each is a static big-endian MIPS program and that `codex_webui` was built from
+  current source, builds the bundle with `tools/release_bundle.py`, verifies it against the public
+  key, and attaches `hub-release-<version>.json` and its `.sha256` to a GitHub Release. The committed
+  files in `payload/bin/` are only a starting point and are not what a release contains.
+- **Run by hand** (Actions > Hub release > Run workflow, from main) to build and sign a bundle as a
+  downloadable artifact without publishing.
+- **Key:** an Ed25519 key, off the hub. The private half is the repository secret
+  `HUB_RELEASE_KEY_PEM`; the public half (64 hex characters) is the repository variable
+  `HUB_RELEASE_PUBLIC_KEY` and is what each hub must be given once, over owner SSH:
+  `install_webui.py --release-public-key <file-with-the-public-key>`. The build fails if the
+  secret's key is not the one that variable names. A secret can't be read back out of GitHub, so
+  keep a backup of the private key (the maintainer's copy is `~/.hub-remote-signing/hub-release-private.pem`).
+- **The version** is recorded inside the bundle's `migrations.json`, which the hub replaces and rolls
+  back with the rest of a release; `GET /api/v1/updates/status` (owner) reports it, whether the
+  startup health check is still pending, and the last result.
+- **Install:** `python3 tools/push_release.py --hub <ip> --latest` from a computer, or Setup >
+  Software update in the app.
+
 The boot recovery script and known-good helper are outside the replaceable
 bundle. They validate startup and restore one previous release on failure.
 Host tests exercise signature rejection, activation and exact rollback in

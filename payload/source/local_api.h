@@ -1021,6 +1021,7 @@ static int local_dispatch(int fd, const struct request *r) {
         if (strcmp(action, "pairing_on") && strcmp(action, "pairing_off") && strcmp(action, "adapter_status") && strcmp(action, "connect") && strcmp(action, "status")) local_error(fd, "400 Bad Request", "Unsupported pairing action.");
         else { out = execute_bluetooth_pair(body); if (out) { lj_reply(fd, "200 OK", out); cJSON_Delete(out); } else local_error(fd, "502 Bad Gateway", "Bluetooth service did not respond."); }
     } else if (!strcmp(r->path, "/api/v1/activities/native") && get) send_file_download(fd, ACTIVITY_LIST, "native-activities.json", "application/json");
+    else if (!strcmp(r->path, "/api/v1/updates/status") && get) local_update_status(fd);
     else if (!strncmp(r->path, "/api/v1/updates/", 16) && !get) local_updates(fd, r, body);
     else if (!strcmp(r->path, "/api/v1/integrations/mqtt")) local_mqtt(fd, r, body);
     else if ((!strcmp(r->path, "/api/v1/network/wifi") || !strcmp(r->path, "/api/v1/network/confirm")) && !get) local_wifi(fd, r, body);
