@@ -18,7 +18,7 @@ const el=id=>elements[id]||=({id,dataset:{},classList:{add(){},remove(){}},hidde
 const context=vm.createContext({document:{getElementById:el,title:'',body:{dataset:{}},addEventListener(){},hidden:false},window:{addEventListener(){},scrollTo(){}},location:{hash:'',replace(url){context.replaced=url;}},history:{replaceState(){},pushState(){context.pushed=(context.pushed||0)+1;},back(){context.backed=(context.backed||0)+1;}},
   confirm:message=>{(context.confirmed||(context.confirmed=[])).push(message);return context.confirmAnswer!==false;},navigator:{vibrate(){context.vibrated=(context.vibrated||0)+1;}},localStorage:{getItem:k=>store.get(k)??null,setItem:(k,v)=>store.set(k,v)},setTimeout:()=>0,clearTimeout(){},fetch:async()=>{throw new TypeError('offline');},AbortController,URL,structuredClone});
 const inert=source.replace(/\n  boot\(\);\n\}\s*$/,'\n}');assert.notEqual(inert,source,'boot() auto-run not found');
-vm.runInContext(inert.replace('const state =','var state =')+'\nthis.exports={parseRoute,routeHash,connection,state,needsFullUi,api,show,screens,renderActivities,renderDevices,deviceRemoteHtml,renderDeviceRemote,remoteBlocks,remoteHtml,renderActivityRemote,CONTROLS,controlFor,volumeTarget,editorSlots,availableCommands,addButton,removeButton,editorHtml,renderEditor,screenOf,MAX_CELLS,layoutShape,startDraft,submitLayout,getLeaveGuard:()=>leaveGuard,cloneScreen,withSlots,announceHub};',context);
+vm.runInContext(inert.replace('const state =','var state =')+'\nthis.exports={parseRoute,routeHash,connection,state,needsFullUi,api,show,screens,renderActivities,renderDevices,deviceRemoteHtml,renderDeviceRemote,remoteBlocks,remoteHtml,renderActivityRemote,CONTROLS,controlFor,volumeTarget,editorSlots,availableCommands,addButton,removeButton,editorHtml,renderEditor,screenOf,MAX_CELLS,layoutShape,startDraft,submitLayout,getLeaveGuard:()=>leaveGuard,cloneScreen,withSlots,announceHub,loadDevices};',context);
 const {parseRoute,routeHash,connection,state,needsFullUi,api,show}=context.exports;
 
 assert.deepEqual(JSON.parse(JSON.stringify(parseRoute(''))),{name:'activities',params:[]});
@@ -833,7 +833,7 @@ console.log('The owner can name the hub and the app is told');
   assert.match(content.innerHTML,/Den &lt;TV&gt;/,'lists Rokus, escaped');assert.match(content.innerHTML,/192\.168\.1\.50/);
   const submit=async(name,model,host)=>{fields['#roku-name'].value=name;fields['#roku-model'].value=model;fields['#roku-host'].value=host;await content.onsubmit({preventDefault(){}});};
   // Bad input never reaches the hub.
-  for(const host of ['8.8.8.8','roku.local','192.168.1','192.168.1.300','172.32.0.1','']){await submit('Bed',"player",host);assert.equal(writes.length,0,host);assert.equal(el('notice').dataset.error,'true');}
+  for(const host of ['8.8.8.8','roku.local','192.168.1','192.168.1.300','172.32.0.1','010.1.2.3','192.168.01.50','']){await submit('Bed',"player",host);assert.equal(writes.length,0,host);assert.equal(el('notice').dataset.error,'true');}
   await submit('  ','tv','192.168.1.60');assert.equal(writes.length,0);assert.equal(el('notice').textContent,'Give the Roku a name.');
   // A good one is a single write that keeps the others, and then shows up as a device.
   await submit(' Bedroom ','player','10.1.2.3');
@@ -855,6 +855,32 @@ console.log('The owner can name the hub and the app is told');
   // The hub's own error is shown and the list is not changed.
   const before=writes.length,failing=context.api;context.api=async(p,b)=>{if(p==='configuration'&&b)throw Error('Maximum of 8');return failing(p,b);};
   await submit('X','tv','192.168.1.9');assert.equal(el('notice').textContent,'Maximum of 8');assert.equal(writes.length,before);context.api=failing;
+  // The change is saved even if refreshing afterwards fails: no error, no reason to add it twice.
+  {
+    const normal=context.api;let afterWrite=false;
+    context.api=async(path,body)=>{
+      if(path==='configuration'&&body){afterWrite=true;return normal(path,body);}
+      if(afterWrite&&(path==='configuration'||path==='network/devices'))throw Error('network blip');
+      return normal(path,body);
+    };
+    const count=writes.length;await submit('Kitchen','player','192.168.1.77');
+    assert.equal(writes.length,count+1);assert.equal(el('notice').dataset.error,'false','a saved Roku is not reported as a failure');
+    assert.match(content.innerHTML,/Kitchen/,'and it is listed');
+    context.api=normal;
+  }
+  // Removing a Roku that activities still use says which ones; nothing is removed from them.
+  {
+    hubCfg={...hubCfg,activities:[{id:'a1',name:'Watch TV',steps:[{deviceId:'roku_b',command:'Home',transport:'roku'}],exitSteps:[]},{id:'a2',name:'Music',steps:[],exitSteps:[],screen:{columns:4,cells:[{deviceId:'roku_b',command:'Home',slot:0}],pinned:[]}},{id:'a3',name:'Other',steps:[{deviceId:'x',command:'y'}],exitSteps:[]}]};
+    hubCfg.networkDevices=[{id:'roku_b',name:'Bedroom',kind:'roku',model:'player',host:'10.1.2.3'}];state.config=J(hubCfg);
+    context.confirmed=[];context.confirmAnswer=false;await removeClick('roku_b');
+    assert.match(context.confirmed.at(-1),/Remove Bedroom\? Watch TV, Music still use it and will stop working there/);assert.doesNotMatch(context.confirmed.at(-1),/Other/);
+    context.confirmAnswer=true;
+  }
+  // If the Roku list cannot be fetched the other devices still load.
+  {
+    const normal=context.api;context.api=async(path,body)=>{if(path==='network/devices')throw Error('not found');if(path==='devices')return {devices:[{id:'1',name:'TV',commands:[]}]};if(path==='bluetooth/devices')return {devices:[]};return normal(path,body);};
+    await context.exports.loadDevices();assert.deepEqual(state.devices.map(d=>d.id),['1']);context.api=normal;
+  }
   // Only the owner can change Rokus.
   state.session={role:'control'};const plain={innerHTML:''};X.screens.roku.render({content:plain,actions:{},params:[],setTitle(){}});
   assert.match(plain.innerHTML,/Only the hub owner/);assert.doesNotMatch(plain.innerHTML,/roku-name/);

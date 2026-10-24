@@ -104,11 +104,11 @@ dialog.sheet h2{font-size:15px;margin:0 0 6px}
 .hub-name,.card-form{display:flex;flex-direction:column;gap:6px;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:12px 16px;margin-bottom:12px}
 .hub-name label,.card-form label{font-size:13px;font-weight:600;color:var(--muted)}
 .hub-name-row{display:flex;gap:8px}
-.hub-name input,.card-form input,.card-form select{flex:1;min-width:0;font:inherit;color:inherit;background:var(--control);border:1px solid var(--line);border-radius:10px;padding:0 12px;min-height:44px}
+.hub-name-row input{flex:1}
+.hub-name input,.card-form input,.card-form select{min-width:0;font:inherit;color:inherit;background:var(--control);border:1px solid var(--line);border-radius:10px;padding:0 12px;min-height:44px}
 .hub-name small,.card-form small{font-size:13px;color:var(--muted)}
 .hub-name .save-button{padding:0 16px}
 .card-form{margin-top:16px}
 .card-form h2{font-size:16px;margin:0}
 .card-form select{appearance:auto}
 .card-form .save-button{align-self:flex-start;padding:0 16px}
-.card-form input,.card-form select{flex:none}

@@ -60,7 +60,8 @@ async function operation(id, seconds=45) {
 async function loadDevices() {
   const inventory=await api('devices');state.devices=(inventory.devices||[]).map(d=>({...d,transport:'ir'}));
   const bluetooth=await api('bluetooth/devices');state.devices.push(...(bluetooth.devices||[]).map(d=>({...d,transport:'bluetooth'})));
-  const network=await api('network/devices');state.devices.push(...(network.devices||[]).map(d=>({...d,transport:'roku'})));
+  // Rokus are an extra: if this one request fails the other devices still show.
+  try {const network=await api('network/devices');state.devices.push(...(network.devices||[]).map(d=>({...d,transport:'roku'})));} catch {/* api() has flagged the connection */}
 }
 
 const SCREEN_HANDLERS = ['onclick','onpointerdown','onpointermove','onpointerup','onpointercancel','onpointerleave','oncontextmenu','onkeydown','onsubmit'];
@@ -130,9 +131,10 @@ function renderSetup(ctx) {
 }
 // ---- Roku (network devices) ----
 const ROKU_MODELS = {tv:'Roku TV', player:'Roku player or box'};
+const ROKU_LIMIT = 8;  // the hub enforces the same limit
 // The same rule the hub applies: only addresses on the home network.
 const privateAddress = host => {
-  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  const octet = '(0|[1-9]\\d{0,2})', m = new RegExp(`^${[octet,octet,octet,octet].join('\\.')}$`).exec(host);
   if(!m)return false;
   const [a,b,c,d] = m.slice(1).map(Number);
   return [a,b,c,d].every(n=>n<=255) && (a===10 || (a===172&&b>=16&&b<=31) || (a===192&&b===168));
@@ -143,8 +145,9 @@ async function changeNetworkDevices(change) {
   const fresh = await api('configuration');
   fresh.networkDevices = change([...(fresh.networkDevices||[])]);
   await api('configuration',{revision:fresh.revision, configuration:fresh});
-  state.config = await api('configuration');
-  await loadDevices();
+  // The write succeeded. Show it even if the refresh below fails (the next poll catches up).
+  state.config = {...fresh, revision:fresh.revision+1};
+  try {state.config = await api('configuration');await loadDevices();} catch {/* api() has flagged the connection */}
 }
 function rokuRow(device) {
   const id = escape(device.id), name = escape(device.name);
@@ -162,7 +165,6 @@ function rokuHtml() {
       <small>Find it on the Roku under Settings › Network › About, and reserve it in your router so it doesn’t change. Turn on network control on the Roku (Settings › System › Advanced system settings › Control by mobile apps).</small>
       <button class="save-button" type="submit"${list.length>=ROKU_LIMIT?' disabled':''}>Add Roku</button>${list.length>=ROKU_LIMIT?`<small>The hub holds up to ${ROKU_LIMIT} Rokus.</small>`:''}</form>`;
 }
-const ROKU_LIMIT = 8;
 function renderRoku(ctx) {
   if(!owner())return placeholder(ctx,'Only the hub owner can add or change a Roku.');
   const draw = () => {ctx.content.innerHTML = rokuHtml();};
@@ -181,7 +183,8 @@ function renderRoku(ctx) {
       } catch(error) {say(error.message,true);}
     } else if(remove) {
       const id = remove.dataset.rokuRemove, name = (state.config?.networkDevices||[]).find(d=>d.id===id)?.name||'this Roku';
-      if(!confirm(`Remove ${name}? Activities that use it will lose those steps’ target.`))return;
+      const using = (state.config?.activities||[]).filter(a=>[...(a.steps||[]),...(a.exitSteps||[]),...(a.screen?.cells||[]),...(a.screen?.pinned||[])].some(x=>x.deviceId===id)).map(a=>a.name);
+      if(!confirm(using.length?`Remove ${name}? ${using.join(', ')} still ${using.length===1?'uses':'use'} it and will stop working there until you change ${using.length===1?'it':'them'}.`:`Remove ${name}?`))return;
       try {await changeNetworkDevices(list=>list.filter(d=>d.id!==id));if(onScreen()){draw();say('Removed.');}}
       catch(error) {say(error.message,true);}
     }
