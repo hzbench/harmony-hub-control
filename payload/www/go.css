@@ -128,3 +128,11 @@ button.header-action{background:transparent}
 body[data-screen=edit] h1{font-size:22px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .cells.pinned-row{display:flex}
 .pinned-row>*{flex:1 1 0;min-width:0}
+.channel-list{list-style:none;margin:8px 0;padding:0}
+.channel-row{display:flex;align-items:center;gap:12px;padding:12px 4px;border-bottom:1px solid var(--line);font-size:15px}
+.channel-row input{width:22px;height:22px;accent-color:var(--accent);flex-shrink:0}
+.channel-row.blocked{color:var(--muted)}
+.channel-row small{color:var(--muted);font-size:12px;margin-left:6px}
+.sheet-actions{position:sticky;bottom:calc(-1 * max(28px,env(safe-area-inset-bottom)));margin-bottom:calc(-1 * max(28px,env(safe-area-inset-bottom)));padding:8px 0 max(28px,env(safe-area-inset-bottom));background:var(--surface);display:flex;flex-direction:column}
+.sheet-actions .save-button{width:100%;min-height:48px}
+dialog.sheet .add-row{width:100%}

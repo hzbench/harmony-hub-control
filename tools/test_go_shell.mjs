@@ -18,7 +18,7 @@ const el=id=>elements[id]||=({id,dataset:{},classList:{add(){},remove(){}},hidde
 const context=vm.createContext({document:{getElementById:el,title:'',body:{dataset:{}},addEventListener(){},hidden:false},window:{addEventListener(){},scrollTo(){}},location:{hash:'',replace(url){context.replaced=url;}},history:{replaceState(){},pushState(){context.pushed=(context.pushed||0)+1;},back(){context.backed=(context.backed||0)+1;}},
   confirm:message=>{(context.confirmed||(context.confirmed=[])).push(message);return context.confirmAnswer!==false;},navigator:{vibrate(){context.vibrated=(context.vibrated||0)+1;}},localStorage:{getItem:k=>store.get(k)??null,setItem:(k,v)=>store.set(k,v)},setTimeout:()=>0,clearTimeout(){},fetch:async()=>{throw new TypeError('offline');},AbortController,URL,structuredClone});
 const inert=source.replace(/\n  boot\(\);\n\}\s*$/,'\n}');assert.notEqual(inert,source,'boot() auto-run not found');
-vm.runInContext(inert.replace('const state =','var state =')+'\nthis.exports={parseRoute,routeHash,connection,state,needsFullUi,api,show,screens,renderActivities,renderDevices,deviceRemoteHtml,renderDeviceRemote,remoteBlocks,remoteHtml,renderActivityRemote,CONTROLS,controlFor,volumeTarget,editorSlots,availableCommands,addButton,removeButton,editorHtml,renderEditor,screenOf,MAX_CELLS,layoutShape,startDraft,submitLayout,getLeaveGuard:()=>leaveGuard,cloneScreen,withSlots,announceHub,loadDevices,typingPlan,createTyper,openKeyboard,keyboardSetting:keyboardSettingHtml,setRunningActivity,announceRunning};',context);
+vm.runInContext(inert.replace('const state =','var state =')+'\nthis.exports={parseRoute,routeHash,connection,state,needsFullUi,api,show,screens,renderActivities,renderDevices,deviceRemoteHtml,renderDeviceRemote,remoteBlocks,remoteHtml,renderActivityRemote,CONTROLS,controlFor,volumeTarget,editorSlots,availableCommands,addButton,removeButton,editorHtml,renderEditor,screenOf,MAX_CELLS,layoutShape,startDraft,submitLayout,getLeaveGuard:()=>leaveGuard,cloneScreen,withSlots,announceHub,loadDevices,typingPlan,createTyper,openKeyboard,keyboardSetting:keyboardSettingHtml,setRunningActivity,announceRunning,channelChoices,ROKU_BUILTIN_NAMES};',context);
 const {parseRoute,routeHash,connection,state,needsFullUi,api,show}=context.exports;
 
 assert.deepEqual(JSON.parse(JSON.stringify(parseRoute(''))),{name:'activities',params:[]});
@@ -964,6 +964,56 @@ console.log('The owner can name the hub and the app is told');
   {
     const normal=context.api;context.api=async(path,body)=>{if(path==='network/devices')throw Error('not found');if(path==='devices')return {devices:[{id:'1',name:'TV',commands:[]}]};if(path==='bluetooth/devices')return {devices:[]};return normal(path,body);};
     await context.exports.loadDevices();assert.deepEqual(state.devices.map(d=>d.id),['1']);context.api=normal;
+  }
+  // Favorite channels: pick which of the Roku's channels get a button, and save them with the Roku.
+  {
+    const names=[...fs.readFileSync(new URL('../payload/source/local_roku.h',import.meta.url),'utf8').matchAll(/\{"([^"]+)", "[A-Za-z0-9]+", [01]\}/g)].map(m=>m[1].toLowerCase());
+    assert.ok(names.length>20,'found the hub\u2019s built-in command names');
+    assert.deepEqual([...names,'deviceinfo','listapps'].sort(),[...X.ROKU_BUILTIN_NAMES].sort(),'the client and the hub agree on which names are taken');
+    // What the sheet offers.
+    const pick=(entries,installed)=>X.channelChoices(new Map(entries),installed);
+    assert.deepEqual(J(pick([['1','Netflix']],null).map(c=>[c.id,c.checked,c.blocked])),[['1',true,'']],'before asking the Roku, just the favorites');
+    const inst=[{id:'1',name:'Netflix'},{id:'2',name:'Hulu'},{id:'3',name:'Home'},{id:'4',name:'netflix'}];
+    assert.deepEqual(J(pick([['1','Netflix']],inst).map(c=>[c.id,c.checked,c.blocked])),[['1',true,''],['2',false,''],['3',false,'Name is used by a button'],['4',false,'Same name as another channel']]);
+    assert.deepEqual(J(pick([['9','Old']],inst).at(-1)),{id:'9',name:'Old',gone:true,checked:true,blocked:''},'a favorite the Roku no longer has is kept and marked');
+    const twelve=Array.from({length:12},(_,i)=>[`c${i}`,`Channel ${i}`]);
+    assert.deepEqual(pick(twelve,[...twelve.map(([id,name])=>({id,name})),{id:'x',name:'Extra'}]).at(-1).blocked,'Up to 12','at the limit nothing more can be ticked');
+    assert.equal(pick(twelve,null).every(c=>c.checked&&!c.blocked),true,'but the ticked ones can always be unticked');
+    // The sheet itself.
+    const sheetEl=el('sheet'),status={textContent:''},list={innerHTML:''};
+    Object.assign(sheetEl,{open:false,innerHTML:'',onclick:null,onchange:null,showModal(){this.open=true;},close(){const was=this.open;this.open=false;if(was)this.onclose?.();},
+      querySelector:sel=>sel==='[data-channel-status]'?status:sel==='[data-channel-list]'?list:null});
+    state.session={role:'owner'};hubCfg.networkDevices=[{id:'roku_c',name:'Den',kind:'roku',model:'tv',host:'10.1.1.1',channels:[{id:'1',name:'Netflix'},{id:'9',name:'Old'}]}];state.config=J(hubCfg);
+    X.screens.roku.render({content,actions:{},params:[],setTitle(){}});
+    assert.match(content.innerHTML,/data-roku-channels="roku_c" aria-label="Favorite channels for Den"/);
+    const sentChannels=[];const baseApi=context.api;
+    context.operation=async()=>({state:'completed',result:{ok:true,apps:[{id:'1',name:'Netflix'},{id:'2',name:'Hulu'},{id:'3',name:'Home'},{id:'4',name:'Plex'}]}});
+    context.api=async(path,body)=>{if(path==='commands/send'){sentChannels.push(J(body));return {id:'op'};}return baseApi(path,body);};
+    await content.onclick({target:{closest:sel=>sel==='[data-roku-channels]'?{dataset:{rokuChannels:'roku_c'}}:null}});
+    assert.equal(sheetEl.open,true);assert.match(sheetEl.innerHTML,/Favorite channels/);assert.match(sheetEl.innerHTML,/for Den/);
+    assert.match(list.innerHTML,/data-channel="1"[^>]*checked/);assert.match(list.innerHTML,/data-channel="9"[^>]*checked/);assert.doesNotMatch(list.innerHTML,/data-channel="2"/,'only favorites until the Roku is asked');
+    const tap=sel=>sheetEl.onclick({target:{closest:s=>s===sel?{}:null}});
+    await tap('[data-find-channels]');
+    assert.deepEqual(sentChannels,[{deviceId:'roku_c',command:'ListApps',transport:'roku',mode:'tap'}]);assert.equal(status.textContent,'Found 4 channels.');
+    assert.match(list.innerHTML,/data-channel="2"[^>]*>/);assert.match(list.innerHTML,/\(not installed\)/);
+    assert.match(list.innerHTML,/data-channel="3"[^>]*disabled/);assert.match(list.innerHTML,/Name is used by a button/);
+    const toggle=(id,name,checked)=>sheetEl.onchange({target:{closest:sel=>sel==='[data-channel]'?{checked,dataset:{channel:id,name}}:null}});
+    toggle('2','Hulu',true);toggle('1','Netflix',false);toggle('9','Old',false);toggle('4','Plex',true);
+    await tap('[data-save-channels]');
+    const last=writes.at(-1);assert.deepEqual(last.configuration.networkDevices[0].channels,[{id:'2',name:'Hulu'},{id:'4',name:'Plex'}],'saved in the order picked, as part of the Roku');
+    assert.equal(last.configuration.networkDevices[0].host,'10.1.1.1','the rest of the Roku is untouched');
+    assert.equal(sheetEl.open,false);assert.equal(el('notice').textContent,'Favorite channels saved.');
+    // A save the hub refuses keeps the sheet open and says why.
+    await content.onclick({target:{closest:sel=>sel==='[data-roku-channels]'?{dataset:{rokuChannels:'roku_c'}}:null}});
+    const before=writes.length;context.api=async(path,body)=>{if(path==='configuration'&&body)throw Error('Request failed (400)');return baseApi(path,body);};
+    toggle('3','Home',true);await tap('[data-save-channels]');
+    assert.equal(sheetEl.open,true);assert.equal(status.textContent,'Request failed (400)');assert.equal(writes.length,before);
+    // A failed search says why in the sheet too, and everything can be unticked and saved.
+    context.api=async(path,body)=>{if(path==='commands/send')throw Error('Could not reach the Roku.');return baseApi(path,body);};
+    await tap('[data-find-channels]');assert.equal(status.textContent,'Could not reach the Roku.');
+    context.api=baseApi;toggle('3','Home',false);toggle('2','Hulu',false);toggle('4','Plex',false);await tap('[data-save-channels]');
+    assert.deepEqual(writes.at(-1).configuration.networkDevices[0].channels,[],'no favorites is allowed');
+    context.operation=async()=>({state:'completed',result:{ok:true,reply:'Den Roku'}});
   }
   // Only the owner can change Rokus.
   state.session={role:'control'};const plain={innerHTML:''};X.screens.roku.render({content:plain,actions:{},params:[],setTitle(){}});
