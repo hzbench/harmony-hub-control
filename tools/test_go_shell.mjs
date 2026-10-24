@@ -699,6 +699,12 @@ console.log('Editor draws gaps as empty squares, lists every cell (including sta
   ({content,ctx}=setup({...base0,screen:{columns:4,cells:[sc('Up',0),sc('Left',1)],pinned:[]}}));
   click(content,'[data-add-pad]');place(0);
   assert.deepEqual(Object.keys(layout(content,'cells')).map(Number).sort((a,b)=>a-b),[0,1,29,30,31],'Down, Right and OK were added');assert.match(content.innerHTML,/class="dpad"/);
+  // Arrows on the bottom row move into the pad instead of reading as "no arrow keys".
+  ({content,ctx}=setup({...base0,screen:{columns:4,cells:[],pinned:['Up','Down','Left','Right'].map((c,i)=>sc(c,i))}}));
+  assert.doesNotMatch(content.innerHTML,/data-add-pad disabled/);assert.doesNotMatch(content.innerHTML,/arrow keys/);
+  click(content,'[data-add-pad]');place(0);
+  assert.equal(Object.keys(layout(content,'pinned')).length,0,'the bottom row gave up its arrows');
+  assert.match(content.innerHTML,/class="dpad"/);
   // A complete cross hides the button; a device without arrows disables it and says why.
   ({content,ctx}=setup({...base0,screen:{columns:4,cells:[],pinned:[]}}));
   ({content,ctx}=setup({...base0,steps:[{deviceId:'bar'}],screen:{columns:4,cells:[],pinned:[]}}));
