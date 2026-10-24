@@ -20,11 +20,10 @@ on:
         default: false
 
 permissions:
-  contents: write   # to create the release
-  actions: read     # to look up whether the Test workflow passed
+  contents: read
 
 concurrency:
-  group: hub-release
+  group: hub-release-${{ github.sha }}
   cancel-in-progress: false
 
 env:
@@ -36,6 +35,9 @@ env:
 jobs:
   plan:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read   # to look up whether the Test workflow passed
     timeout-minutes: 30
     outputs:
       skip: ${{ steps.plan.outputs.skip }}
@@ -53,47 +55,50 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PUBLISH: ${{ github.event_name == 'push' || inputs.publish }}
         run: |
+          skip=false; publish=false; version="0.0.0-dev-${GITHUB_SHA::7}"; code=1
+          # Written once, whichever way this exits.
+          trap '{ echo "skip=$skip"; echo "publish=$publish"; echo "version=$version"; echo "code=$code"; } >> "$GITHUB_OUTPUT"' EXIT
           # A hand-run build is signed with the real key, so only main may be built this way.
           [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "::error::Run this workflow from main."; exit 1; }
-          echo "skip=false" >> "$GITHUB_OUTPUT"
-          if [[ "$PUBLISH" != "true" ]]; then
-            echo "publish=false" >> "$GITHUB_OUTPUT"
-            echo "version=0.0.0-dev-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+          [[ "$PUBLISH" == "true" ]] || exit 0
           version=$(tr -d ' \t\r\n' < VERSION)
-          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::VERSION must look like 1.2.3 (it is '$version')"; exit 1; }
-          echo "publish=false" >> "$GITHUB_OUTPUT"
+          [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo "::error::VERSION must look like 1.2.3 without leading zeros (it is '$version')"; exit 1; }
           if [[ "$version" == "0.0.0" ]]; then
             echo "::notice::VERSION is 0.0.0 (nothing released yet); nothing to do."
-            echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+            skip=true; exit 0
+          fi
+          # Released means a published GitHub Release exists; a tag left by a failed run does not count.
+          if [[ "$(gh release view "v$version" --json isDraft --jq .isDraft 2>/dev/null)" == "false" ]]; then
+            echo "::notice::v$version is already released; nothing to do. Change VERSION to release again."
+            skip=true; exit 0
           fi
           git fetch --quiet --tags origin
-          if git rev-parse -q --verify "refs/tags/v$version" > /dev/null; then
-            echo "::notice::v$version is already released; nothing to do. Change VERSION to release again."
-            echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
-          fi
-          newest=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' | sed 's/^v//' | sort -V | tail -1)
+          newest=$(git tag --list | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sed 's/^v//' | sort -V | tail -1 || true)
           if [[ -n "$newest" && "$(printf '%s\n%s\n' "$newest" "$version" | sort -V | tail -1)" != "$version" ]]; then
             echo "::error::VERSION $version is lower than the newest release $newest; versions only go up."; exit 1
           fi
-          # Only tested code is signed with the release key. Test runs on the same push, so it may
-          # still be going: wait for it (up to 15 minutes).
+          # Only tested code is signed with the real key. Test runs on the same push, so it may not
+          # be listed yet, or may still be going: wait for it (a few minutes to appear, 15 to finish).
           for attempt in $(seq 1 30); do
             passed=$(gh run list --workflow Test --commit "$GITHUB_SHA" --status success --json databaseId --jq length)
             [[ "$passed" -gt 0 ]] && break
+            listed=$(gh run list --workflow Test --commit "$GITHUB_SHA" --json databaseId --jq length)
             running=$(gh run list --workflow Test --commit "$GITHUB_SHA" --json status --jq '[.[] | select(.status != "completed")] | length')
-            [[ "$running" -gt 0 ]] || { echo "::error::The Test workflow has not passed on this commit."; exit 1; }
-            echo "The Test workflow is still running on this commit; waiting..."
+            if [[ "$listed" -gt 0 && "$running" -eq 0 ]]; then
+              echo "::error::The Test workflow ran on this commit and did not pass."; exit 1
+            fi
+            [[ "$listed" -gt 0 || "$attempt" -le 6 ]] || { echo "::error::No Test run was found for this commit."; exit 1; }
+            echo "Waiting for the Test workflow on this commit..."
             sleep 30
           done
           [[ "$passed" -gt 0 ]] || { echo "::error::The Test workflow did not finish in time."; exit 1; }
-          echo "publish=true" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          publish=true
           echo "Releasing $version"
 
   release:
     needs: plan
+    permissions:
+      contents: write   # to create the release
     if: needs.plan.outputs.skip != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -181,7 +186,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          gh release create "v${{ needs.plan.outputs.version }}" "${{ steps.bundle.outputs.file }}" "${{ steps.bundle.outputs.file }}.sha256" \
+          tag="v${{ needs.plan.outputs.version }}"
+          # A failed earlier attempt can leave an unpublished draft behind; replace it.
+          if [[ "$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null)" == "true" ]]; then gh release delete "$tag" --yes; fi
+          gh release create "$tag" "${{ steps.bundle.outputs.file }}" "${{ steps.bundle.outputs.file }}.sha256" \
             --title "Hub software ${{ needs.plan.outputs.version }}" --generate-notes --target "$GITHUB_SHA"
 
       - name: Keep the bundle as a download (hand-run builds)
