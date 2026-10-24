@@ -365,12 +365,16 @@ function gridHtml(entries, columns) {
     const e = rows.get(row).find(x=>x.slot===row*columns+col);return e?cellButton(e):'<span></span>';}));
   return `<div class="cells" data-columns="${escape(String(columns))}">${cells.join('')}</div>`;
 }
+// The fixed row: its buttons share the whole width, whether there are four or one.
+function pinnedRowHtml(entries) {
+  return `<div class="cells pinned-row">${[...entries].sort((a,b)=>a.slot-b.slot).map(e=>cellButton(e)).join('')}</div>`;
+}
 function remoteHtml(screen) {
   const columns = screen?.columns || 4;
   const body = remoteBlocks(screen?.cells,crossRowOf(screen),columns).map(block=>block.kind==='cross'?crossHtml(block.pick,block.corner):gridHtml(block.entries,columns)).join('');
-  // The pinned footer is one row of `columns` slots, in the order set: no cross.
+  // The pinned footer is one row in the order set (no cross), the buttons filling its width.
   const pinned = visibleEntries(screen?.pinned, columns);
-  return {body, pinned: pinned.length ? gridHtml(pinned,columns) : ''};
+  return {body, pinned: pinned.length ? pinnedRowHtml(pinned) : ''};
 }
 
 // A device remote shows every command the device has, exactly once: the usual
@@ -713,10 +717,14 @@ function editGridHtml(activity, ui) {
   flush();
   return out.join('');
 }
+// The editor's fixed row matches the remote: the buttons share the width, plus one
+// "+" square for the next free slot while there is room.
 function editPinnedHtml(activity) {
   const list = zoneList(activity,'pinned'), columns = screenOf(activity).columns||4;
-  const cells = Array.from({length:columns},(_,slot)=>editCellHtml(list.find(c=>c.slot===slot)||null,'pinned',slot)).join('');
-  return `<div class="cells edit-grid" data-columns="${escape(String(columns))}">${cells}</div>`;
+  const cells = [...list].sort((a,b)=>a.slot-b.slot).map(c=>editCellHtml(c,'pinned',c.slot));
+  const free = Array.from({length:columns},(_,slot)=>slot).find(slot=>!list.some(c=>c.slot===slot));
+  if(free!==undefined)cells.push(editCellHtml(null,'pinned',free));
+  return `<div class="cells pinned-row edit-grid">${cells.join('')}</div>`;
 }
 // The device whose keyboard this remote's Keyboard button types into.
 const keyboardDevices = () => state.devices.filter(d=>d.keyboard);
