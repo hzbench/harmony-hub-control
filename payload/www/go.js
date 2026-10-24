@@ -75,6 +75,7 @@ const screens = {
   devices: {title:'Devices', tab:'devices', render:renderDevices},
   setup: {title:'Setup', tab:'setup', reserveNotice:true, render:renderSetup},
   roku: {title:'Roku', parent:'setup', reserveNotice:true, render:renderRoku},
+  update: {title:'Software update', parent:'setup', reserveNotice:true, render:renderUpdate},
   activity: {title:'Activity', parent:'activities', reserveNotice:true, render:renderActivityRemote},
   edit: {title:'Edit remote', parent:'activity', parentParams:params=>params.slice(0,1), reserveNotice:true, render:renderEditor},
   device: {title:'Device', parent:'devices', reserveNotice:true, render:renderDeviceRemote},
@@ -114,6 +115,7 @@ function activityRow(activity) {
 // setup, IR learning, Bluetooth pairing, activity steps, backups and the rest.
 const SETUP_LINKS = [
   ['#/roku','Wifi','Roku','Add a Roku TV or player on your network'],
+  ['#/update','Archive','Software update','Install a new version of the hub’s software'],
   ['/#devices','Radio','Devices','Add devices, learn IR codes, pair Bluetooth'],
   ['/#activities','SlidersHorizontal','Activities','Create activities and edit their start and power-off steps'],
   ['/#settings','Settings','Settings','Controllers, backups, Wi-Fi, MQTT and updates'],
@@ -211,6 +213,123 @@ function rokuHtml() {
       <label for="roku-host">Address</label><input id="roku-host" name="roku-host" inputmode="decimal" placeholder="192.168.1.50" autocomplete="off" required>
       <small>Find it on the Roku under Settings › Network › About, and reserve it in your router so it doesn’t change. Turn on network control on the Roku (Settings › System › Advanced system settings › Control by mobile apps).</small>
       <button class="save-button" type="submit"${list.length>=ROKU_LIMIT?' disabled':''}>Add Roku</button>${list.length>=ROKU_LIMIT?`<small>The hub holds up to ${ROKU_LIMIT} Rokus.</small>`:''}</form>`;
+}
+// ---- Software update ----
+// Installs a signed release file the way tools/push_release.py does: the hub verifies the signature
+// against the key it was given, restarts, runs its startup health check, and goes back to the old
+// software on its own if that fails. This page only uploads the file and reports which happened.
+const UPDATE_CHUNK_BYTES = 8192;   // sent as hex, so twice as long; the hub takes up to 32768 hex characters
+const pauses = {wait: ms=>sleep(ms), now: ()=>Date.now()};   // the tests replace these so waiting costs nothing
+let updateBusy = false;   // one install at a time, even if the screen is left and opened again
+const base64Bytes = text => Uint8Array.from(atob(text), ch=>ch.charCodeAt(0));
+const hexOf = bytes => Array.from(bytes, b=>b.toString(16).padStart(2,'0')).join('');
+function parseRelease(text) {
+  const notBundle = Error('That file is not a hub release bundle.');
+  let release;
+  try {release = JSON.parse(text);} catch {throw Error('That file is not a hub release (it is not JSON).');}
+  const isObject = value => value!==null&&typeof value==='object'&&!Array.isArray(value);
+  if(!isObject(release)||typeof release.manifest!=='string'||typeof release.signature!=='string'||!isObject(release.files))throw notBundle;
+  let manifest;
+  try {manifest = JSON.parse(release.manifest);} catch {throw Error('That release’s manifest is damaged.');}
+  if(!isObject(manifest)||!manifest.version||!Array.isArray(manifest.files)||!manifest.files.length||!manifest.files.every(f=>isObject(f)&&typeof f.name==='string'))
+    throw Error('That release has no version or file list.');
+  const missing = manifest.files.filter(f=>typeof release.files[f.name]!=='string').map(f=>f.name);
+  if(missing.length)throw Error(`The release is missing files it lists: ${missing.join(', ')}.`);
+  return {release, manifest};
+}
+// The hub goes down, comes back, and finishes its health check. Each wait has a time limit.
+async function waitForHub(version, say) {
+  const answers = async () => {try {await api('session');return true;} catch {return false;}};
+  const within = seconds => {const end = pauses.now()+seconds*1000;return () => pauses.now()<end;};
+  say('The hub is restarting…');
+  for(let open=within(60);open()&&await answers();)await pauses.wait(2000);
+  let back = false;
+  for(let open=within(300);!(back=await answers())&&open();)await pauses.wait(2000);
+  if(!back)throw Error('The hub has not come back after five minutes. If the new software fails to start it restores the old one by itself; check the hub.');
+  say('The hub is back. Waiting for its startup check…');
+  let status = null;
+  for(let open=within(180);;) {
+    try {status = await api('updates/status');} catch {status = null;}
+    if((status&&!status.pending)||!open())break;
+    await pauses.wait(2000);
+  }
+  if(!status||status.pending)throw Error('The hub is running but its startup check has not finished. Open this page again later to see the result.');
+  const result = status.result||'';
+  if(result.startsWith('Rolled back'))return {outcome:'rolled-back', version:status.version, result};
+  return {outcome:status.version===version?'ok':'unclear', version:status.version, result};
+}
+async function installRelease({release, manifest}, say) {
+  // Decode everything first: a damaged file is found before the hub is told anything.
+  const blobs = manifest.files.map(entry => {
+    let raw;
+    try {raw = base64Bytes(release.files[entry.name]);} catch {throw Error(`${entry.name} in that release is damaged.`);}
+    if(entry.size!==undefined&&raw.length!==entry.size)throw Error(`${entry.name} in that release is not the size it should be.`);
+    return {name:entry.name, raw};
+  });
+  await api('updates/begin',{manifest:release.manifest, signature:release.signature});
+  for(const {name, raw} of blobs) {
+    for(let offset=0;offset<raw.length;offset+=UPDATE_CHUNK_BYTES) {
+      await api('updates/chunk',{name, offset, hex:hexOf(raw.slice(offset,offset+UPDATE_CHUNK_BYTES))});
+      say(`Uploading ${name}… ${Math.min(100,Math.round((offset+UPDATE_CHUNK_BYTES)/raw.length*100))}%`);
+    }
+  }
+  await api('updates/apply',{});
+  return waitForHub(manifest.version, say);
+}
+function renderUpdate(ctx) {
+  if(!owner())return placeholder(ctx,'Only the hub owner can install software updates.');
+  ctx.content.innerHTML = `<div class="card-form"><h2>Hub software</h2>
+    <p class="update-version" data-update-version>Checking the installed version…</p>
+    <label for="update-file">Update file</label>
+    <input id="update-file" type="file" accept=".json,application/json">
+    <small>Choose the <strong>hub-release-….json</strong> file you were given. The hub checks that it is signed with its trusted key, restarts, and goes back to its previous software by itself if the new software doesn’t start properly.</small>
+    <button class="save-button" type="button" data-install-update disabled>Install update</button>
+    <p class="update-status" role="status" data-update-status></p>
+    <button class="add-row" type="button" data-reload hidden>Reload to use the new version</button></div>`;
+  const node = sel => ctx.content.querySelector(sel);
+  const onScreen = () => ctx.content.isConnected && parseRoute(location.hash).name==='update';
+  let chosen = null;
+  const say = text => {if(onScreen())node('[data-update-status]').textContent = text;};
+  const showVersion = status => {
+    if(!onScreen())return;
+    node('[data-update-version]').textContent = status
+      ? `Installed: ${status.version?`version ${status.version}`:'version not recorded'}${status.pending?' (still being checked)':''}.`
+      : 'The installed version could not be read.';
+  };
+  api('updates/status').then(showVersion,()=>showVersion(null));
+  ctx.content.onchange = async event => {
+    if(!event.target.closest?.('#update-file'))return;
+    chosen = null;node('[data-install-update]').disabled = true;
+    const file = event.target.files?.[0];
+    if(!file)return say('');
+    try {
+      if(file.size>6_000_000)throw Error('That file is too large to be a hub release.');
+      chosen = parseRelease(await file.text());
+      say(`Ready to install version ${chosen.manifest.version}.`);
+      node('[data-install-update]').disabled = false;
+    } catch(error) {say(error.message);notice('',false);}
+  };
+  ctx.content.onclick = async event => {
+    if(event.target.closest('[data-reload]'))return location.reload();
+    if(!event.target.closest('[data-install-update]')||!chosen||updateBusy)return;
+    if(!state.online)return say('The hub is disconnected. Check the connection first.');
+    const version = chosen.manifest.version;
+    if(!confirm(`Install version ${version}? The hub will restart, which takes a minute or two.`))return;
+    updateBusy = true;node('[data-install-update]').disabled = true;
+    try {
+      const done = await installRelease(chosen, say);
+      if(done.outcome==='ok') {
+        say(`Updated: the hub is running version ${done.version}.`);
+        chosen = null;   // installing the same file again needs choosing it again
+        if(onScreen())node('[data-reload]').hidden = false;
+      } else if(done.outcome==='rolled-back') {
+        say(`The hub went back to ${done.version?`version ${done.version}`:'its previous software'}: ${done.result}.`);
+        if(onScreen())notice('The update did not start properly, so the hub restored its previous software.',true);
+      } else say(`The hub reports version ${done.version||'(unknown)'}, not ${version}. ${done.result}`);
+      api('updates/status').then(showVersion,()=>{});
+    } catch(error) {say(error.message);if(onScreen())notice(error.message,true);}
+    finally {updateBusy = false;if(onScreen()&&chosen)node('[data-install-update]').disabled = false;}
+  };
 }
 function renderRoku(ctx) {
   if(!owner())return placeholder(ctx,'Only the hub owner can add or change a Roku.');

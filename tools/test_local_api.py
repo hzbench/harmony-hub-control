@@ -1,4 +1,5 @@
 """Disposable Linux integration tests; never connect to a physical hub."""
+import base64
 import hashlib
 import http.client
 import http.server
@@ -10,6 +11,7 @@ import signal
 import socket
 import struct
 import subprocess
+import sys
 import tempfile
 import termios
 import time
@@ -303,6 +305,27 @@ def run():
             assert request("controllers", {"id": physical["id"], "action": "revoke"}, cookie, csrf)[0] == 200
             press(); assert wait_role(physical_cookie, "unpaired") == "unpaired"
             print("Physical pairing: full ownership, one request, expiry, cancel, stale/long/wrong/dropped events and revocation passed")
+            # The computer-side installer pairs the way a phone does (the Pair button), keeps the pairing for
+            # next time, and pairs again once the hub has forgotten it.
+            sys.path.insert(0, str(ROOT / "tools"))
+            import push_release
+            quiet = lambda *_a, **_k: None
+            def pressing(message):
+                if "Pair button" in message: press()
+            def must_not_pair(message): raise AssertionError("it should have reused the saved pairing: " + message)
+            with tempfile.TemporaryDirectory() as pair_dir:
+                first = push_release.connect("127.0.0.1", port, state_dir=pair_dir, say=pressing)
+                assert request("controllers", cookie="harmony=" + first.token)[0] == 200, "paired as an owner"
+                assert push_release.credentials_path("127.0.0.1", port, pair_dir).exists()
+                assert push_release.connect("127.0.0.1", port, state_dir=pair_dir, say=must_not_pair).token == first.token
+                mine = [c for c in request("controllers", cookie=cookie)[1] if c["name"] == "push_release"]
+                assert len(mine) == 1
+                assert request("controllers", {"id": mine[0]["id"], "action": "revoke"}, cookie, csrf)[0] == 200
+                second = push_release.connect("127.0.0.1", port, state_dir=pair_dir, say=pressing)
+                assert second.token != first.token and request("controllers", cookie="harmony=" + second.token)[0] == 200, "a forgotten pairing is redone"
+                mine = [c for c in request("controllers", cookie=cookie)[1] if c["name"] == "push_release"]
+                assert request("controllers", {"id": mine[0]["id"], "action": "revoke"}, cookie, csrf)[0] == 200
+            print("push_release pairing: owner via the Pair button, saved and reused, redone after a revoke passed")
             assert request("controllers/claim", {"name": "Second", "code": code})[0] == 409
             status, pending, second = request("controllers/request", {"name": "Phone"})
             assert status == 200 and pending["role"] == "pending"
@@ -608,6 +631,25 @@ def run():
             (local / "migrations.json").write_bytes(contents["migrations.json"]); (local / "update.result").unlink()
             assert request("updates/status", cookie=cookie)[1]["version"] == "test-2"
             (local / "migrations.json").write_bytes(b"previous version")
+            # The computer-side installer drives the same API: a bad signature is refused with the hub's own
+            # words, and a good bundle is staged, verified and activated.
+            hub = push_release.Hub("127.0.0.1", port, cookie.split("=", 1)[1], csrf)
+            bundle_file = base / "pushed.json"
+            bundle_file.write_text(json.dumps({"manifest": release, "signature": key.sign(release.encode()).hex(),
+                                               "files": {n: base64.b64encode(raw).decode() for n, raw in contents.items()}}))
+            parsed, parsed_manifest = push_release.load_release(bundle_file)
+            try:
+                push_release.upload(hub, {**parsed, "signature": "00" * 64}, parsed_manifest, say=quiet)
+            except push_release.HubError as error:
+                assert "signature" in str(error).lower(), error
+            else:
+                raise AssertionError("a bad signature must be refused")
+            push_release.upload(hub, parsed, parsed_manifest, say=quiet)
+            assert hub.call("updates/status") == {"ok": True, "version": "test-2", "pending": True, "result": ""}
+            assert all(path.read_bytes() != raw for path, raw in installed.items())
+            subprocess.run([binary, "--rollback"], check=True)
+            assert hub.call("updates/status")["version"] == "" and all(path.read_bytes() == raw for path, raw in installed.items())
+            print("push_release upload: refused a bad signature, staged and activated a signed bundle, rolled back cleanly passed")
             # The hub's display name is optional, short and printable.
             named = request("configuration", cookie=cookie)[1]
             for bad in (7, "x" * 41, "tab\there", 'quote"d'):

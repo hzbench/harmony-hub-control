@@ -69,6 +69,9 @@ jobs:
       - name: Signed release bundle tests
         run: python3 tools/test_release_bundle.py
 
+      - name: Hub installer (push_release) tests
+        run: python3 tools/test_push_release.py
+
       - name: Upload/backup logic tests
         run: python3 tools/test_upload.py
 
