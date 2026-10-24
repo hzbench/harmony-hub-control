@@ -18,7 +18,7 @@ const el=id=>elements[id]||=({id,dataset:{},classList:{add(){},remove(){}},hidde
 const context=vm.createContext({document:{getElementById:el,title:'',body:{dataset:{}},addEventListener(){},hidden:false},window:{addEventListener(){},scrollTo(){}},location:{hash:'',replace(url){context.replaced=url;}},history:{replaceState(){},pushState(){context.pushed=(context.pushed||0)+1;},back(){context.backed=(context.backed||0)+1;}},
   confirm:message=>{(context.confirmed||(context.confirmed=[])).push(message);return context.confirmAnswer!==false;},navigator:{vibrate(){context.vibrated=(context.vibrated||0)+1;}},localStorage:{getItem:k=>store.get(k)??null,setItem:(k,v)=>store.set(k,v)},setTimeout:()=>0,clearTimeout(){},fetch:async()=>{throw new TypeError('offline');},AbortController,URL,structuredClone});
 const inert=source.replace(/\n  boot\(\);\n\}\s*$/,'\n}');assert.notEqual(inert,source,'boot() auto-run not found');
-vm.runInContext(inert.replace('const state =','var state =')+'\nthis.exports={parseRoute,routeHash,connection,state,needsFullUi,api,show,screens,renderActivities,renderDevices,deviceRemoteHtml,renderDeviceRemote,remoteBlocks,remoteHtml,renderActivityRemote,CONTROLS,controlFor,volumeTarget,editorSlots,availableCommands,addButton,removeButton,editorHtml,renderEditor,screenOf,MAX_CELLS,layoutShape,startDraft,submitLayout,getLeaveGuard:()=>leaveGuard,cloneScreen,withSlots,announceHub,loadDevices,typingPlan,createTyper,openKeyboard,keyboardSetting:keyboardSettingHtml,setRunningActivity,announceRunning,channelChoices,ROKU_BUILTIN_NAMES};',context);
+vm.runInContext(inert.replace('const state =','var state =')+'\nthis.exports={parseRoute,routeHash,connection,state,needsFullUi,api,show,screens,renderActivities,renderDevices,deviceRemoteHtml,renderDeviceRemote,remoteBlocks,remoteHtml,renderActivityRemote,CONTROLS,controlFor,volumeTarget,editorSlots,availableCommands,addButton,removeButton,editorHtml,renderEditor,screenOf,MAX_CELLS,layoutShape,startDraft,submitLayout,getLeaveGuard:()=>leaveGuard,cloneScreen,withSlots,announceHub,loadDevices,typingPlan,createTyper,openKeyboard,keyboardSetting:keyboardSettingHtml,setRunningActivity,announceRunning,channelChoices,ROKU_BUILTIN_NAMES,channelRowHtml};',context);
 const {parseRoute,routeHash,connection,state,needsFullUi,api,show}=context.exports;
 
 assert.deepEqual(JSON.parse(JSON.stringify(parseRoute(''))),{name:'activities',params:[]});
@@ -1013,6 +1013,36 @@ console.log('The owner can name the hub and the app is told');
     await tap('[data-find-channels]');assert.equal(status.textContent,'Could not reach the Roku.');
     context.api=baseApi;toggle('3','Home',false);toggle('2','Hulu',false);toggle('4','Plex',false);await tap('[data-save-channels]');
     assert.deepEqual(writes.at(-1).configuration.networkDevices[0].channels,[],'no favorites is allowed');
+    // Robustness: an answer with no list is an error, odd entries are ignored, a closed sheet is left alone,
+    // ticks during a save do not change what is saved, and names are escaped.
+    {
+      netFail=false;
+      const answerWith=result=>{context.operation=async()=>({state:'completed',result});};
+      const reopen=async()=>{await content.onclick({target:{closest:sel=>sel==='[data-roku-channels]'?{dataset:{rokuChannels:'roku_c'}}:null}});};
+      hubCfg.networkDevices=[{id:'roku_c',name:'Den',kind:'roku',model:'tv',host:'10.1.1.1',channels:[{id:'1',name:'Netflix'}]}];state.config=J(hubCfg);
+      X.screens.roku.render({content,actions:{},params:[],setTitle(){}});
+      answerWith({ok:true});await reopen();await tap('[data-find-channels]');
+      assert.equal(status.textContent,'The Roku did not list its channels.');assert.doesNotMatch(list.innerHTML,/not installed/,'no list is not the same as no channels: favorites are not called uninstalled');
+      answerWith({ok:true,apps:[{id:'5'},{name:'Nameless'},null,{id:7,name:'Number id'},{id:'6',name:'Fine'}],skipped:2});await tap('[data-find-channels]');
+      assert.equal(status.textContent,"Found 5 channels. 2 more can't be used as buttons.");assert.match(list.innerHTML,/data-channel="6"/);assert.doesNotMatch(list.innerHTML,/Nameless|Number id/,'entries without a usable id and name are left out');
+      sheetEl.close();
+      let release;context.operation=()=>new Promise(resolve=>{release=()=>resolve({state:'completed',result:{ok:true,apps:[]}});});
+      await reopen();const finding=tap('[data-find-channels]');for(let n=0;n<20;n++)await Promise.resolve();
+      assert.equal(status.textContent,'Asking the Roku…');sheetEl.close();release();await finding;
+      assert.equal(status.textContent,'Asking the Roku…','a late answer does not touch a sheet that was closed');
+      // Ticks while a save is running are ignored: what is saved is what was ticked when it started.
+      await reopen();let finishWrite;const heldApi=context.api;
+      context.api=async(path,body)=>{if(path==='configuration'&&body){await new Promise(resolve=>{finishWrite=resolve;});}return heldApi(path,body);};
+      const writesBefore=writes.length,saving=tap('[data-save-channels]');for(let n=0;n<20;n++)await Promise.resolve();
+      sheetEl.onchange({target:{closest:sel=>sel==='[data-channel]'?{checked:true,dataset:{channel:'8',name:'Late tick'}}:null}});
+      finishWrite();await saving;context.api=heldApi;
+      assert.deepEqual(writes.at(-1).configuration.networkDevices[0].channels,[{id:'1',name:'Netflix'}],'a tick made during the save is not part of it');
+    }
+    {
+      // Names with markup are shown as text.
+      const row=X.channelChoices(new Map(),[{id:'9',name:'<img src=x onerror=alert(1)>'}]);
+      assert.doesNotMatch(X.channelRowHtml(row[0]),/<img/,'channel names are escaped');assert.match(X.channelRowHtml(row[0]),/&lt;img/);
+    }
     context.operation=async()=>({state:'completed',result:{ok:true,reply:'Den Roku'}});
   }
   // Only the owner can change Rokus.

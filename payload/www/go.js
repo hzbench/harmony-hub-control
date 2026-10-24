@@ -231,11 +231,12 @@ function renderRoku(ctx) {
         busy = true;status('Asking the Roku…');
         try {
           const queued = await api('commands/send',{deviceId:device.id, command:'ListApps', transport:'roku', mode:'tap'});
-          const apps = (await operation(queued.id,15)).result?.apps;
+          const answer = (await operation(queued.id,15)).result, apps = answer?.apps;
           // No list at all means the Roku did not answer properly, which is not the same as having no channels.
           if(!Array.isArray(apps))throw Error('The Roku did not list its channels.');
           installed = apps;
-          status(`Found ${installed.length} channel${installed.length===1?'':'s'}.`);redraw();
+          const unusable = Number(answer.skipped)||0;
+          status(`Found ${installed.length} channel${installed.length===1?'':'s'}.${unusable?` ${unusable} more can't be used as buttons.`:''}`);redraw();
         } catch(error) {status(error.message);}
         finally {busy = false;}
       } else if(event.target.closest('[data-save-channels]')) {
