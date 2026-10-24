@@ -137,3 +137,6 @@ body[data-screen=edit] h1{font-size:22px;white-space:nowrap;overflow:hidden;text
 .sheet-actions{position:sticky;bottom:calc(-1 * var(--sheet-bottom));margin-bottom:calc(-1 * var(--sheet-bottom));padding:8px 0 var(--sheet-bottom);background:var(--surface);display:flex;flex-direction:column}
 .sheet-actions .save-button{width:100%;min-height:48px}
 dialog.sheet .add-row{width:100%}
+
+.update-version,.update-status{margin:.5rem 0}
+.update-status:empty{display:none}

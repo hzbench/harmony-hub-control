@@ -35,6 +35,9 @@ def network_devices():
             for d in configuration.get("networkDevices", [])]
 
 
+installed = {"version": "0.1.0", "result": ""}
+
+
 class Preview(BaseHTTPRequestHandler):
     def reply(self, value, status=200):
         body = json.dumps(value).encode()
@@ -46,7 +49,8 @@ class Preview(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urlsplit(self.path).path
-        responses = {"/api/v1/session": {"role": "owner", "id": "fixture", "csrf": "fixture"},
+        responses = {"/api/v1/updates/status": {"ok": True, "version": installed["version"], "pending": False, "result": installed["result"]},
+                     "/api/v1/session": {"role": "owner", "id": "fixture", "csrf": "fixture"},
                      "/api/v1/configuration": configuration, "/api/v1/devices": {"devices": devices},
                      "/api/v1/bluetooth/devices": {"devices": []}, "/api/v1/network/devices": {"devices": network_devices()},
                      "/api/v1/operations": {"state": "completed", "result": {"ok": True, "reply": "Fixture Roku", "apps": FIXTURE_APPS}}}
@@ -74,6 +78,12 @@ class Preview(BaseHTTPRequestHandler):
         if self.path == "/api/v1/commands/type":
             sys.stderr.write("TYPED %r\n" % body.get("text"))  # so a run can show what the UI sent
             return self.reply({"id": "fixture-typed"}, 202)
+        if self.path.startswith("/api/v1/updates/"):  # an update is accepted and "installed" without touching anything
+            if self.path.endswith("/begin"):
+                installed["next"] = json.loads(body.get("manifest", "{}")).get("version", "")
+            if self.path.endswith("/apply"):
+                installed.update(version=installed.get("next", installed["version"]), result="Release passed startup health checks (fixture)")
+            return self.reply({"ok": True})
         if self.path == "/api/v1/activities/run":
             return self.reply({"id": "fixture-activity", "state": "completed"}, 202)
         if body.get("revision") != configuration["revision"]:

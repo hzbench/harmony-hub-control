@@ -16,9 +16,9 @@ console.log('Entry page and shell script use no inline styles or scripts (CSP-sa
 const elements={}, store=new Map();
 const el=id=>elements[id]||=({id,dataset:{},classList:{add(){},remove(){}},hidden:false,textContent:'',innerHTML:'',title:'',attrs:{},setAttribute(k,v){this.attrs[k]=v;},removeAttribute(k){delete this.attrs[k];},focus(){},addEventListener(){},querySelectorAll:()=>[]});
 const context=vm.createContext({document:{getElementById:el,title:'',body:{dataset:{}},addEventListener(){},hidden:false},window:{addEventListener(){},scrollTo(){}},location:{hash:'',replace(url){context.replaced=url;}},history:{replaceState(){},pushState(){context.pushed=(context.pushed||0)+1;},back(){context.backed=(context.backed||0)+1;}},
-  confirm:message=>{(context.confirmed||(context.confirmed=[])).push(message);return context.confirmAnswer!==false;},navigator:{vibrate(){context.vibrated=(context.vibrated||0)+1;}},localStorage:{getItem:k=>store.get(k)??null,setItem:(k,v)=>store.set(k,v)},setTimeout:()=>0,clearTimeout(){},fetch:async()=>{throw new TypeError('offline');},AbortController,URL,structuredClone});
+  confirm:message=>{(context.confirmed||(context.confirmed=[])).push(message);return context.confirmAnswer!==false;},navigator:{vibrate(){context.vibrated=(context.vibrated||0)+1;}},localStorage:{getItem:k=>store.get(k)??null,setItem:(k,v)=>store.set(k,v)},setTimeout:()=>0,clearTimeout(){},fetch:async()=>{throw new TypeError('offline');},AbortController,URL,structuredClone,atob});
 const inert=source.replace(/\n  boot\(\);\n\}\s*$/,'\n}');assert.notEqual(inert,source,'boot() auto-run not found');
-vm.runInContext(inert.replace('const state =','var state =')+'\nthis.exports={parseRoute,routeHash,connection,state,needsFullUi,api,show,screens,renderActivities,renderDevices,deviceRemoteHtml,renderDeviceRemote,remoteBlocks,remoteHtml,renderActivityRemote,CONTROLS,controlFor,volumeTarget,editorSlots,availableCommands,addButton,removeButton,editorHtml,renderEditor,screenOf,MAX_CELLS,layoutShape,startDraft,submitLayout,getLeaveGuard:()=>leaveGuard,cloneScreen,withSlots,announceHub,loadDevices,typingPlan,createTyper,openKeyboard,keyboardSetting:keyboardSettingHtml,setRunningActivity,announceRunning,channelChoices,ROKU_BUILTIN_NAMES,channelRowHtml};',context);
+vm.runInContext(inert.replace('const state =','var state =')+'\nthis.exports={parseRoute,routeHash,connection,state,needsFullUi,api,show,screens,renderActivities,renderDevices,deviceRemoteHtml,renderDeviceRemote,remoteBlocks,remoteHtml,renderActivityRemote,CONTROLS,controlFor,volumeTarget,editorSlots,availableCommands,addButton,removeButton,editorHtml,renderEditor,screenOf,MAX_CELLS,layoutShape,startDraft,submitLayout,getLeaveGuard:()=>leaveGuard,cloneScreen,withSlots,announceHub,loadDevices,typingPlan,createTyper,openKeyboard,keyboardSetting:keyboardSettingHtml,setRunningActivity,announceRunning,channelChoices,ROKU_BUILTIN_NAMES,channelRowHtml,parseRelease,installRelease,waitForHub,pauses};',context);
 const {parseRoute,routeHash,connection,state,needsFullUi,api,show}=context.exports;
 
 assert.deepEqual(JSON.parse(JSON.stringify(parseRoute(''))),{name:'activities',params:[]});
@@ -868,7 +868,7 @@ console.log('Editing changes only a local draft in fixed slots; Save is one writ
 {
   const content={innerHTML:''};
   X.screens.setup.render({content,actions:{},params:[],setTitle(){}});
-  assert.deepEqual([...content.innerHTML.matchAll(/<a class="row-main" href="([^"]+)"/g)].map(m=>m[1]),['#/roku','/#devices','/#activities','/#settings']);
+  assert.deepEqual([...content.innerHTML.matchAll(/<a class="row-main" href="([^"]+)"/g)].map(m=>m[1]),['#/roku','#/update','/#devices','/#activities','/#settings']);
   assert.match(content.innerHTML,/IR codes/);
 }
 console.log('Setup links into the original pages');
@@ -1075,6 +1075,86 @@ console.log('The owner can add, test and remove a Roku; Rokus appear as devices'
   delete context.window.HarmonyNative;assert.doesNotThrow(()=>context.exports.setRunningActivity('a'),'no app, no problem');
 }
 console.log('The running activity and its lock-screen buttons are announced to the app');
+// Software update: read a release file, upload it in chunks, wait through the restart, report what happened.
+{
+  X.pauses.wait=async()=>{};
+  const big=Buffer.alloc(25600,7), small=Buffer.from('hello');
+  const manifest=JSON.stringify({version:'0.2.0',files:[{name:'big.bin',size:big.length},{name:'small',size:small.length}]});
+  const releaseOf=(over={})=>({manifest,signature:'ab',files:{'big.bin':big.toString('base64'),small:small.toString('base64')},...over});
+  const text=over=>JSON.stringify(releaseOf(over));
+  // Reading the file.
+  assert.equal(X.parseRelease(text()).manifest.version,'0.2.0');
+  for(const [input,words] of [['not json',/not JSON/],['[]',/not a hub release bundle/],[text({signature:undefined}),/not a hub release bundle/],
+      [text({manifest:'{'}),/manifest is damaged/],[text({files:{small:'aGk='}}),/missing files it lists: big.bin/],
+      [text({manifest:JSON.stringify({files:[]})}),/no version or file list/]])
+    assert.throws(()=>X.parseRelease(input),words,String(input).slice(0,40));
+  // The upload: begin, every chunk in order, apply, then the wait.
+  const calls=[],said=[];let sessionUp=['up','down','down','up'],statuses=[{pending:true},{pending:false,version:'0.2.0',result:'Release passed startup health checks'}];
+  context.api=async(path,body)=>{
+    calls.push({path,...body});
+    if(path==='session'){const step=sessionUp.length>1?sessionUp.shift():sessionUp[0];if(step==='down')throw new TypeError('offline');return {};}
+    if(path==='updates/status')return statuses.length>1?statuses.shift():statuses[0];
+    return {ok:true};
+  };
+  const done=await X.installRelease(X.parseRelease(text()),t=>said.push(t));
+  assert.deepEqual(J(done),{outcome:'ok',version:'0.2.0',result:'Release passed startup health checks'});
+  const chunks=calls.filter(c=>c.path==='updates/chunk');
+  assert.deepEqual(calls.filter(c=>!['session','updates/status'].includes(c.path)).map(c=>c.path),['updates/begin','updates/chunk','updates/chunk','updates/chunk','updates/chunk','updates/chunk','updates/apply']);
+  assert.equal(calls[0].manifest,manifest);assert.equal(calls[0].signature,'ab');
+  assert.deepEqual(chunks.map(c=>[c.name,c.offset]),[['big.bin',0],['big.bin',8192],['big.bin',16384],['big.bin',24576],['small',0]]);
+  assert.ok(chunks.every(c=>c.hex.length<=32768&&c.hex.length%2===0));
+  assert.equal(Buffer.from(chunks.filter(c=>c.name==='big.bin').map(c=>c.hex).join(''),'hex').equals(big),true,'the hub receives exactly the signed bytes');
+  assert.ok(said.some(t=>/Uploading big.bin… 100%/.test(t))&&said.some(t=>/restarting/.test(t))&&said.some(t=>/startup check/.test(t)));
+  // The other endings.
+  const ending=async(session,status,version='0.2.0')=>{sessionUp=session;statuses=status;context.api=async path=>{if(path==='session'){const s=sessionUp.length>1?sessionUp.shift():sessionUp[0];if(s==='down')throw new TypeError('offline');return {};}if(path==='updates/status'){const s=statuses.length>1?statuses.shift():statuses[0];if(s instanceof Error)throw s;return s;}return {};};return J(await X.waitForHub(version,()=>{}));};
+  assert.equal((await ending(['up','down','up'],[{pending:false,version:'0.1.0',result:'Rolled back after a failed health check'}])).outcome,'rolled-back');
+  assert.equal((await ending(['up','down','up'],[{pending:false,version:'0.1.5',result:''}])).outcome,'unclear');
+  assert.equal((await ending(['up','down','up'],[new TypeError('x'),{pending:true},{pending:false,version:'0.2.0',result:'ok'}])).outcome,'ok','a status that fails while the hub starts is retried');
+  await assert.rejects(()=>ending(['down'],[{pending:false,version:'0.2.0'}]),/has not come back after five minutes/);
+  await assert.rejects(()=>ending(['up','down','up'],[{pending:true}]),/startup check has not finished/);
+  // The screen.
+  const nodes={'[data-update-version]':{textContent:''},'[data-update-status]':{textContent:''},'[data-install-update]':{disabled:true},'[data-reload]':{hidden:true}};
+  const content={innerHTML:'',isConnected:true,querySelector:sel=>nodes[sel]||null};
+  const render=owner=>{state.session={role:owner?'owner':'control'};state.online=true;context.location.hash='#/update';for(const n of Object.values(nodes)){n.textContent='';}nodes['[data-install-update]'].disabled=true;nodes['[data-reload]'].hidden=true;content.innerHTML='';content.onchange=content.onclick=null;
+    X.screens.update.render({content,actions:{},params:[],setTitle(){}});};
+  const calls2=[];let startStatus={ok:true,version:'0.1.0',pending:false,result:''};
+  context.api=async(path,body)=>{calls2.push(path);if(path==='updates/status')return startStatus;if(path==='session')return {};return {ok:true};};
+  const settle=async()=>{for(let i=0;i<30;i++)await Promise.resolve();};
+  render(true);await settle();
+  assert.match(content.innerHTML,/type="file" accept="\.json,application\/json"/);assert.equal(nodes['[data-update-version]'].textContent,'Installed: version 0.1.0.');
+  const pickFile=async(body,size=body.length)=>content.onchange({target:{closest:sel=>sel==='#update-file'?{}:null,files:[{size,text:async()=>body}]}});
+  await pickFile('junk');assert.match(nodes['[data-update-status]'].textContent,/not JSON/);assert.equal(nodes['[data-install-update]'].disabled,true);
+  await pickFile(text(),7_000_000);assert.match(nodes['[data-update-status]'].textContent,/too large/);
+  await pickFile(text());assert.equal(nodes['[data-update-status]'].textContent,'Ready to install version 0.2.0.');assert.equal(nodes['[data-install-update]'].disabled,false);
+  const click=sel=>content.onclick({target:{closest:s=>s===sel?{}:null}});
+  // Saying no sends nothing.
+  context.confirmed=[];context.confirmAnswer=false;calls2.length=0;await click('[data-install-update]');
+  assert.match(context.confirmed.at(-1),/Install version 0\.2\.0\?/);assert.deepEqual(calls2,[],'nothing is sent unless confirmed');
+  // Yes: uploaded, the hub restarts and comes back running it.
+  context.confirmAnswer=true;calls2.length=0;let phase='before';
+  context.api=async(path,body)=>{calls2.push(path);if(path==='updates/apply')phase='restarting';if(path==='session'){if(phase==='restarting'){phase='back';throw new TypeError('offline');}return {};}if(path==='updates/status')return phase==='back'?{pending:false,version:'0.2.0',result:'Release passed startup health checks'}:startStatus;return {ok:true};};
+  await click('[data-install-update]');
+  assert.equal(nodes['[data-update-status]'].textContent,'Updated: the hub is running version 0.2.0.');assert.equal(nodes['[data-reload]'].hidden,false,'offers to reload into the new version');
+  assert.equal(calls2.includes('updates/begin')&&calls2.includes('updates/apply'),true);
+  let reloaded=false;context.location.reload=()=>{reloaded=true;};await click('[data-reload]');assert.equal(reloaded,true);
+  // A rollback is reported as a failure, in words.
+  render(true);await settle();await pickFile(text());phase='before';
+  context.api=async path=>{if(path==='updates/apply')phase='restarting';if(path==='session'){if(phase==='restarting'){phase='back';throw new TypeError('offline');}return {};}if(path==='updates/status')return phase==='back'?{pending:false,version:'0.1.0',result:'Rolled back after a failed health check'}:startStatus;return {ok:true};};
+  el('notice').textContent='';await click('[data-install-update]');
+  assert.match(nodes['[data-update-status]'].textContent,/went back to version 0\.1\.0: Rolled back after a failed health check/);assert.equal(el('notice').dataset.error,'true');assert.equal(nodes['[data-reload]'].hidden,true);
+  // The hub refusing the file (wrong key, say) shows its message and leaves the button usable.
+  render(true);await settle();await pickFile(text());
+  context.api=async path=>{if(path==='updates/begin')throw Error('Release signature, platform or manifest is invalid.');return startStatus;};
+  await click('[data-install-update]');
+  assert.equal(nodes['[data-update-status]'].textContent,'Release signature, platform or manifest is invalid.');assert.equal(nodes['[data-install-update]'].disabled,false,'can try another file');
+  // A pending earlier update, an unreadable version, offline, and non-owners.
+  context.api=async path=>{if(path==='updates/status')return {ok:true,version:'',pending:true,result:''};return {};};render(true);await settle();
+  assert.equal(nodes['[data-update-version]'].textContent,'Installed: version not recorded (still being checked).');
+  context.api=async()=>{throw Error('offline');};render(true);await settle();assert.equal(nodes['[data-update-version]'].textContent,'The installed version could not be read.');
+  render(false);assert.match(content.innerHTML,/Only the hub owner/);
+  context.operation=async()=>({state:'completed',result:{ok:true,reply:'Den Roku'}});
+}
+console.log('Software update: file checks, chunked upload, the wait through the restart, and each ending are reported');
 // Typing: what is sent for each change, in order, in chunks.
 {
   assert.equal(X.typingPlan('','abc'),'abc');assert.equal(X.typingPlan('abc','abcd'),'d');assert.equal(X.typingPlan('abc','ab'),'\b');
