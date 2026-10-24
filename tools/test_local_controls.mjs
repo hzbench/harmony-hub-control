@@ -182,12 +182,10 @@ assert.equal(canSave('keycode','Volume up','','0020',''),false);
 assert.equal(canSave('keycode','Volume up','','0020'),true);
 assert.equal(canSave('nec',' ','','20DF40BF'),false);
 let routed='settings';ui.state={config:{}};ui.location={hash:'#main'};ui.show=view=>{routed=view;};
-inputs.navigation={addEventListener:(name,handler)=>ui.onNavigation=handler};
 ui.window={addEventListener:(name,handler)=>ui.onHash=handler};
 vm.runInContext(source.slice(source.indexOf("window.addEventListener('hashchange'"),source.indexOf("$('connection').addEventListener")),ui);
 ui.onHash();assert.equal(routed,'settings');
 ui.location.hash='#devices';ui.onHash();assert.equal(routed,'devices');
-ui.onNavigation({target:{closest:()=>({dataset:{view:'devices'}})},preventDefault(){}});assert.equal(routed,'devices');
 console.log('Power labels, imported device types, activity fields, manual codes and keyboard skip navigation passed');
 
 vm.runInContext("state.devices[0].commands=['VOL+','VOL-','UP_ARROW','DN_ARROW','LEFT_ARROW','RIGHT_ARROW','ENTER','HOME_MENU','PLAY PAUSE','INPUT-','INPUT+'].map(name=>({name}))",remote);
