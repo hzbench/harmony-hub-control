@@ -250,7 +250,6 @@ console.log('Remote view hides volume and stale cells, ignores label/wide, shows
 const pinnedView=remoteHtml({columns:4,cells:[cell('Back')],pinned:[cell('Mute'),cell('Gone'),cell('VolumeUp'),cell('Input')]});
 assert.equal((pinnedView.pinned.match(/data-command=/g)||[]).length,2);
 assert.doesNotMatch(pinnedView.body,/Mute/);
-// Pinning all four arrows keeps them as a row in the order set, not a cross.
 // The fixed row's buttons share the full width, whatever the count and wherever the gaps were.
 for(const count of [1,2,3,4]){
   const row=remoteHtml({columns:4,cells:[],pinned:['Right','Up','Down','Left'].slice(0,count).map(c=>cell(c))}).pinned;
@@ -264,6 +263,7 @@ for(const count of [1,2,3,4]){
   assert.ok(gapped.indexOf('Mute')<gapped.indexOf('Input'),'and they stay in slot order');
   const reversed=remoteHtml({columns:4,cells:[],pinned:[{...cell('Input'),slot:3},{...cell('Mute'),slot:0}]}).pinned;assert.ok(reversed.indexOf('Mute')<reversed.indexOf('Input'),'slot order, not list order');
 }
+// Pinning all four arrows keeps them as a row in the order set, not a cross.
 const arrowRow=remoteHtml({columns:4,cells:[],pinned:['Right','Up','Down','Left'].map(c=>cell(c))}).pinned;
 assert.doesNotMatch(arrowRow,/class="dpad"/);
 assert.deepEqual([...arrowRow.matchAll(/aria-label="(\w+)"/g)].map(m=>m[1]),['Right','Up','Down','Left']);

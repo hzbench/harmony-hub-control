@@ -301,12 +301,6 @@ const NAMED_IN_LIST = ['volumeup','volumedown','channelup','channeldown'];
 const GRID_SLOTS = 32;  // keep in step with the server's 32-cell limit
 // Buttons carry the grid slot they sit in (`slot`, 0-based). Lists saved before
 // that existed fill the lowest free slots in order. Returns copies, sorted by slot.
-// The fixed row has no gaps: its buttons sit in slots 0..n-1 in order, so the "+"
-// at its right end is also where a new button goes.
-function packSlots(list) {
-  list.sort((a,b)=>a.slot-b.slot).forEach((c,i)=>{c.slot = i;});
-  return list;
-}
 function withSlots(list, capacity) {
   const used = new Set(), placed = [], loose = [];
   for(const c of list||[]) {
@@ -317,6 +311,12 @@ function withSlots(list, capacity) {
   let next = 0;
   for(const copy of loose){while(used.has(next))next++;if(next>=capacity)break;copy.slot=next;used.add(next);placed.push(copy);}
   return placed.sort((a,b)=>a.slot-b.slot);
+}
+// The fixed row has no gaps: its buttons sit in slots 0..n-1 in order, so the "+" at
+// its right end is also where a new button goes. Sorts and renumbers `list` in place.
+function packSlots(list) {
+  list.sort((a,b)=>a.slot-b.slot).forEach((c,i)=>{c.slot = i;});
+  return list;
 }
 const visibleEntries = (cells, capacity) => withSlots(cells,capacity).map(cell=>({cell,control:controlFor(cell.command),slot:cell.slot}))
   .filter(e=>resolveCell(e.cell)&&!HARDWARE_ONLY.includes(e.control?.[0]));
@@ -640,15 +640,16 @@ function addArrowPad(activity) {
   const {add} = arrowPadPlan(activity), list = zoneList(activity,'cells');
   const free = Array.from({length:MAX_CELLS},(_,n)=>MAX_CELLS-1-n).filter(n=>!list.some(c=>c.slot===n));
   if(!add.length||free.length<add.length)return false;
+  let allAdded = true;
   add.forEach((o,i)=>{
     if(o.pinnedSlot!==undefined) {
       // Look it up now: taking an earlier one out of the fixed row has already shifted the rest.
       const held = zoneList(activity,'pinned').find(c=>c.deviceId===o.device.id&&c.command===o.command);
       if(held)removeButton(activity,'pinned',held.slot);
     }
-    addButton(activity,'cells',free[i],o.device.id,o.command);
+    allAdded = addButton(activity,'cells',free[i],o.device.id,o.command) && allAdded;
   });
-  return true;
+  return allAdded;
 }
 // How many slots to draw: out to a full row beyond the last used slot (so there
 // is always somewhere to add), plus any "Add row" rows. `extent` is the highest
