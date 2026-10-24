@@ -1,0 +1,164 @@
+/* Roku over the home network: its External Control Protocol is plain HTTP on
+   port 8060 (POST /keypress/<key>, GET /query/device-info). Devices live in the
+   configuration's `networkDevices`, so adding or removing one is an ordinary
+   owner-only, revision-checked configuration write. */
+#ifndef LOCAL_ROKU_PORT
+#define LOCAL_ROKU_PORT 8060
+#endif
+#define LOCAL_ROKU_MAX 8
+#define LOCAL_ROKU_TIMEOUT_MS 2500
+
+struct roku_command { const char *name, *key; int tv_only; };
+/* The names are the ones the remote UI already recognises (Up, OK, Volume up,
+   ...), so a Roku fills the standard buttons. "Enter" and "Backspace" are not
+   here: Enter would read as OK, and both belong to the keyboard. */
+static const struct roku_command roku_commands[] = {
+    {"Home", "Home", 0}, {"Back", "Back", 0}, {"Up", "Up", 0}, {"Down", "Down", 0},
+    {"Left", "Left", 0}, {"Right", "Right", 0}, {"OK", "Select", 0}, {"Menu", "Info", 0},
+    {"Replay", "InstantReplay", 0}, {"Rewind", "Rev", 0}, {"Play", "Play", 0},
+    {"Fast forward", "Fwd", 0}, {"Search", "Search", 0},
+    {"Power", "Power", 1}, {"Power on", "PowerOn", 1}, {"Power off", "PowerOff", 1},
+    {"Volume up", "VolumeUp", 1}, {"Volume down", "VolumeDown", 1}, {"Mute", "VolumeMute", 1},
+    {"Channel up", "ChannelUp", 1}, {"Channel down", "ChannelDown", 1},
+    {"TV tuner", "InputTuner", 1}, {"HDMI 1", "InputHDMI1", 1}, {"HDMI 2", "InputHDMI2", 1},
+    {"HDMI 3", "InputHDMI3", 1}, {"HDMI 4", "InputHDMI4", 1}, {"AV", "InputAV1", 1},
+};
+#define ROKU_COMMAND_COUNT (sizeof(roku_commands) / sizeof(roku_commands[0]))
+
+static int roku_is_tv(const cJSON *device) { return !strcmp(lj_str(device, "model"), "tv"); }
+
+static const struct roku_command *roku_command_for(const cJSON *device, const char *name) {
+    size_t i;
+    for (i = 0; i < ROKU_COMMAND_COUNT; i++)
+        if (!strcmp(roku_commands[i].name, name) && (!roku_commands[i].tv_only || roku_is_tv(device))) return &roku_commands[i];
+    return NULL;
+}
+
+/* Only private-network IPv4 addresses: the hub must not be made to send
+   requests to arbitrary hosts. (Loopback only for the test build.) */
+static int roku_host_ok(const char *host) {
+    struct in_addr a; unsigned char *b;
+    if (!host || strlen(host) > 15 || inet_pton(AF_INET, host, &a) != 1) return 0;
+    b = (unsigned char *)&a;
+#ifdef LOCAL_TEST_ROKU_LOOPBACK
+    if (b[0] == 127) return 1;
+#endif
+    return b[0] == 10 || (b[0] == 172 && b[1] >= 16 && b[1] <= 31) || (b[0] == 192 && b[1] == 168);
+}
+
+static int roku_device_valid(const cJSON *d) {
+    return cJSON_IsObject(d) && safe_run_id(lj_str(d, "id")) && strlen(lj_str(d, "id")) <= 64 &&
+        safe_label(lj_str(d, "name")) && strlen(lj_str(d, "name")) <= 64 &&
+        !strcmp(lj_str(d, "kind"), "roku") &&
+        (!strcmp(lj_str(d, "model"), "tv") || !strcmp(lj_str(d, "model"), "player")) &&
+        roku_host_ok(lj_str(d, "host"));
+}
+
+/* `networkDevices` is optional; when present every entry must be well formed
+   and ids must be unique. */
+static int local_validate_network_devices(const cJSON *o) {
+    cJSON *list = lj_get(o, "networkDevices"), *a, *b;
+    if (!list) return 1;
+    if (!cJSON_IsArray(list) || cJSON_GetArraySize(list) > LOCAL_ROKU_MAX) return 0;
+    cJSON_ArrayForEach(a, list) {
+        if (!roku_device_valid(a)) return 0;
+        for (b = a->next; b; b = b->next) if (!strcmp(lj_str(a, "id"), lj_str(b, "id"))) return 0;
+    }
+    return 1;
+}
+
+static const cJSON *roku_find(const cJSON *config, const char *id) {
+    const cJSON *d;
+    cJSON_ArrayForEach(d, lj_get(config, "networkDevices")) if (!strcmp(lj_str(d, "id"), id)) return d;
+    return NULL;
+}
+
+/* One short HTTP exchange. Returns the status code, or -1 when the Roku could
+   not be reached, with the reason in `err`. `reply` receives the body. */
+static int roku_http(const char *host, const char *method, const char *path, char *reply, size_t reply_size, char *err, size_t err_size) {
+    struct sockaddr_in addr; char request[256]; size_t got = 0, sent = 0, length; int fd, status = -1; struct timeval tv;
+    long long deadline; struct timespec now;
+    if (reply_size) reply[0] = 0;
+    memset(&addr, 0, sizeof(addr)); addr.sin_family = AF_INET; addr.sin_port = htons(LOCAL_ROKU_PORT);
+    if (inet_pton(AF_INET, host, &addr.sin_addr) != 1) { snprintf(err, err_size, "The Roku's address is not valid."); return -1; }
+    fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) { snprintf(err, err_size, "Could not open a network connection."); return -1; }
+    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0 && errno != EINPROGRESS) { snprintf(err, err_size, "Could not reach the Roku."); close(fd); return -1; }
+    clock_gettime(CLOCK_MONOTONIC, &now); deadline = (long long)now.tv_sec * 1000 + now.tv_nsec / 1000000 + LOCAL_ROKU_TIMEOUT_MS;
+    length = (size_t)snprintf(request, sizeof(request), "%s %s HTTP/1.0\r\nHost: %s:%d\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", method, path, host, LOCAL_ROKU_PORT);
+    for (;;) {
+        long long left; int ready; fd_set rd, wr;
+        clock_gettime(CLOCK_MONOTONIC, &now); left = deadline - ((long long)now.tv_sec * 1000 + now.tv_nsec / 1000000);
+        if (left <= 0) { snprintf(err, err_size, "The Roku did not answer in time."); close(fd); return -1; }
+        FD_ZERO(&rd); FD_ZERO(&wr); FD_SET(fd, &rd); if (sent < length) FD_SET(fd, &wr);
+        tv.tv_sec = left / 1000; tv.tv_usec = (left % 1000) * 1000;
+        ready = select(fd + 1, &rd, sent < length ? &wr : NULL, NULL, &tv);
+        if (ready < 0 && errno == EINTR) continue;
+        if (ready <= 0) { snprintf(err, err_size, "The Roku did not answer in time."); close(fd); return -1; }
+        if (sent < length && FD_ISSET(fd, &wr)) {
+            int soerr = 0; socklen_t sl = sizeof(soerr); ssize_t n;
+            getsockopt(fd, SOL_SOCKET, SO_ERROR, &soerr, &sl);
+            if (soerr) { snprintf(err, err_size, "Could not reach the Roku."); close(fd); return -1; }
+            n = send(fd, request + sent, length - sent, MSG_NOSIGNAL);
+            if (n > 0) sent += (size_t)n; else if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) { snprintf(err, err_size, "Could not reach the Roku."); close(fd); return -1; }
+        }
+        if (FD_ISSET(fd, &rd)) {
+            char buf[1024]; ssize_t n = recv(fd, buf, sizeof(buf), 0);
+            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) continue;
+            if (n < 0) { snprintf(err, err_size, "Could not reach the Roku."); close(fd); return -1; }
+            if (n == 0) break;
+            if (got + (size_t)n >= reply_size) n = (ssize_t)(reply_size - 1 - got);
+            if (n > 0) { memcpy(reply + got, buf, (size_t)n); got += (size_t)n; reply[got] = 0; }
+            if (reply_size && got + 1 >= reply_size) break;
+        }
+    }
+    close(fd);
+    if (got < 12 || strncmp(reply, "HTTP/", 5) != 0) { snprintf(err, err_size, "The Roku sent an unexpected reply."); return -1; }
+    status = atoi(reply + 9);
+    { char *body = strstr(reply, "\r\n\r\n"); size_t keep = body ? strlen(body + 4) : 0; if (body) memmove(reply, body + 4, keep + 1); else reply[0] = 0; }
+    return status;
+}
+
+/* Runs a queued "roku" operation. "DeviceInfo" is the owner's connection test
+   (it reads the Roku's name and sends no key). */
+static cJSON *execute_roku(const cJSON *body) {
+    const char *id = lj_str(body, "deviceId"), *command = lj_str(body, "command");
+    char reply[2048], err[160] = "", path[96], message[256]; int status; cJSON *config = local_config(), *result;
+    const cJSON *device = config ? roku_find(config, id) : NULL; const struct roku_command *known;
+    if (!device) { cJSON_Delete(config); return command_result(0, "This Roku is no longer set up on the hub."); }
+    if (!strcmp(command, "DeviceInfo")) {
+        status = roku_http(lj_str(device, "host"), "GET", "/query/device-info", reply, sizeof(reply), err, sizeof(err));
+        if (status == 200) {
+            char *start = strstr(reply, "<friendly-device-name>"), *end = start ? strstr(start, "</friendly-device-name>") : NULL;
+            if (end) { start += strlen("<friendly-device-name>"); if (end - start > 80) end = start + 80; snprintf(message, sizeof(message), "%.*s", (int)(end - start), start); }
+            else snprintf(message, sizeof(message), "Roku answered");
+            result = command_result(1, message);
+        } else result = command_result(0, status < 0 ? err : "The Roku refused the request. Turn on network control in its settings.");
+        cJSON_Delete(config); return result;
+    }
+    known = roku_command_for(device, command);
+    if (!known) { cJSON_Delete(config); return command_result(0, "This Roku has no such command."); }
+    snprintf(path, sizeof(path), "/keypress/%s", known->key);
+    status = roku_http(lj_str(device, "host"), "POST", path, reply, sizeof(reply), err, sizeof(err));
+    if (status == 200) result = command_result(1, "sent");
+    else result = command_result(0, status < 0 ? err : "The Roku refused the key. Turn on network control in its settings.");
+    cJSON_AddStringToObject(result, "deviceId", id); cJSON_AddStringToObject(result, "command", command);
+    cJSON_Delete(config); return result;
+}
+
+/* GET /api/v1/network/devices: the same shape the remote screens already use for
+   other devices, without the address. */
+static void local_network_devices(int fd) {
+    cJSON *config = local_config(), *out = cJSON_CreateObject(), *list = cJSON_AddArrayToObject(out, "devices"); const cJSON *d;
+    cJSON_ArrayForEach(d, lj_get(config, "networkDevices")) {
+        cJSON *item = cJSON_CreateObject(), *commands = cJSON_CreateArray(); size_t i;
+        cJSON_AddStringToObject(item, "id", lj_str(d, "id")); cJSON_AddStringToObject(item, "name", lj_str(d, "name"));
+        cJSON_AddStringToObject(item, "type", "Roku"); cJSON_AddStringToObject(item, "model", lj_str(d, "model"));
+        for (i = 0; i < ROKU_COMMAND_COUNT; i++) if (!roku_commands[i].tv_only || roku_is_tv(d)) {
+            cJSON *c = cJSON_CreateObject(); cJSON_AddStringToObject(c, "name", roku_commands[i].name); cJSON_AddItemToArray(commands, c);
+        }
+        cJSON_AddItemToObject(item, "commands", commands); cJSON_AddItemToArray(list, item);
+    }
+    lj_reply(fd, "200 OK", out); cJSON_Delete(out); cJSON_Delete(config);
+}

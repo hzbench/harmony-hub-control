@@ -29,6 +29,16 @@ The installer restricts the original XMPP and HBus listeners to loopback,
 while preserving local HAL and engine access. This is not a claim that every
 stock service has been audited.
 
+## Network Devices
+
+A Roku set up under `networkDevices` is controlled over its plain-HTTP control
+port (8060), which has no authentication of its own. Only the owner can add or
+change one (it is part of the configuration, so it is revision-checked and
+backed up with it). The hub only contacts private-network IPv4 addresses
+(10/8, 172.16/12, 192.168/16) on that fixed port, so a configuration cannot
+point the hub at arbitrary hosts. Controllers can send a saved Roku's commands
+but cannot change its address.
+
 ## Data And Recovery
 
 Configuration saves use a global write lock, revision checks, atomic file
