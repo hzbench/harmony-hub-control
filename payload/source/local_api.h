@@ -125,6 +125,7 @@ static int local_begin(void) {
     return write_file_atomic(LOCAL_JOURNAL "/pending", "1", 1);
 }
 static cJSON *local_config(void) { return lj_read(LOCAL_CONFIG, MAX_REQUEST_BODY); }
+#include "local_roku.h"
 static int local_commit(cJSON *config) {
     cJSON *revision = lj_get(config, "revision");
     if (!cJSON_IsNumber(revision) || revision->valueint >= 2000000000) return -1;
@@ -506,6 +507,7 @@ static int local_coordinator(void) {
                 cJSON_DeleteItemFromObjectCaseSensitive(body, "phase"); cJSON_AddStringToObject(body, "phase", "start");
                 result = execute_ir_hold(body);
             } else if (strcmp(kind, "tap") == 0) result = execute_ir_tap(body);
+            else if (strcmp(kind, "roku") == 0) result = execute_roku(body);
             else if (strcmp(kind, "bluetooth") == 0) {
                 char msg[1024]; int lock = lock_ir(msg, sizeof(msg)), rc = -1;
                 if (lock >= 0) { rc = send_bt_saved_command(lj_str(body, "deviceId"), lj_str(body, "command"), msg, sizeof(msg)); close(lock); }
@@ -605,6 +607,7 @@ static int local_validate_config(const cJSON *o) {
             (strcmp(status, "untested") && strcmp(status, "responded") && strcmp(status, "no-response")) ||
             (!strcmp(status, "responded") && !safe_label(lj_str(a, "testedCommand")))) return 0;
     }
+    if (!local_validate_network_devices(o)) return 0;
     {   /* The hub's display name (optional, shown in the app); empty means unset. */
         cJSON *hub_name = lj_get(o, "hubName");
         if (hub_name && (!cJSON_IsString(hub_name) || strlen(hub_name->valuestring) > 40 ||
@@ -670,7 +673,7 @@ static int local_validate_config(const cJSON *o) {
             if (strcmp(lj_str(b, "kind"), "delay") != 0 &&
                 (!safe_label(lj_str(b, "deviceId")) || strlen(lj_str(b, "deviceId")) > 64 ||
                  !safe_label(lj_str(b, "command")) || strlen(lj_str(b, "command")) > 127 ||
-                 (strcmp(lj_str(b, "transport"), "ir") && strcmp(lj_str(b, "transport"), "bluetooth")))) return 0;
+                 (strcmp(lj_str(b, "transport"), "ir") && strcmp(lj_str(b, "transport"), "bluetooth") && strcmp(lj_str(b, "transport"), "roku")))) return 0;
         }
         if (total > 120000) return 0;
         /* Mirrors local_activity_run()'s own 7000-byte check on the same
@@ -950,7 +953,7 @@ static int local_dispatch(int fd, const struct request *r) {
         !strcmp(r->path, "/api/v1/commands/send") ||
         !strcmp(r->path, "/api/v1/activities/run") ||
         (get && !strcmp(r->path, "/api/v1/activities/state")) ||
-        (get && (!strcmp(r->path, "/api/v1/devices") || !strcmp(r->path, "/api/v1/bluetooth/devices") || !strcmp(r->path, "/api/v1/configuration"))));
+        (get && (!strcmp(r->path, "/api/v1/devices") || !strcmp(r->path, "/api/v1/bluetooth/devices") || !strcmp(r->path, "/api/v1/network/devices") || !strcmp(r->path, "/api/v1/configuration"))));
     if (!local_auth(fd, r, &ctl, owner)) return 1;
     if (!get) { body = lj_parse(r->body); if (!cJSON_IsObject(body)) { local_error(fd, "400 Bad Request", "Expected a valid JSON object without duplicate fields."); cJSON_Delete(body); return 1; } }
     if (!strcmp(r->path, "/api/v1/configuration") && get) {
@@ -961,11 +964,12 @@ static int local_dispatch(int fd, const struct request *r) {
         lj_reply(fd, "200 OK", out); cJSON_Delete(out);
     } else if (!strcmp(r->path, "/api/v1/devices") && get) render_inventory_json(fd);
     else if (!strcmp(r->path, "/api/v1/bluetooth/devices") && get) send_bt_devices_download(fd);
+    else if (!strcmp(r->path, "/api/v1/network/devices") && get) local_network_devices(fd);
     else if (!strcmp(r->path, "/api/v1/controllers")) local_controllers(fd, r, &ctl, body);
     else if (!strncmp(r->path, "/api/v1/operations", 18)) local_operations(fd, r, body, &ctl);
     else if (!strcmp(r->path, "/api/v1/activities/run") && !get) local_activity_run(fd, body, &ctl);
     else if (!strcmp(r->path, "/api/v1/commands/send") && !get) {
-        const char *kind = !strcmp(lj_str(body, "transport"), "bluetooth") ? "bluetooth" : !strcmp(lj_str(body, "mode"), "hold") ? "hold" : "tap";
+        const char *kind = !strcmp(lj_str(body, "transport"), "bluetooth") ? "bluetooth" : !strcmp(lj_str(body, "transport"), "roku") ? "roku" : !strcmp(lj_str(body, "mode"), "hold") ? "hold" : "tap";
         int lock = local_lock();
         if (!safe_label(lj_str(body, "deviceId")) || strlen(lj_str(body, "deviceId")) > 64 || !safe_label(lj_str(body, "command")) || strlen(lj_str(body, "command")) > 127 || r->body_len > 2048)
             local_error(fd, "400 Bad Request", "Invalid saved command.");

@@ -1,6 +1,8 @@
 """Disposable Linux integration tests; never connect to a physical hub."""
 import hashlib
 import http.client
+import http.server
+import threading
 import json
 import os
 from pathlib import Path
@@ -165,7 +167,10 @@ def run():
                 "LOCAL_INIT_FILE": base / "init.sh", "LOCAL_MAINTENANCE_FILE": base / "maintenance.sh"}
         source = ROOT / "payload/source"
         binary = base / "webui"
-        subprocess.run([os.environ.get("CC", "gcc"), "-Os", "-DCJSON_NESTING_LIMIT=32", "-DLOCAL_TEST_NO_REBOOT=1"] +
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0)); roku_port = probe.getsockname()[1]
+        subprocess.run([os.environ.get("CC", "gcc"), "-Os", "-DCJSON_NESTING_LIMIT=32", "-DLOCAL_TEST_NO_REBOOT=1",
+                        f"-DLOCAL_ROKU_PORT={roku_port}", "-DLOCAL_TEST_ROKU_LOOPBACK=1"] +
                        [f'-D{k}="{v}"' for k, v in defs.items()] +
                        [str(source / p) for p in ("codex_webui.c", "vendor/cJSON.c", "vendor/monocypher.c", "vendor/monocypher-ed25519.c")] +
                        ["-o", str(binary)], check=True)
@@ -391,6 +396,72 @@ def run():
                 if result["state"] == "cancelled": break
                 time.sleep(.05)
             else: raise AssertionError("revoked operation did not cancel")
+            # Roku over the network, against a fake that records what it is sent.
+            seen = []
+            class FakeRoku(http.server.BaseHTTPRequestHandler):
+                def log_message(self, *args): pass
+                def reply(self, status, body=b""):
+                    self.send_response(status); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+                def do_GET(self):
+                    seen.append(("GET", self.path))
+                    self.reply(200, b"<device-info><friendly-device-name>Fake Roku</friendly-device-name></device-info>" if self.path == "/query/device-info" else b"")
+                def do_POST(self):
+                    seen.append(("POST", self.path))
+                    self.reply(403 if self.path == "/keypress/Search" else 200)
+            fake = http.server.ThreadingHTTPServer(("127.0.0.1", roku_port), FakeRoku)
+            threading.Thread(target=fake.serve_forever, daemon=True).start()
+            def roku_config(devices):
+                current = request("configuration", cookie=cookie)[1]
+                current["networkDevices"] = devices
+                return request("configuration", {"revision": current["revision"], "configuration": current}, cookie, csrf)[0]
+            tv = {"id": "roku_tv", "name": "Living Room TV", "kind": "roku", "model": "tv", "host": "127.0.0.1"}
+            box = {"id": "roku_box", "name": "Bedroom box", "kind": "roku", "model": "player", "host": "127.0.0.1"}
+            for bad in ({**tv, "host": "8.8.8.8"}, {**tv, "host": "localhost"}, {**tv, "host": "10.0.0.1:80"}, {**tv, "host": "300.1.1.1"},
+                        {**tv, "model": "stick"}, {**tv, "kind": "other"}, {**tv, "name": ""}, {**tv, "id": "bad id"}):
+                assert roku_config([bad]) == 400, bad
+            assert roku_config([tv, dict(box, id="roku_tv")]) == 400, "duplicate ids"
+            assert roku_config([dict(tv, id=f"r{i}") for i in range(9)]) == 400, "at most 8"
+            assert roku_config([tv, box]) == 200
+            assert request("network/devices")[0] == 401
+            listed = {d["id"]: d for d in request("network/devices", cookie=cookie)[1]["devices"]}
+            names = lambda d: [c["name"] for c in d["commands"]]
+            assert set(listed) == {"roku_tv", "roku_box"} and "host" not in listed["roku_tv"]
+            assert {"Volume up", "Power", "HDMI 1", "Home", "OK"} <= set(names(listed["roku_tv"]))
+            assert "Home" in names(listed["roku_box"]) and not {"Volume up", "Power", "HDMI 1"} & set(names(listed["roku_box"])), "players have no TV commands"
+            assert "Enter" not in names(listed["roku_tv"]) and len(set(names(listed["roku_tv"]))) == len(names(listed["roku_tv"]))
+            def roku_send(device, command):
+                status, op, _ = request("commands/send", {"deviceId": device, "command": command, "transport": "roku", "mode": "tap"}, cookie, csrf)
+                assert status == 202, (status, op)
+                for _ in range(100):
+                    result = request("operations?id=" + op["id"], cookie=cookie)[1]
+                    if result["state"] in ("completed", "failed", "cancelled"): return result
+                    time.sleep(.05)
+                raise AssertionError("Roku operation did not finish")
+            result = roku_send("roku_tv", "Volume up")
+            assert result["state"] == "completed" and ("POST", "/keypress/VolumeUp") in seen, result
+            assert roku_send("roku_tv", "OK")["state"] == "completed" and ("POST", "/keypress/Select") in seen
+            result = roku_send("roku_box", "Volume up")
+            assert result["state"] == "failed" and "no such command" in result["result"]["error"], result
+            result = roku_send("roku_tv", "DeviceInfo")
+            assert result["state"] == "completed" and result["result"]["reply"] == "Fake Roku" and ("GET", "/query/device-info") in seen, result
+            result = roku_send("roku_box", "Search")
+            assert result["state"] == "failed" and "network control" in result["result"]["error"], result
+            assert roku_send("roku_gone", "Home")["state"] == "failed"
+            assert roku_config([tv, dict(box, host="127.0.0.2")]) == 200
+            result = roku_send("roku_box", "Home")
+            assert result["state"] == "failed" and "reach the Roku" in result["result"]["error"], result
+            # A Roku command can be an activity step; an unknown transport still cannot.
+            current = request("configuration", cookie=cookie)[1]
+            current["activities"] = [{"id": "watch", "name": "Watch", "steps": [{"deviceId": "roku_tv", "command": "Home", "transport": "roku"}], "exitSteps": []}]
+            assert request("configuration", {"revision": current["revision"], "configuration": current}, cookie, csrf)[0] == 200
+            current = request("configuration", cookie=cookie)[1]
+            current["activities"][0]["steps"][0]["transport"] = "carrier-pigeon"
+            assert request("configuration", {"revision": current["revision"], "configuration": current}, cookie, csrf)[0] == 400
+            current = request("configuration", cookie=cookie)[1]; current["activities"] = []
+            assert request("configuration", {"revision": current["revision"], "configuration": current}, cookie, csrf)[0] == 200
+            assert roku_config([]) == 200 and request("network/devices", cookie=cookie)[1]["devices"] == []
+            fake.shutdown()
+            print("Roku: validation, private-address rule, command catalog, key sends, test query, refusals and activity steps passed")
             # Valid signature accepted; changed signature/platform/manifest rejected before staging.
             from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
             from cryptography.hazmat.primitives import serialization
