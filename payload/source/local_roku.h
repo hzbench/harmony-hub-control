@@ -46,12 +46,50 @@ static int roku_host_ok(const char *host) {
     return b[0] == 10 || (b[0] == 172 && b[1] >= 16 && b[1] <= 31) || (b[0] == 192 && b[1] == 168);
 }
 
+/* Favourite channels: saved on the Roku, each becomes a command named after the channel that
+   launches it (POST /launch/<id>). The id goes into a URL path, so it is held to a strict set. */
+#define ROKU_CHANNELS_MAX 12
+#define ROKU_APPS_MAX 40
+#define ROKU_APPS_BUFFER 24576
+static int roku_channel_id_ok(const char *s) {
+    size_t n = strlen(s), i;
+    if (n == 0 || n > 24) return 0;
+    for (i = 0; i < n; i++) if (!isalnum((unsigned char)s[i]) && s[i] != '.' && s[i] != '_' && s[i] != '-') return 0;
+    return 1;
+}
+static int roku_channel_name_ok(const char *s) {
+    size_t n = strlen(s);
+    return safe_label(s) && n <= 40 && s[0] != ' ' && s[n - 1] != ' ';
+}
+/* A channel's name is also a command name, so it must not collide with the built-in ones. */
+static int roku_name_reserved(const char *name) {
+    size_t i;
+    if (!strcasecmp(name, "DeviceInfo") || !strcasecmp(name, "ListApps")) return 1;
+    for (i = 0; i < ROKU_COMMAND_COUNT; i++) if (!strcasecmp(name, roku_commands[i].name)) return 1;
+    return 0;
+}
+static int roku_channels_valid(const cJSON *d) {
+    cJSON *list = lj_get(d, "channels"), *a, *b;
+    if (!list) return 1;
+    if (!cJSON_IsArray(list) || cJSON_GetArraySize(list) > ROKU_CHANNELS_MAX) return 0;
+    cJSON_ArrayForEach(a, list) {
+        if (!cJSON_IsObject(a) || !roku_channel_id_ok(lj_str(a, "id")) || !roku_channel_name_ok(lj_str(a, "name")) || roku_name_reserved(lj_str(a, "name"))) return 0;
+        for (b = a->next; b; b = b->next) if (!strcmp(lj_str(a, "id"), lj_str(b, "id")) || !strcasecmp(lj_str(a, "name"), lj_str(b, "name"))) return 0;
+    }
+    return 1;
+}
+static const cJSON *roku_channel_for(const cJSON *device, const char *name) {
+    const cJSON *c;
+    cJSON_ArrayForEach(c, lj_get(device, "channels")) if (!strcmp(lj_str(c, "name"), name)) return c;
+    return NULL;
+}
+
 static int roku_device_valid(const cJSON *d) {
     return cJSON_IsObject(d) && safe_run_id(lj_str(d, "id")) && strlen(lj_str(d, "id")) <= 64 &&
         safe_label(lj_str(d, "name")) && strlen(lj_str(d, "name")) <= 64 &&
         !strcmp(lj_str(d, "kind"), "roku") &&
         (!strcmp(lj_str(d, "model"), "tv") || !strcmp(lj_str(d, "model"), "player")) &&
-        roku_host_ok(lj_str(d, "host"));
+        roku_host_ok(lj_str(d, "host")) && roku_channels_valid(d);
 }
 
 /* `networkDevices` is optional; when present every entry must be well formed
@@ -120,6 +158,53 @@ static int roku_http(const char *host, const char *method, const char *path, cha
     return status;
 }
 
+/* The Roku's /query/apps answer: <app id="12" type="appl" ...>Netflix</app>. Only real channels
+   (type appl) with a usable id and name are kept, at most ROKU_APPS_MAX, with the XML escapes undone. */
+static int roku_attr(const char *tag, const char *end, const char *name, char *out, size_t size) {
+    char key[24]; const char *at, *close;
+    snprintf(key, sizeof(key), " %s=\"", name);
+    at = strstr(tag, key);
+    if (!at || at >= end) return 0;
+    at += strlen(key); close = memchr(at, '"', (size_t)(end - at));
+    if (!close || (size_t)(close - at) >= size) return 0;
+    memcpy(out, at, (size_t)(close - at)); out[close - at] = 0;
+    return 1;
+}
+static void roku_unescape(char *s) {
+    static const struct { const char *entity, *text; } table[] = {{"&amp;", "&"}, {"&lt;", "<"}, {"&gt;", ">"}, {"&quot;", "\""}, {"&apos;", "'"}, {"&#39;", "'"}};
+    char *out = s; size_t i;
+    while (*s) {
+        for (i = 0; i < sizeof(table) / sizeof(table[0]); i++) {
+            size_t n = strlen(table[i].entity);
+            if (!strncmp(s, table[i].entity, n)) { *out++ = table[i].text[0]; s += n; goto next; }
+        }
+        *out++ = *s++;
+    next:;
+    }
+    *out = 0;
+}
+static cJSON *roku_parse_apps(const char *xml) {
+    cJSON *apps = cJSON_CreateArray(); const char *p = xml;
+    while (cJSON_GetArraySize(apps) < ROKU_APPS_MAX && (p = strstr(p, "<app "))) {
+        const char *open_end = strchr(p, '>'), *close; char id[40], type[24], name[160];
+        if (!open_end) break;
+        close = strstr(open_end, "</app>");
+        if (!close) break;
+        if (roku_attr(p, open_end, "id", id, sizeof(id)) && roku_attr(p, open_end, "type", type, sizeof(type)) && !strcmp(type, "appl") &&
+            (size_t)(close - open_end - 1) < sizeof(name)) {
+            cJSON *seen; int dup = 0;
+            memcpy(name, open_end + 1, (size_t)(close - open_end - 1)); name[close - open_end - 1] = 0;
+            roku_unescape(name);
+            cJSON_ArrayForEach(seen, apps) if (!strcmp(lj_str(seen, "id"), id)) dup = 1;
+            if (!dup && roku_channel_id_ok(id) && roku_channel_name_ok(name)) {
+                cJSON *item = cJSON_CreateObject(); cJSON_AddStringToObject(item, "id", id); cJSON_AddStringToObject(item, "name", name); cJSON_AddItemToArray(apps, item);
+            }
+        }
+        p = close + 6;
+    }
+    return apps;
+}
+
 /* Runs a queued "roku" operation. "DeviceInfo" is the owner's connection test
    (it reads the Roku's name and sends no key). */
 static cJSON *execute_roku(const cJSON *body) {
@@ -137,8 +222,28 @@ static cJSON *execute_roku(const cJSON *body) {
         } else result = command_result(0, status < 0 ? err : "The Roku refused the request. Turn on network control in its settings.");
         cJSON_Delete(config); return result;
     }
+    if (!strcmp(command, "ListApps")) {
+        char *xml = malloc(ROKU_APPS_BUFFER);
+        if (!xml) { cJSON_Delete(config); return command_result(0, "Not enough memory to list channels."); }
+        status = roku_http(lj_str(device, "host"), "GET", "/query/apps", xml, ROKU_APPS_BUFFER, err, sizeof(err));
+        if (status == 200) {
+            cJSON *apps = roku_parse_apps(xml);
+            snprintf(message, sizeof(message), "%d channels", cJSON_GetArraySize(apps));
+            result = command_result(1, message); cJSON_AddItemToObject(result, "apps", apps);
+        } else result = command_result(0, status < 0 ? err : "The Roku refused the request. Turn on network control in its settings.");
+        free(xml); cJSON_Delete(config); return result;
+    }
     known = roku_command_for(device, command);
-    if (!known) { cJSON_Delete(config); return command_result(0, "This Roku has no such command."); }
+    if (!known) {
+        const cJSON *channel = roku_channel_for(device, command);
+        if (!channel) { cJSON_Delete(config); return command_result(0, "This Roku has no such command."); }
+        snprintf(path, sizeof(path), "/launch/%s", lj_str(channel, "id"));
+        status = roku_http(lj_str(device, "host"), "POST", path, reply, sizeof(reply), err, sizeof(err));
+        if (status == 200) result = command_result(1, "launched");
+        else result = command_result(0, status < 0 ? err : "The Roku couldn't open that channel. Is it still installed?");
+        cJSON_AddStringToObject(result, "deviceId", id); cJSON_AddStringToObject(result, "command", command);
+        cJSON_Delete(config); return result;
+    }
     snprintf(path, sizeof(path), "/keypress/%s", known->key);
     status = roku_http(lj_str(device, "host"), "POST", path, reply, sizeof(reply), err, sizeof(err));
     if (status == 200) result = command_result(1, "sent");
@@ -240,6 +345,9 @@ static void local_network_devices(int fd) {
         for (i = 0; i < ROKU_COMMAND_COUNT; i++) if (!roku_commands[i].tv_only || roku_is_tv(d)) {
             cJSON *c = cJSON_CreateObject(); cJSON_AddStringToObject(c, "name", roku_commands[i].name); cJSON_AddItemToArray(commands, c);
         }
+        { const cJSON *channel; cJSON_ArrayForEach(channel, lj_get(d, "channels")) {
+            cJSON *c = cJSON_CreateObject(); cJSON_AddStringToObject(c, "name", lj_str(channel, "name")); cJSON_AddItemToArray(commands, c);
+        } }
         cJSON_AddItemToObject(item, "commands", commands); cJSON_AddItemToArray(list, item);
     }
     lj_reply(fd, "200 OK", out); cJSON_Delete(out); cJSON_Delete(config);

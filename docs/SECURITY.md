@@ -39,6 +39,8 @@ backed up with it). The hub only contacts private-network IPv4 addresses
 point the hub at arbitrary hosts. Controllers can send a saved Roku's commands
 but cannot change its address. Typed text is limited to 64 characters per request (printable characters plus Backspace and Enter, no control or line-separator characters) and is sent one key press at a time. Because it can be a password, the text is removed from the stored operation record as soon as typing ends; only its length is kept. While a request is queued or running its text is in the hub's temporary operation file, which is cleared on reboot.
 
+Favourite channels are saved on the Roku's record (so only the owner can change them). Each is a name and an id; the id goes into the Roku's `/launch/<id>` URL, so it is limited to letters, digits, `.`, `_` and `-`, and names may not repeat or reuse a built-in command name. The list of installed channels the owner can load is read from the Roku and filtered the same way before it is shown.
+
 ## Data And Recovery
 
 Configuration saves use a global write lock, revision checks, atomic file
