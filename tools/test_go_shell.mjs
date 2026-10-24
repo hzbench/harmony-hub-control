@@ -1035,6 +1035,7 @@ console.log('The owner can name the hub and the app is told');
       context.api=async(path,body)=>{if(path==='configuration'&&body){await new Promise(resolve=>{finishWrite=resolve;});}return heldApi(path,body);};
       const writesBefore=writes.length,saving=tap('[data-save-channels]');for(let n=0;n<20;n++)await Promise.resolve();
       sheetEl.onchange({target:{closest:sel=>sel==='[data-channel]'?{checked:true,dataset:{channel:'8',name:'Late tick'}}:null}});
+      assert.doesNotMatch(list.innerHTML,/Late tick/,'the sheet does not show a tick that will not be saved');
       finishWrite();await saving;context.api=heldApi;
       assert.deepEqual(writes.at(-1).configuration.networkDevices[0].channels,[{id:'1',name:'Netflix'}],'a tick made during the save is not part of it');
     }
