@@ -531,21 +531,16 @@ function createTyper(deviceId, onReset=()=>{}) {
 }
 function openKeyboard(device) {
   const sheet = $('sheet');
-  sheet.innerHTML = `<div class="sheet-handle" aria-hidden="true"></div><h2 id="sheet-title">Type on ${escape(device.name)}</h2>
+  presentSheet(sheet, `<div class="sheet-handle" aria-hidden="true"></div><h2 id="sheet-title">Type on ${escape(device.name)}</h2>
     <input id="keyboard-input" class="keyboard-input" type="text" enterkeyhint="send" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="Text to type on ${escape(device.name)}">
     <p class="sheet-note">Open a text field on the device first. Letters go as you type them, and Enter presses Enter.</p>
-    <button type="button" class="sheet-cancel sheet-done" data-sheet-cancel>Done</button>`;
+    <button type="button" class="sheet-cancel sheet-done" data-sheet-cancel>Done</button>`);
   const input = sheet.querySelector('#keyboard-input'), typer = createTyper(device.id,()=>{input.value = '';});
   const enter = event => {event.preventDefault();typer.enter();input.value = '';};
   input.oninput = () => typer.change(input.value);
   input.onkeydown = event => {if(event.key==='Enter')enter(event);};
   // Some soft keyboards report their Enter key only as a line-break edit.
   input.onbeforeinput = event => {if(event.inputType==='insertLineBreak')enter(event);};
-  sheet.onclick = event => {if(event.target===sheet||event.target.closest('[data-sheet-cancel]'))sheet.close();};
-  sheet.showModal();
-  history.pushState({sheet:true},'');sheetPushed = true;
-  sheet.onclose = () => {if(sheetPushed){sheetPushed = false;history.back();}};
-  window.onpopstate = () => {if(sheet.open){sheetPushed = false;sheet.close();}};
   // The Android app asks the page before it acts on the hardware Back key.
   window.harmonyHandleBack = () => {if(sheet.open){sheet.close();return true;}return false;};
   input.focus();
@@ -731,20 +726,47 @@ function keyboardSettingHtml(selected) {
     <select id="keyboard-device" data-keyboard-device${devices.length||selected?'':' disabled'}><option value="">None</option>${devices.map(d=>`<option value="${escape(d.id)}"${d.id===selected?' selected':''}>${escape(d.name)}</option>`).join('')}${missing?`<option value="${escape(selected)}" selected>Missing device</option>`:''}</select>
     <small>${devices.length||selected?'Adds a Keyboard button to this remote that types on this device.':'A device that can type, such as a Roku, has to be added first (Setup › Roku).'}</small></div>`;
 }
+// What used to be a paragraph above the grid, which pushed the buttons down.
+function editorHelpHtml() {
+  return `<div class="sheet-handle" aria-hidden="true"></div><h2 id="sheet-title">Editing your remote</h2>
+    <ul class="help-list">
+      <li>Tap an empty square to add a button.</li>
+      <li>Press and hold a button to remove it.</li>
+      <li>Add arrow pad puts the arrow keys in a cross; Move arrow pad changes where it sits.</li>
+      <li>Add row makes room for more buttons.</li>
+      <li>The bottom row stays on screen while you use the remote.</li>
+      <li>Nothing changes until you tap Save.</li>
+    </ul>
+    <button type="button" class="sheet-cancel sheet-done" data-sheet-cancel>Done</button>`;
+}
 function editorHtml(model, ui) {
   const full = zoneList(model,'cells').length>=MAX_CELLS, pad = arrowPadPlan(model);
-  return `<p class="edit-hint">${ui.placing?'Tap where the arrow pad should go.':'Tap an empty square to add a button. Press and hold a button to remove it. The bottom row stays on screen while you use the remote.'}</p>
+  return `${ui.placing?'<p class="edit-hint">Tap where the arrow pad should go.</p>':''}
     ${editGridHtml(model,ui)}
     ${ui.placing?'<button class="add-row" type="button" data-place-cancel>Cancel</button>'
       :pad.crossed?`<button class="add-row" type="button" data-move-pad>${icon('Plus')}Move arrow pad</button>`
       :`<button class="add-row" type="button" data-add-pad ${pad.add.length?'':'disabled'}>${icon('Plus')}Add arrow pad</button>${pad.reason?`<p class="edit-hint">${pad.reason}</p>`:''}`}
     ${full?'<p class="edit-hint">The remote has reached its button limit.</p>':'<button class="add-row" type="button" data-add-row>'+icon('Plus')+'Add row</button>'}
     ${keyboardSettingHtml(model.screen.keyboard)}
-    <div class="pinned">${editPinnedHtml(model)}</div>`;
+    <div class="pinned"><p class="pinned-caption">Fixed bottom row</p>${editPinnedHtml(model)}</div>`;
 }
 
 const LONG_PRESS_MS = 350, MOVE_SLOP = 10;
 let sheetPushed = false;  // the open add sheet owns one history entry, so Back closes just the sheet
+// Shows `html` in the shared bottom sheet. The open sheet owns one history entry, so
+// the Back gesture closes just the sheet. Callers deal with their own Back hook.
+// Tapping the backdrop or a [data-sheet-cancel] button closes it; `onClick` sees the other taps.
+function presentSheet(sheet, html, onClick) {
+  sheet.innerHTML = html;
+  sheet.onclick = event => {
+    if(event.target===sheet||event.target.closest('[data-sheet-cancel]'))return sheet.close();
+    onClick?.(event);
+  };
+  sheet.showModal();
+  history.pushState({sheet:true},'');sheetPushed = true;
+  sheet.onclose = () => {if(sheetPushed){sheetPushed = false;history.back();}};
+  window.onpopstate = () => {if(sheet.open){sheetPushed = false;sheet.close();}};
+}
 let leaveGuard = null;  // asked before the back arrow leaves a screen; false keeps you there
 function renderEditor(ctx) {
   const id = ctx.params[0];
@@ -761,7 +783,7 @@ function renderEditor(ctx) {
   const draw = focus => {
     if(!here())return;
     ui.dirty = layoutShape(draft)!==base;
-    ctx.actions.innerHTML = `<button type="button" class="cancel-button" data-cancel ${ui.saving?'disabled':''}>Cancel</button><button type="button" class="save-button" data-save ${ui.dirty&&!ui.saving?'':'disabled'}>${ui.saving?'Saving…':'Save'}</button>`;
+    ctx.actions.innerHTML = `<button type="button" class="header-action" data-help aria-label="How editing works" title="How editing works" ${ui.saving?'disabled':''}>${icon('CircleHelp')}</button><button type="button" class="cancel-button" data-cancel ${ui.saving?'disabled':''}>Cancel</button><button type="button" class="save-button" data-save ${ui.dirty&&!ui.saving?'':'disabled'}>${ui.saving?'Saving…':'Save'}</button>`;
     ctx.content.innerHTML = `<div class="editor">${editorHtml(model(),ui)}</div>`;
     if(focus)ctx.content.querySelector(`[data-zone="${focus.zone}"][data-slot="${focus.slot}"]`)?.focus();
   };
@@ -792,21 +814,17 @@ function renderEditor(ctx) {
   };
   const openSheet = (zone, slot, corner) => {
     const options = availableCommands(model());
-    sheet.innerHTML = `<div class="sheet-handle" aria-hidden="true"></div><h2 id="sheet-title">Add a button</h2>
+    presentSheet(sheet, `<div class="sheet-handle" aria-hidden="true"></div><h2 id="sheet-title">Add a button</h2>
       ${options.length?`<ul class="sheet-list">${options.map((o,i)=>`<li><button type="button" data-pick="${i}"><span class="sheet-icon">${o.control?.[2]?icon(o.control[2]):''}</span>${escape(o.device.name)}: ${escape(o.command)}</button></li>`).join('')}</ul>`
         :`<p>${(model().steps).some(s=>s.deviceId)?'Every command from this activity’s devices is already on the remote.':'This activity has no devices yet. Add one to its start actions under Manage activities.'}</p>`}
-      <button type="button" class="sheet-cancel" data-sheet-cancel>Cancel</button>`;
-    sheet.onclick = event => {
-      if(event.target===sheet||event.target.closest('[data-sheet-cancel]'))return sheet.close();
+      <button type="button" class="sheet-cancel" data-sheet-cancel>Cancel</button>`,
+    event => {
       const pick = event.target.closest('[data-pick]');if(!pick)return;
       const o = options[+pick.dataset.pick];sheet.close();
       if(addButton(model(),zone,slot,o.device.id,o.command,corner))changed({zone,slot});
-    };
-    sheet.showModal();
-    history.pushState({sheet:true},'');sheetPushed = true;
-    sheet.onclose = () => {if(sheetPushed){sheetPushed = false;history.back();}};
-    window.onpopstate = () => {if(sheet.open){sheetPushed = false;sheet.close();}};
+    });
   };
+  const openHelp = () => presentSheet(sheet, editorHelpHtml());
   // Removing leaves an empty slot where the finger was: ignore the click that
   // the finger lifting would otherwise send to it.
   let suppressClickUntil = 0;
@@ -856,7 +874,7 @@ function renderEditor(ctx) {
   ctx.content.onchange = event => {
     if(event.target.closest?.('[data-keyboard-device]')){draft.keyboard = event.target.value;changed();}
   };
-  ctx.actions.onclick = event => {if(event.target.closest('[data-save]'))save();else if(event.target.closest('[data-cancel]'))cancel();};
+  ctx.actions.onclick = event => {if(event.target.closest('[data-save]'))save();else if(event.target.closest('[data-cancel]'))cancel();else if(event.target.closest('[data-help]'))openHelp();};
   draw();
 }
 function placeholder(ctx, text) {ctx.content.innerHTML=`<div class="placeholder"><p>${escape(text)}</p></div>`;}
@@ -875,6 +893,7 @@ function show() {
   $('back').dataset.parent = screen.parent||'';
   $('back').dataset.href = screen.parent ? routeHash(screen.parent,...(screen.parentParams?.(params)||[])) : '';
   document.body.dataset.reserveNotice = String(!!screen.reserveNotice);
+  document.body.dataset.screen = name;
   $('connection').hidden = !!screen.parent;
   $('tabs').hidden = !!screen.parent;
   $('tabs').querySelectorAll('[data-tab]').forEach(a=>{if(a.dataset.tab===screen.tab)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current');});
