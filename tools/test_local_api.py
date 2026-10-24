@@ -176,8 +176,11 @@ def run():
         server = subprocess.Popen([binary, str(port)], stdout=log, stderr=log, start_new_session=True)
         coordinator = None
 
+        # Config writes fsync a journal plus every resource file and then sync() the
+        # whole filesystem, which a shared CI disk can stretch past a few seconds.
+        # The limit only has to tell "slow" from "hung".
         def request(path, body=None, cookie="", csrf="", extra=None, raw=None):
-            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
             headers = {"Host": f"127.0.0.1:{port}", "Cookie": cookie, "X-Harmony-CSRF": csrf}
             headers.update(extra or {})
             text = raw if raw is not None else json.dumps(body) if body is not None else None
