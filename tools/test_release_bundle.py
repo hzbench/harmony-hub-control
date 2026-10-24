@@ -36,6 +36,31 @@ with tempfile.TemporaryDirectory() as directory:
     assert sorted(e["name"] for e in manifest["files"]) == sorted(hub_names)
     sizes = {e["name"]: e["size"] for e in manifest["files"]}
     assert max(sizes.values()) <= 1_500_000 and sum(sizes.values()) <= 2_500_000, "inside the hub's size limits"
+    # Limits are enforced when building, not only when the hub refuses the install.
+    def refused(version, size):
+        (work / "codex_webui").write_bytes(b"x" * size)
+        try:
+            rb.bundle(key, version, files)
+        except ValueError:
+            return True
+        finally:
+            (work / "codex_webui").write_bytes(b"codex_webui" * 100)
+        return False
+    assert refused("1.2.3", 1_500_001), "a file over the per-file limit"
+    assert not refused("1.2.3", 1_500_000)
+    for n in ("codex_hbus", "codex_hal_ltcp", "codex_bthid_keyboard"):
+        (work / n).write_bytes(b"x" * 1_400_000)
+    assert refused("1.2.3", 10), "a bundle over the total limit"
+    for n in ("codex_hbus", "codex_hal_ltcp", "codex_bthid_keyboard"):
+        (work / n).write_bytes(n.encode() * 100)
+    for bad_version in ("", "1" * 33, 'a"b', "v 1", "1.2.3\n"):
+        assert refused(bad_version, 10), repr(bad_version)
+    # A file that is not in the manifest is caught by verify.
+    try:
+        rb.verify({**release, "files": {**release["files"], "extra": "AA=="}}, rb.public_key_hex(key))
+        raise AssertionError("an unlisted file verified")
+    except ValueError:
+        pass
     # The version is in the migrations.json that gets installed, next to the unchanged migration range.
     installed = json.loads(__import__("base64").b64decode(release["files"]["migrations.json"]))
     assert installed == {**json.loads(rb.FILES["migrations.json"].read_text()), "version": "1.2.3"}

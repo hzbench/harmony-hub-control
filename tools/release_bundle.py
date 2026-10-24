@@ -3,6 +3,7 @@ import argparse
 import base64
 import hashlib
 import json
+import re
 from pathlib import Path
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -19,17 +20,33 @@ FILES.update({"localcore.lua": ROOT / "payload/core/localcore.lua",
               "migrations.json": ROOT / "payload/core/migrations.json"})
 
 
+# What the hub's updater accepts (payload/source/local_update.h); a bundle outside them is only refused at install time.
+MAX_FILE_BYTES, MAX_TOTAL_BYTES, MAX_MIGRATIONS_BYTES = 1_500_000, 2_500_000, 4096
+VERSION = re.compile(r"[0-9A-Za-z._+-]{1,32}")   # the hub shows at most 32 characters of safe text
+
+
 def migrations(path, version):
     """The installed migrations.json is replaced and rolled back with each release, so the version
     is recorded in it (the hub reports it from there); the migration range itself is untouched."""
     data = json.loads(path.read_text())
     data["version"] = version
-    return json.dumps(data, separators=(",", ":")).encode()
+    raw = json.dumps(data, separators=(",", ":")).encode()
+    if len(raw) >= MAX_MIGRATIONS_BYTES:
+        raise ValueError("migrations.json is too large for the hub to read its version")
+    return raw
 
 
 def bundle(key, version, files):
+    if not VERSION.fullmatch(version):
+        raise ValueError(f"The version must be 1-32 letters, digits or . _ + - (got {version!r})")
     data = {name: path.read_bytes() for name, path in files.items()}
     data["migrations.json"] = migrations(files["migrations.json"], version)
+    too_big = [f"{name} ({len(raw):,} bytes)" for name, raw in data.items() if len(raw) > MAX_FILE_BYTES]
+    if too_big:
+        raise ValueError(f"Over the hub's {MAX_FILE_BYTES:,}-byte file limit: " + ", ".join(too_big))
+    total = sum(len(raw) for raw in data.values())
+    if total > MAX_TOTAL_BYTES:
+        raise ValueError(f"The release is {total:,} bytes; the hub accepts at most {MAX_TOTAL_BYTES:,}")
     manifest = json.dumps({"schemaVersion": 1, "version": version, "platform": "pimento-4.15.600",
         "files": [{"name": name, "size": len(raw), "sha512": hashlib.sha512(raw).hexdigest()}
                   for name, raw in data.items()]}, separators=(",", ":"))
@@ -43,6 +60,9 @@ def verify(release, public_key_hex):
     Ed25519PublicKey.from_public_bytes(bytes.fromhex(public_key_hex)).verify(
         bytes.fromhex(release["signature"]), release["manifest"].encode())
     manifest = json.loads(release["manifest"])
+    names = [entry["name"] for entry in manifest["files"]]
+    if sorted(names) != sorted(release["files"]):
+        raise ValueError("The bundle's files are not the files its manifest lists")
     for entry in manifest["files"]:
         raw = base64.b64decode(release["files"][entry["name"]])
         if len(raw) != entry["size"] or hashlib.sha512(raw).hexdigest() != entry["sha512"]:

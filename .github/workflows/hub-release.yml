@@ -43,11 +43,20 @@ jobs:
             git fetch --quiet origin main
             git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
               || { echo "::error::$GITHUB_REF_NAME is not on main. Merge first, then tag the merge commit."; exit 1; }
-            passed=$(gh run list --workflow Test --commit "$GITHUB_SHA" --status success --json databaseId --jq length)
-            [[ "$passed" -gt 0 ]] || { echo "::error::The Test workflow has not passed on this commit."; exit 1; }
           else
             [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "::error::Run this workflow from main."; exit 1; }
           fi
+          # The Test run on this exact commit must pass, tag or hand-run. It may still be running if
+          # the tag was pushed right after the merge, so wait for it (up to 15 minutes).
+          for attempt in $(seq 1 30); do
+            passed=$(gh run list --workflow Test --commit "$GITHUB_SHA" --status success --json databaseId --jq length)
+            [[ "$passed" -gt 0 ]] && exit 0
+            running=$(gh run list --workflow Test --commit "$GITHUB_SHA" --json status --jq '[.[] | select(.status != "completed")] | length')
+            [[ "$running" -gt 0 ]] || break
+            echo "The Test workflow is still running on this commit; waiting..."
+            sleep 30
+          done
+          echo "::error::The Test workflow has not passed on this commit."; exit 1
 
       - name: Work out the version
         id: version
