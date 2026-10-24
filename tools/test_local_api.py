@@ -398,16 +398,21 @@ def run():
             else: raise AssertionError("revoked operation did not cancel")
             # Roku over the network, against a fake that records what it is sent.
             seen = []
+            apps_xml = [b'<apps><app id="12" type="appl" version="4.2">Netflix</app><app id="2285" type="appl" version="2.1">Hulu &amp; More</app>'
+                        b'<app id="tvinput.hdmi1" type="tvin" version="1.0.0">HDMI 1</app><app id="bad id" type="appl" version="1">Spaced</app>'
+                        b'<app id="13" type="appl" version="1">Quote "x"</app><app id="12" type="appl" version="9">Netflix again</app>'
+                        b'<app id="20" type="appl" version="1"/><app id="21" type="appl" version="1">Caf&#233; &#x26; Bar</app></apps>']
             class FakeRoku(http.server.BaseHTTPRequestHandler):
                 def log_message(self, *args): pass
                 def reply(self, status, body=b""):
                     self.send_response(status); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
                 def do_GET(self):
                     seen.append(("GET", self.path))
+                    if self.path == "/query/apps": return self.reply(200, apps_xml[0])
                     self.reply(200, b"<device-info><friendly-device-name>Fake Roku</friendly-device-name></device-info>" if self.path == "/query/device-info" else b"")
                 def do_POST(self):
                     seen.append(("POST", self.path))
-                    self.reply(403 if self.path in ("/keypress/Search", "/keypress/Lit_Z") else 200)
+                    self.reply(403 if self.path in ("/keypress/Search", "/keypress/Lit_Z") else 404 if self.path == "/launch/404" else 200)
             fake = http.server.ThreadingHTTPServer(("127.0.0.1", roku_port), FakeRoku)
             threading.Thread(target=fake.serve_forever, daemon=True).start()
             def roku_config(devices):
@@ -502,6 +507,42 @@ def run():
             assert result["state"] == "failed" and "reach the Roku" in result["result"]["error"], result
             result = roku_type("roku_box", "abc")
             assert result["state"] == "failed" and result["result"]["error"].startswith("Typed 0 of 3 characters. Could not reach the Roku"), result
+            # Favourite channels: saved on the Roku, listed as commands, launched by id.
+            channels = [{"id": "12", "name": "Netflix"}, {"id": "2285", "name": "Hulu"}]
+            assert roku_config([dict(tv, channels=channels), box]) == 200
+            for bad in ("nope", {"id": "12"}, [{"id": "bad id", "name": "X"}], [{"id": "../x", "name": "X"}], [{"id": "", "name": "X"}], [{"id": "1", "name": ""}],
+                        [{"id": "1", "name": " Lead"}], [{"id": "1", "name": "Trail "}], [{"id": "1", "name": 'Quo"te'}], [{"id": "1", "name": "x" * 41}],
+                        [{"id": "1", "name": "Home"}], [{"id": "1", "name": "volume UP"}], [{"id": "1", "name": "ListApps"}], [{"id": "1", "name": "DeviceInfo"}],
+                        [{"id": "1", "name": "Hulu"}, {"id": "2", "name": "hulu"}], [{"id": "1", "name": "A"}, {"id": "1", "name": "B"}],
+                        [{"id": str(i), "name": f"C{i}"} for i in range(13)]):
+                assert roku_config([dict(tv, channels=bad), box]) == 400, bad
+            assert request("configuration", cookie=cookie)[1]["networkDevices"][0]["channels"] == channels, "a refused save changes nothing"
+            listed = {d["id"]: d for d in request("network/devices", cookie=cookie)[1]["devices"]}
+            assert names(listed["roku_tv"])[-2:] == ["Netflix", "Hulu"] and "Netflix" not in names(listed["roku_box"]), "favourites follow the built-in commands, per Roku"
+            del seen[:]
+            result = roku_send("roku_tv", "Netflix")
+            assert result["state"] == "completed" and seen == [("POST", "/launch/12")], (result, seen)
+            assert roku_send("roku_tv", "Hulu")["state"] == "completed" and seen[-1] == ("POST", "/launch/2285")
+            result = roku_send("roku_box", "Netflix")
+            assert result["state"] == "failed" and "no such command" in result["result"]["error"], "favourites belong to one Roku"
+            assert roku_config([dict(tv, channels=[{"id": "404", "name": "Gone"}]), box]) == 200
+            result = roku_send("roku_tv", "Gone")
+            assert result["state"] == "failed" and "still installed" in result["result"]["error"], result
+            # Asking the Roku what is installed: real channels only, tidy names, no repeats.
+            result = roku_send("roku_tv", "ListApps")
+            assert result["state"] == "completed" and result["result"]["reply"] == "3 channels", result
+            assert result["result"]["apps"] == [{"id": "12", "name": "Netflix"}, {"id": "2285", "name": "Hulu & More"}, {"id": "21", "name": "Caf\u00e9 & Bar"}], result["result"]["apps"]
+            assert result["result"]["skipped"] == 2, "an unusable id and a name with a quote are counted, not silently lost"
+            # A self-closing <app/> has no name and must not swallow the app after it.
+            apps_xml[0] = b'<apps><app id="1" type="appl" version="1"/><app id="2" type="appl" version="1">Two</app></apps>'
+            assert roku_send("roku_tv", "ListApps")["result"]["apps"] == [{"id": "2", "name": "Two"}]
+            apps_xml[0] = b'<apps><app id="1" type="appl" version="1">Un<app id="2" type="appl" version="1">Two</app></apps>'
+            assert roku_send("roku_tv", "ListApps")["result"]["apps"] == [{"id": "2", "name": "Two"}], "a broken tag is not read into the next one"
+            apps_xml[0] = ("<apps>" + "".join(f'<app id="{1000 + i}" type="appl" version="1">Channel {i}</app>' for i in range(60)) + "</apps>").encode()
+            result = roku_send("roku_tv", "ListApps")
+            assert result["state"] == "completed" and len(result["result"]["apps"]) == 40, "at most 40, and the result still fits the operation record"
+            assert roku_config([tv, box]) == 200
+            assert roku_send("roku_tv", "Netflix")["state"] == "failed", "removing the favourite removes the command"
             # A Roku command can be an activity step; an unknown transport still cannot.
             current = request("configuration", cookie=cookie)[1]
             current["activities"] = [{"id": "watch", "name": "Watch", "steps": [{"deviceId": "roku_tv", "command": "Home", "transport": "roku"}], "exitSteps": []}]
