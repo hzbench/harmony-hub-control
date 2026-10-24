@@ -66,6 +66,11 @@ jobs:
       - name: Asset consistency tests
         run: python3 tools/test_assets.py
 
+      - name: VERSION is a release version
+        run: |
+          v=$(tr -d ' \t\r\n' < VERSION)
+          [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::VERSION must look like 1.2.3 (it is '$v')"; exit 1; }
+
       - name: Signed release bundle tests
         run: python3 tools/test_release_bundle.py
 

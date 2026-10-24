@@ -118,15 +118,26 @@ tested migration is supplied.
 `.github/workflows/hub-release.yml` builds and signs a release for you, so nobody needs a MIPS
 compiler or the signing key on their own machine.
 
-- **Publish:** merge to main, then tag the merge commit (`git tag v0.2.0 && git push origin v0.2.0`).
-  The workflow refuses a tag whose commit is not on main or has not passed the *Test* workflow. It
-  compiles the five native programs with the pinned Bootlin MIPS/uClibc toolchain (its SHA-256 is
-  checked), confirms each is a static big-endian MIPS program and that `codex_webui` was built from
-  current source, builds the bundle with `tools/release_bundle.py`, verifies it against the public
-  key, and attaches `hub-release-<version>.json` and its `.sha256` to a GitHub Release. The committed
-  files in `payload/bin/` are only a starting point and are not what a release contains.
-- **Run by hand** (Actions > Hub release > Run workflow, from main) to build and sign a bundle as a
-  downloadable artifact without publishing.
+- **Publish:** change the `VERSION` file (for example `0.1.0`) in the pull request that should
+  ship, and merge it. When a push to main changes `VERSION` and the *Test* workflow has passed on
+  that commit (the release waits up to 15 minutes for it), the workflow tags the commit
+  `v0.1.0` and publishes a GitHub Release. Merging without touching `VERSION` releases nothing;
+  `0.0.0` means nothing has been released yet and does nothing; a `VERSION` that already has a tag
+  does nothing (a notice in the run says so); a `VERSION` lower than the newest release fails.
+  The release compiles the five native programs with the pinned Bootlin MIPS/uClibc toolchain (its
+  SHA-256 is checked), confirms each is a static big-endian MIPS program and that `codex_webui` was
+  built from current source, builds the bundle with `tools/release_bundle.py`, verifies it against
+  the public key, and attaches `hub-release-<version>.json` and its `.sha256`. The committed files
+  in `payload/bin/` are only a starting point and are not what a release contains. Nothing is
+  released from any other branch, and tags pushed by hand do nothing.
+- **Retry:** if a release run fails, fix the cause and re-run the failed run, or use Actions > Hub
+  release > Run workflow on main with *publish* ticked once a fix is merged.
+- **Run by hand** (Actions > Hub release > Run workflow, from main, *publish* off) to build and sign
+  a bundle as a downloadable artifact without publishing.
+- **Compatibility:** the Hub Remote app (the `harmony-hub-android-app` repository) loads this
+  software's `/go/` page, so most features arrive with a hub release. Setup > Software update needs
+  app 0.2.0 or newer to choose the update file, and a hub that already has the update screen's
+  `GET /api/v1/updates/status`; the first release with it is the first one made by this workflow.
 - **Key:** an Ed25519 key, off the hub. The private half is the repository secret
   `HUB_RELEASE_KEY_PEM`; the public half (64 hex characters) is the repository variable
   `HUB_RELEASE_PUBLIC_KEY` and is what each hub must be given once, over owner SSH:
