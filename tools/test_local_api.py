@@ -416,7 +416,7 @@ def run():
                 return request("configuration", {"revision": current["revision"], "configuration": current}, cookie, csrf)[0]
             tv = {"id": "roku_tv", "name": "Living Room TV", "kind": "roku", "model": "tv", "host": "127.0.0.1"}
             box = {"id": "roku_box", "name": "Bedroom box", "kind": "roku", "model": "player", "host": "127.0.0.1"}
-            for bad in ({**tv, "host": "8.8.8.8"}, {**tv, "host": "localhost"}, {**tv, "host": "10.0.0.1:80"}, {**tv, "host": "300.1.1.1"},
+            for bad in ({**tv, "host": "8.8.8.8"}, {**tv, "host": "localhost"}, {**tv, "host": "10.0.0.1:80"}, {**tv, "host": "300.1.1.1"}, {**tv, "host": "010.1.2.3"},
                         {**tv, "model": "stick"}, {**tv, "kind": "other"}, {**tv, "name": ""}, {**tv, "id": "bad id"}):
                 assert roku_config([bad]) == 400, bad
             assert roku_config([tv, dict(box, id="roku_tv")]) == 400, "duplicate ids"

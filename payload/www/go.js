@@ -60,6 +60,8 @@ async function operation(id, seconds=45) {
 async function loadDevices() {
   const inventory=await api('devices');state.devices=(inventory.devices||[]).map(d=>({...d,transport:'ir'}));
   const bluetooth=await api('bluetooth/devices');state.devices.push(...(bluetooth.devices||[]).map(d=>({...d,transport:'bluetooth'})));
+  // Rokus are an extra: if this one request fails the other devices still show.
+  try {const network=await api('network/devices');state.devices.push(...(network.devices||[]).map(d=>({...d,transport:'roku'})));} catch {/* api() has flagged the connection */}
 }
 
 const SCREEN_HANDLERS = ['onclick','onpointerdown','onpointermove','onpointerup','onpointercancel','onpointerleave','oncontextmenu','onkeydown','onsubmit'];
@@ -70,6 +72,7 @@ const screens = {
   activities: {title:'Activities', tab:'activities', render:renderActivities},
   devices: {title:'Devices', tab:'devices', render:renderDevices},
   setup: {title:'Setup', tab:'setup', reserveNotice:true, render:renderSetup},
+  roku: {title:'Roku', parent:'setup', reserveNotice:true, render:renderRoku},
   activity: {title:'Activity', parent:'activities', reserveNotice:true, render:renderActivityRemote},
   edit: {title:'Edit remote', parent:'activity', parentParams:params=>params.slice(0,1), reserveNotice:true, render:renderEditor},
   device: {title:'Device', parent:'devices', reserveNotice:true, render:renderDeviceRemote},
@@ -94,6 +97,7 @@ function activityRow(activity) {
 // Setup is a short list of links into the original pages, which keep device
 // setup, IR learning, Bluetooth pairing, activity steps, backups and the rest.
 const SETUP_LINKS = [
+  ['#/roku','Wifi','Roku','Add a Roku TV or player on your network'],
   ['/#devices','Radio','Devices','Add devices, learn IR codes, pair Bluetooth'],
   ['/#activities','SlidersHorizontal','Activities','Create activities and edit their start and power-off steps'],
   ['/#settings','Settings','Settings','Controllers, backups, Wi-Fi, MQTT and updates'],
@@ -123,6 +127,77 @@ function renderSetup(ctx) {
     const name = ctx.content.querySelector('#hub-name').value.trim();
     try {await saveHubName(name);notice(name?'Hub name saved.':'Hub name cleared.');}
     catch(error) {notice(error.message,true);}
+  };
+}
+// ---- Roku (network devices) ----
+const ROKU_MODELS = {tv:'Roku TV', player:'Roku player or box'};
+const ROKU_LIMIT = 8;  // the hub enforces the same limit
+// The same rule the hub applies: only addresses on the home network.
+const privateAddress = host => {
+  const octet = '(0|[1-9]\\d{0,2})', m = new RegExp(`^${[octet,octet,octet,octet].join('\\.')}$`).exec(host);
+  if(!m)return false;
+  const [a,b,c,d] = m.slice(1).map(Number);
+  return [a,b,c,d].every(n=>n<=255) && (a===10 || (a===172&&b>=16&&b<=31) || (a===192&&b===168));
+};
+const newRokuId = () => 'roku_'+Array.from({length:4},()=>Math.floor(Math.random()*256).toString(16).padStart(2,'0')).join('');
+// Every change starts from the hub's current configuration and is one revision-checked write.
+async function changeNetworkDevices(change) {
+  const fresh = await api('configuration');
+  fresh.networkDevices = change([...(fresh.networkDevices||[])]);
+  await api('configuration',{revision:fresh.revision, configuration:fresh});
+  // The write succeeded. Show it even if the refresh below fails (the next poll catches up).
+  state.config = {...fresh, revision:fresh.revision+1};
+  try {state.config = await api('configuration');await loadDevices();} catch {/* api() has flagged the connection */}
+}
+function rokuRow(device) {
+  const id = escape(device.id), name = escape(device.name);
+  return `<div class="row"><div class="row-main"><span class="row-icon neutral">${icon('MonitorPlay')}</span><span class="row-text"><strong>${name}</strong><small>${escape(ROKU_MODELS[device.model]||'Roku')} · ${escape(device.host)}</small></span></div>
+    <button class="row-action" type="button" data-roku-test="${id}" aria-label="Test ${name}" title="Test the connection">${icon('RefreshCw')}</button>
+    <button class="row-action" type="button" data-roku-remove="${id}" aria-label="Remove ${name}" title="Remove">${icon('Minus')}</button></div>`;
+}
+function rokuHtml() {
+  const list = state.config?.networkDevices||[];
+  return `<div class="list">${list.map(rokuRow).join('')||'<div class="placeholder"><p>No Roku yet. Add one below.</p></div>'}</div>
+    <form class="card-form"><h2>Add a Roku</h2>
+      <label for="roku-name">Name</label><input id="roku-name" name="roku-name" maxlength="64" placeholder="Living room Roku" autocomplete="off" autocapitalize="words" required>
+      <label for="roku-model">Type</label><select id="roku-model" name="roku-model">${Object.entries(ROKU_MODELS).map(([value,label])=>`<option value="${value}">${label}</option>`).join('')}</select>
+      <label for="roku-host">Address</label><input id="roku-host" name="roku-host" inputmode="decimal" placeholder="192.168.1.50" autocomplete="off" required>
+      <small>Find it on the Roku under Settings › Network › About, and reserve it in your router so it doesn’t change. Turn on network control on the Roku (Settings › System › Advanced system settings › Control by mobile apps).</small>
+      <button class="save-button" type="submit"${list.length>=ROKU_LIMIT?' disabled':''}>Add Roku</button>${list.length>=ROKU_LIMIT?`<small>The hub holds up to ${ROKU_LIMIT} Rokus.</small>`:''}</form>`;
+}
+function renderRoku(ctx) {
+  if(!owner())return placeholder(ctx,'Only the hub owner can add or change a Roku.');
+  const draw = () => {ctx.content.innerHTML = rokuHtml();};
+  draw();
+  const onScreen = () => ctx.content.isConnected && parseRoute(location.hash).name==='roku';
+  const say = (message, error=false) => {if(onScreen())notice(message,error);};
+  ctx.content.onclick = async event => {
+    const test = event.target.closest('[data-roku-test]'), remove = event.target.closest('[data-roku-remove]');
+    if(test) {
+      const id = test.dataset.rokuTest;
+      try {
+        say('Asking the Roku…');
+        const queued = await api('commands/send',{deviceId:id, command:'DeviceInfo', transport:'roku', mode:'tap'});
+        const result = await operation(queued.id,15);
+        say(`Connected to ${result.result?.reply||'the Roku'}.`);
+      } catch(error) {say(error.message,true);}
+    } else if(remove) {
+      const id = remove.dataset.rokuRemove, name = (state.config?.networkDevices||[]).find(d=>d.id===id)?.name||'this Roku';
+      const using = (state.config?.activities||[]).filter(a=>[...(a.steps||[]),...(a.exitSteps||[]),...(a.screen?.cells||[]),...(a.screen?.pinned||[])].some(x=>x.deviceId===id)).map(a=>a.name);
+      if(!confirm(using.length?`Remove ${name}? ${using.join(', ')} still ${using.length===1?'uses':'use'} it and will stop working there until you change ${using.length===1?'it':'them'}.`:`Remove ${name}?`))return;
+      try {await changeNetworkDevices(list=>list.filter(d=>d.id!==id));if(onScreen()){draw();say('Removed.');}}
+      catch(error) {say(error.message,true);}
+    }
+  };
+  ctx.content.onsubmit = async event => {
+    event.preventDefault();
+    const name = ctx.content.querySelector('#roku-name').value.trim(), model = ctx.content.querySelector('#roku-model').value, host = ctx.content.querySelector('#roku-host').value.trim();
+    if(!name)return say('Give the Roku a name.',true);
+    if(!privateAddress(host))return say('Use the Roku’s address on your home network, like 192.168.1.50.',true);
+    try {
+      await changeNetworkDevices(list=>[...list,{id:newRokuId(), name, kind:'roku', model, host}]);
+      if(onScreen()){draw();say('Roku added. Use the refresh button to test it.');}
+    } catch(error) {say(error.message,true);}
   };
 }
 function renderActivities(ctx) {
@@ -163,7 +238,7 @@ function renderActivities(ctx) {
     }
   };
 }
-const DEVICE_ICONS = {Television:'Tv', Audio:'Speaker', 'Media Player':'MonitorPlay'};
+const DEVICE_ICONS = {Television:'Tv', Audio:'Speaker', 'Media Player':'MonitorPlay', Roku:'MonitorPlay'};
 function deviceRow(device) {
   const count = (device.commands||[]).length, type = device.type || (device.transport==='bluetooth' ? 'Bluetooth' : 'IR');
   return `<div class="row"><a class="row-main" href="${routeHash('device',device.id)}"><span class="row-icon neutral">${icon(Object.hasOwn(DEVICE_ICONS,device.type)?DEVICE_ICONS[device.type]:'Radio')}</span><span class="row-text"><strong>${escape(device.name)}</strong><small>${escape(type)} · ${count} ${count===1?'command':'commands'}</small></span>${icon('ChevronRight')}</a></div>`;
@@ -336,7 +411,7 @@ function beginHold(button,pointerId=null) {
   button.classList.add('is-held');button.setAttribute('aria-pressed','true');
   hold.timer=setTimeout(async()=>{
     const device=state.devices.find(d=>d.id===button.dataset.device);
-    if(device.transport==='bluetooth'){stopHold(true);return;}
+    if(device.transport!=='ir'){stopHold(true);return;}  // only IR has a held transmission
     hold.started=true;
     try {
       const queued=await api('commands/send',{deviceId:device.id,command:button.dataset.command,transport:'ir',mode:'hold'});hold.id=queued.id;
