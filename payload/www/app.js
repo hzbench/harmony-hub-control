@@ -511,7 +511,6 @@ function show(view) {
   stopHold(false);state.editor=null;state.draft=null;state.view=['remote','devices','activities','settings'].includes(view)?view:'remote';
   if(location.hash!=='#'+state.view)history.replaceState(null,'','#'+state.view);
   $('title').textContent={remote:'Remote',devices:'Devices',activities:'Activities',settings:'Settings'}[state.view];
-  $('navigation').querySelectorAll('[data-view]').forEach(a=>{if(a.dataset.view===state.view)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current');});
   ({remote:renderRemote,devices:renderDevices,activities:renderActivities,settings:renderSettings})[state.view]();
   $('main').dataset.view=state.view;
   $('main').focus({preventScroll:true});window.scrollTo(0,0);
@@ -587,7 +586,6 @@ async function installUpdate() {
   await api('updates/apply',{});notice('Signed release verified. The hub is restarting with a rollback check.');
 }
 window.addEventListener('hashchange',()=>{const view=location.hash.slice(1);if(state.config&&['remote','devices','activities','settings'].includes(view))show(view);});
-$('navigation').addEventListener('click',event=>{const link=event.target.closest('[data-view]');if(link&&state.config){event.preventDefault();show(link.dataset.view);}});
 $('connection').addEventListener('click',()=>boot());
 async function pollSession(){try{const session=await api('session');if(!state.session||session.role!==state.session.role||session.buttonPending!==state.session.buttonPending){await boot();}else if(owner()&&state.view==='settings')renderMqttStatus(await api('integrations/mqtt'));}catch{if($('mqtt-status'))$('mqtt-status').textContent='MQTT connection status unavailable';}finally{clearTimeout(sessionTimer);sessionTimer=setTimeout(pollSession,state.session?.role==='pending'||state.session?.buttonPending?1500:15000);}}
 sessionTimer=setTimeout(pollSession,1500);
