@@ -579,7 +579,14 @@ function renderEditor(ctx) {
   };
   // A new edit makes any earlier "Saved." message untrue.
   const changed = focus => {notice('');draw(focus);};
-  leaveGuard = () => layoutShape(draft)===base || confirm('Leave without saving? Your changes will be lost.');
+  const LEAVE_MESSAGE = 'Leave without saving? Your changes will be lost.';
+  leaveGuard = () => layoutShape(draft)===base || confirm(LEAVE_MESSAGE);
+  // The Android app asks the page before it acts on the hardware Back key: true
+  // means the page dealt with it (closed the add sheet, or the user chose to stay).
+  window.harmonyHandleBack = () => {
+    if(sheet.open){sheet.close();return true;}
+    return layoutShape(draft)!==base && !confirm(LEAVE_MESSAGE);
+  };
   const save = async () => {
     if(ui.saving||layoutShape(draft)===base)return;
     ui.saving = true;draw();
@@ -668,7 +675,7 @@ function show() {
   stopHold(false);
   for(const handler of SCREEN_HANDLERS)ctx.content[handler]=null;
   ctx.actions.onclick=null;leaveGuard=null;
-  window.onpopstate=null;sheetPushed=false;
+  window.onpopstate=null;window.harmonyHandleBack=null;sheetPushed=false;
   if($('sheet')){$('sheet').onclose=null;if($('sheet').open)$('sheet').close();}
   function setTitle(text) {$('title').textContent=text;document.title=text+' · Harmony Remote';}
   $('header-actions').innerHTML='';

@@ -728,6 +728,21 @@ console.log('Editor draws gaps as empty squares, lists every cell (including sta
   const rem=remoteHtml(state.config.activities[0].screen).body;
   assert.ok(rem.indexOf('aria-label="Back"')<rem.indexOf('class="dpad"')&&rem.indexOf('class="dpad"')<rem.indexOf('aria-label="Input"'),'the remote draws the pad where it was placed');
 
+  // The Android app asks the page before acting on the hardware Back key.
+  ({content,ctx}=setup(base0));
+  const handleBack=()=>context.window.harmonyHandleBack();
+  assert.equal(typeof context.window.harmonyHandleBack,'function');
+  context.confirmed.length=0;assert.equal(handleBack(),false,'nothing to lose: let the app go back');assert.equal(context.confirmed.length,0);
+  down(content,slotBtn(content,'cells',0));advance(600);await settle();
+  context.confirmAnswer=false;assert.equal(handleBack(),true,'unsaved changes, user stays: handled');assert.match(context.confirmed.at(-1),/Leave without saving/);
+  assert.deepEqual(layout(content,'cells'),{1:'Down',2:'Mute'},'the edits are untouched');
+  context.confirmAnswer=true;assert.equal(handleBack(),false,'user chooses to leave: let the app go back');
+  await pressSave(ctx);context.confirmed.length=0;assert.equal(handleBack(),false,'saved: nothing to lose');assert.equal(context.confirmed.length,0);
+  advance(800);tapSlot(content,'cells',0);assert.equal(sheet.open,true);
+  assert.equal(handleBack(),true,'with the add sheet open Back only closes it');assert.equal(sheet.open,false);
+  context.location.hash='#/activity/w';show();assert.equal(context.window.harmonyHandleBack,null,'the hook goes away with the screen');
+  context.location.hash='#/edit/w';
+
   // Keyboard: an empty square opens the sheet from its normal click (Enter/Space), Delete removes the focused button.
   ({content,ctx}=setup({...base0,screen:{columns:4,cells:[sc('Up',0)],pinned:[]}}));
   const key=(b,k)=>{let prevented=false;content.onkeydown({key:k,target:{closest:()=>b},preventDefault(){prevented=true;}});return prevented;};
