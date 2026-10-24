@@ -18,7 +18,7 @@ const el=id=>elements[id]||=({id,dataset:{},classList:{add(){},remove(){}},hidde
 const context=vm.createContext({document:{getElementById:el,title:'',body:{dataset:{}},addEventListener(){},hidden:false},window:{addEventListener(){},scrollTo(){}},location:{hash:'',replace(url){context.replaced=url;}},history:{replaceState(){},pushState(){context.pushed=(context.pushed||0)+1;},back(){context.backed=(context.backed||0)+1;}},
   confirm:message=>{(context.confirmed||(context.confirmed=[])).push(message);return context.confirmAnswer!==false;},navigator:{vibrate(){context.vibrated=(context.vibrated||0)+1;}},localStorage:{getItem:k=>store.get(k)??null,setItem:(k,v)=>store.set(k,v)},setTimeout:()=>0,clearTimeout(){},fetch:async()=>{throw new TypeError('offline');},AbortController,URL,structuredClone});
 const inert=source.replace(/\n  boot\(\);\n\}\s*$/,'\n}');assert.notEqual(inert,source,'boot() auto-run not found');
-vm.runInContext(inert.replace('const state =','var state =')+'\nthis.exports={parseRoute,routeHash,connection,state,needsFullUi,api,show,screens,renderActivities,renderDevices,deviceRemoteHtml,renderDeviceRemote,remoteBlocks,remoteHtml,renderActivityRemote,CONTROLS,controlFor,volumeTarget,editorSlots,availableCommands,addButton,removeButton,editorHtml,renderEditor,screenOf,MAX_CELLS,layoutShape,startDraft,submitLayout,getLeaveGuard:()=>leaveGuard,cloneScreen,withSlots,announceHub,loadDevices};',context);
+vm.runInContext(inert.replace('const state =','var state =')+'\nthis.exports={parseRoute,routeHash,connection,state,needsFullUi,api,show,screens,renderActivities,renderDevices,deviceRemoteHtml,renderDeviceRemote,remoteBlocks,remoteHtml,renderActivityRemote,CONTROLS,controlFor,volumeTarget,editorSlots,availableCommands,addButton,removeButton,editorHtml,renderEditor,screenOf,MAX_CELLS,layoutShape,startDraft,submitLayout,getLeaveGuard:()=>leaveGuard,cloneScreen,withSlots,announceHub,loadDevices,typingPlan,createTyper,openKeyboard,keyboardSetting:keyboardSettingHtml};',context);
 const {parseRoute,routeHash,connection,state,needsFullUi,api,show}=context.exports;
 
 assert.deepEqual(JSON.parse(JSON.stringify(parseRoute(''))),{name:'activities',params:[]});
@@ -433,7 +433,7 @@ assert.notEqual(shapeOf(mk([sc('Up',0)])),shapeOf(mk([sc('Up',3)])),'moving a bu
   store.set('harmony-layout-draft:w','{"base":"x","draft":{"cells":[],"pinned":[]}}');   // a leftover from an older version is ignored
   const d=X.startDraft(act);store.delete('harmony-layout-draft:w');
   assert.equal(d.base,shapeOf(act.screen));
-  assert.deepEqual(J(d.draft),{columns:4,crossRow:0,cells:[sc('Up',0),sc('Down',1)],pinned:[]},'the draft gives every button a slot');
+  assert.deepEqual(J(d.draft),{columns:4,crossRow:0,cells:[sc('Up',0),sc('Down',1)],pinned:[],keyboard:''},'the draft gives every button a slot');
   assert.equal(shapeOf(d.draft),d.base,'...without counting as a change');
   d.draft.cells.push(sc('Mute',2));assert.equal(act.screen.cells.length,2);assert.equal(act.screen.cells[0].slot,undefined,'the draft is a copy');
 }
@@ -510,8 +510,8 @@ console.log('Editor draws gaps as empty squares, lists every cell (including sta
     posts.push(J(body.configuration.activities[0].screen));hub={...J(body.configuration),revision:body.revision+1};return {ok:true};
   };
   const sheet=Object.assign(el('sheet'),{open:false,innerHTML:'',onclick:null,showModal(){this.open=true;},close(){const was=this.open;this.open=false;if(was)this.onclose?.();}});
-  const setup=(activity,{owner=true}={})=>{
-    newHub(activity);state.devices=[tv,bar];state.session={role:owner?'owner':'controller'};state.config=J(hub);
+  const setup=(activity,{owner=true,extraDevices=[]}={})=>{
+    newHub(activity);state.devices=[tv,bar,...extraDevices];state.session={role:owner?'owner':'controller'};state.config=J(hub);
     context.location.hash='#/edit/'+activity.id;sheet.open=false;context.confirmed=[];context.confirmAnswer=true;el('notice').textContent='';
     const content={innerHTML:'',isConnected:true,querySelector:()=>null};
     const ctx={content,actions:{innerHTML:'',onclick:null},params:[activity.id],setTitle(t){this.title=t;}};
@@ -750,6 +750,30 @@ console.log('Editor draws gaps as empty squares, lists every cell (including sta
   context.location.hash='#/activity/w';show();assert.equal(context.window.harmonyHandleBack,null,'the hook goes away with the screen');
   context.location.hash='#/edit/w';
 
+  // Keyboard setting: which device the remote's Keyboard button types on. It is saved on the activity, not in its layout.
+  {
+    const kb={id:'kb',name:'Den Roku',type:'Roku',transport:'roku',keyboard:true,commands:[{name:'Home'}]};
+    ({content,ctx}=setup(base0));
+    assert.match(content.innerHTML,/data-keyboard-device disabled/,'no device can type yet: the picker is off and says why');assert.match(content.innerHTML,/Setup › Roku/);
+    ({content,ctx}=setup(base0,{extraDevices:[kb]}));
+    assert.match(content.innerHTML,/<select id="keyboard-device" data-keyboard-device><option value="">None<\/option><option value="kb">Den Roku<\/option>/,'only devices that can type are offered');
+    assert.doesNotMatch(content.innerHTML,/<option value="tv">/);
+    const pick=value=>content.onchange({target:{value,closest:sel=>sel==='[data-keyboard-device]'?{}:null}});
+    assert.equal(saveEnabled(ctx),false);
+    pick('kb');assert.equal(saveEnabled(ctx),true,'choosing one is a change');assert.match(content.innerHTML,/<option value="kb" selected>/);
+    pick('');assert.equal(saveEnabled(ctx),false,'choosing None again is no change');
+    pick('kb');await pressSave(ctx);
+    assert.deepEqual(hub.activities[0].keyboard,{deviceId:'kb'});assert.deepEqual(hub.activities[0].screen.cells,base0.screen.cells,'the layout is untouched');assert.equal('keyboard' in hub.activities[0].screen,false,'and the device is not stored inside it');
+    pick('');await pressSave(ctx);assert.equal('keyboard' in hub.activities[0],false,'None removes it');
+    // A saved choice shows when the editor reopens, even if its device is gone.
+    ({content,ctx}=setup({...base0,keyboard:{deviceId:'kb'}},{extraDevices:[kb]}));assert.match(content.innerHTML,/<option value="kb" selected>/);assert.equal(saveEnabled(ctx),false);
+    ({content,ctx}=setup({...base0,keyboard:{deviceId:'gone'}}));assert.match(content.innerHTML,/<option value="gone" selected>Missing device/);assert.equal(saveEnabled(ctx),false);
+    // Changing it on another device since this editor opened is a conflict, like a layout change.
+    ({content,ctx}=setup(base0,{extraDevices:[kb]}));pick('kb');
+    hub.activities[0].keyboard={deviceId:'other'};context.confirmed=[];context.confirmAnswer=false;await pressSave(ctx);
+    assert.match(context.confirmed.at(-1),/changed on another device/);assert.deepEqual(hub.activities[0].keyboard,{deviceId:'other'},'declined: nothing replaced');
+    context.confirmAnswer=true;
+  }
   // Keyboard: an empty square opens the sheet from its normal click (Enter/Space), Delete removes the focused button.
   ({content,ctx}=setup({...base0,screen:{columns:4,cells:[sc('Up',0)],pinned:[]}}));
   const key=(b,k)=>{let prevented=false;content.onkeydown({key:k,target:{closest:()=>b},preventDefault(){prevented=true;}});return prevented;};
@@ -887,4 +911,61 @@ console.log('The owner can name the hub and the app is told');
   assert.equal(X.screens.roku.parent,'setup');
 }
 console.log('The owner can add, test and remove a Roku; Rokus appear as devices');
+// Typing: what is sent for each change, in order, in chunks.
+{
+  assert.equal(X.typingPlan('','abc'),'abc');assert.equal(X.typingPlan('abc','abcd'),'d');assert.equal(X.typingPlan('abc','ab'),'\b');
+  assert.equal(X.typingPlan('teh','the'),'\b\bhe','a correction backs up to where the text differs');
+  assert.equal(X.typingPlan('abc',''),'\b\b\b');assert.equal(X.typingPlan('abc','abc'),'');
+  assert.equal(X.typingPlan('a€','a€!'),'!');assert.equal(X.typingPlan('a😀','a'),'\b','an emoji is one character, not two');
+  const sentTexts=[],gates=[];let failNext=false;
+  context.api=async(path,body)=>{
+    if(path!=='commands/type')return {};
+    sentTexts.push(body.text);
+    await new Promise(resolve=>gates.push(resolve));
+    if(failNext){failNext=false;throw Error('Typed 0 of 1 characters. Could not reach the Roku.');}
+    return {id:'t'+sentTexts.length};
+  };
+  context.operation=async()=>({state:'completed'});
+  const settle=async()=>{for(let i=0;i<20;i++)await Promise.resolve();};
+  const open=async()=>{while(gates.length){gates.shift()();await settle();}};
+  let typer=X.createTyper('kb');
+  typer.change('h');await settle();assert.deepEqual(sentTexts,['h'],'the first letter goes out at once');
+  typer.change('he');typer.change('hel');typer.change('hell');await settle();assert.deepEqual(sentTexts,['h'],'the rest wait for the request in flight');
+  await open();assert.deepEqual(sentTexts,['h','ell'],'and then go together, in order');await open();
+  typer.change('hel');typer.change('help');await open();await open();assert.deepEqual(sentTexts,['h','ell','\b','p'],'a correction is a Backspace, then the new letter');
+  // Enter is a key, and starts a fresh line of text.
+  sentTexts.length=0;typer=X.createTyper('kb');typer.change('go');await open();await open();typer.enter();await open();typer.change('x');await open();
+  assert.deepEqual(sentTexts,['go','\n','x']);
+  // A long paste is split into chunks of at most 64 characters.
+  sentTexts.length=0;typer=X.createTyper('kb');typer.change('a'.repeat(150));await open();await open();await open();await open();
+  assert.deepEqual(sentTexts.map(t=>t.length),[64,64,22]);
+  // A failure is shown, drops what was waiting, and typing carries on afterwards.
+  sentTexts.length=0;el('notice').textContent='';typer=X.createTyper('kb');failNext=true;
+  typer.change('a');typer.change('ab');typer.change('abc');await settle();await open();await open();
+  assert.equal(el('notice').textContent,'Typed 0 of 1 characters. Could not reach the Roku.');assert.equal(el('notice').dataset.error,'true');assert.deepEqual(sentTexts,['a'],'the queued letters were dropped, not retried');
+  typer.change('abcd');await open();assert.deepEqual(sentTexts,['a','d'],'later changes are relative to what was typed');
+  // The Keyboard button: only where there is a device that can type.
+  const kb={id:'kb',name:'Den <Roku>',type:'Roku',transport:'roku',keyboard:true,commands:[{name:'Home'}]};
+  state.devices=[{id:'tv',name:'TV',commands:[{name:'Up'}]},kb];state.session={role:'control'};
+  state.config={activities:[{id:'w',name:'Watch',steps:[],screen:{columns:4,cells:[],pinned:[]},keyboard:{deviceId:'kb'}},{id:'n',name:'No kb',steps:[],screen:{columns:4,cells:[],pinned:[]}},{id:'g',name:'Gone',steps:[],screen:{columns:4,cells:[],pinned:[]},keyboard:{deviceId:'gone'}},{id:'t',name:'TV kb',steps:[],screen:{columns:4,cells:[],pinned:[]},keyboard:{deviceId:'tv'}}]};
+  const remoteCtx=(render,id)=>{const ctx={content:{innerHTML:'',querySelectorAll:()=>[]},actions:{innerHTML:'',onclick:null},params:[id],setTitle(){}};X[render](ctx);return ctx;};
+  const withKb=remoteCtx('renderActivityRemote','w');
+  assert.match(withKb.actions.innerHTML,/data-keyboard aria-label="Keyboard" title="Type on Den &lt;Roku&gt;"/,'anyone, not only the owner, gets the button');assert.doesNotMatch(withKb.actions.innerHTML,/Edit remote layout/);
+  for(const id of ['n','g','t'])assert.doesNotMatch(remoteCtx('renderActivityRemote',id).actions.innerHTML,/data-keyboard/,id+': no button without a device that can type');
+  state.session={role:'owner'};assert.match(remoteCtx('renderActivityRemote','w').actions.innerHTML,/data-keyboard[\s\S]*Edit remote layout/,'the owner also keeps the edit pencil');
+  assert.match(remoteCtx('renderDeviceRemote','kb').actions.innerHTML,/data-keyboard/,'a Roku opened on its own has it too');assert.doesNotMatch(remoteCtx('renderDeviceRemote','tv').actions.innerHTML,/data-keyboard/);
+  // Tapping it opens the sheet with the input focused; typing goes to the hub.
+  const input={value:'',focused:false,focus(){this.focused=true;}};
+  const sheet=Object.assign(el('sheet'),{open:false,innerHTML:'',onclick:null,onclose:null,showModal(){this.open=true;},close(){const was=this.open;this.open=false;if(was)this.onclose?.();},querySelector:sel=>sel==='#keyboard-input'?input:null});
+  sentTexts.length=0;const kbCtx=remoteCtx('renderActivityRemote','w');
+  kbCtx.actions.onclick({target:{closest:sel=>sel==='[data-keyboard]'?{}:null}});
+  assert.equal(sheet.open,true);assert.equal(input.focused,true);assert.match(sheet.innerHTML,/Type on Den &lt;Roku&gt;/);assert.match(sheet.innerHTML,/autocorrect="off"/);
+  input.value='hi';input.oninput();await settle();await open();assert.deepEqual(sentTexts,['hi']);
+  let prevented=false;input.onkeydown({key:'Enter',preventDefault(){prevented=true;}});await settle();await open();
+  assert.equal(prevented,true);assert.equal(input.value,'','Enter clears the field');assert.deepEqual(sentTexts,['hi','\n']);
+  input.onkeydown({key:'a',preventDefault(){throw Error('other keys are left alone');}});
+  assert.equal(context.window.harmonyHandleBack(),true,'hardware Back closes the sheet first');assert.equal(sheet.open,false);assert.equal(context.window.harmonyHandleBack(),false);
+  context.operation=async()=>({state:'completed'});
+}
+console.log('Typing is sent in order and in chunks; the Keyboard button appears only where a device can type');
 console.log('Switching screens clears the previous screen’s handlers');

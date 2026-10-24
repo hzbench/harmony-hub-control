@@ -1,6 +1,7 @@
 """Disposable browser fixture: memory-only setup, no hub connection or IR output."""
 import argparse
 import json
+import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -25,7 +26,7 @@ ROKU_TV_COMMANDS = ["Power", "Power on", "Power off", "Volume up", "Volume down"
 
 def network_devices():
     """Rokus saved in the fixture's configuration, in the shape the hub lists them (no address)."""
-    return [{"id": d["id"], "name": d["name"], "type": "Roku", "model": d["model"],
+    return [{"id": d["id"], "name": d["name"], "type": "Roku", "model": d["model"], "keyboard": True,
              "commands": [{"name": n} for n in ROKU_COMMANDS + (ROKU_TV_COMMANDS if d["model"] == "tv" else [])]}
             for d in configuration.get("networkDevices", [])]
 
@@ -65,6 +66,9 @@ class Preview(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(length))
         if self.path == "/api/v1/commands/send":
             return self.reply({"id": "fixture-no-transmission"})
+        if self.path == "/api/v1/commands/type":
+            sys.stderr.write("TYPED %r\n" % body.get("text"))  # so a run can show what the UI sent
+            return self.reply({"id": "fixture-typed"}, 202)
         if self.path == "/api/v1/activities/run":
             return self.reply({"id": "fixture-activity", "state": "completed"}, 202)
         if body.get("revision") != configuration["revision"]:
