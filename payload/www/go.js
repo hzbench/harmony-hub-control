@@ -69,7 +69,7 @@ const screens = {
   // icon and no back arrow); parent: where a drill-in screen's back arrow goes.
   activities: {title:'Activities', tab:'activities', render:renderActivities},
   devices: {title:'Devices', tab:'devices', render:renderDevices},
-  setup: {title:'Setup', tab:'setup', render:renderSetup},
+  setup: {title:'Setup', tab:'setup', reserveNotice:true, render:renderSetup},
   activity: {title:'Activity', parent:'activities', reserveNotice:true, render:renderActivityRemote},
   edit: {title:'Edit remote', parent:'activity', parentParams:params=>params.slice(0,1), reserveNotice:true, render:renderEditor},
   device: {title:'Device', parent:'devices', reserveNotice:true, render:renderDeviceRemote},

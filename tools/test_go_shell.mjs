@@ -274,6 +274,7 @@ assert.equal(el('back').dataset.href,'#/activity/watch');
 context.location.hash='#/activity/watch';show();
 assert.equal(el('back').dataset.href,'#/activities');assert.equal(context.document.body.dataset.reserveNotice,'true');
 context.location.hash='#/devices';show();assert.equal(context.document.body.dataset.reserveNotice,'false');
+context.location.hash='#/setup';show();assert.equal(context.document.body.dataset.reserveNotice,'true','Setup holds space for its saved/error notice so the form does not jump');context.location.hash='#/devices';show();
 console.log('Back arrows return to the right parent; only remotes reserve space for send status');
 
 // ---- Hardware volume ----
