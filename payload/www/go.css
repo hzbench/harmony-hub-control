@@ -112,3 +112,12 @@ dialog.sheet h2{font-size:15px;margin:0 0 6px}
 .card-form h2{font-size:16px;margin:0}
 .card-form select{appearance:auto}
 .card-form .save-button{align-self:flex-start;padding:0 16px}
+.keyboard-setting{display:flex;flex-direction:column;gap:6px;margin:16px 0 4px}
+.keyboard-setting label{font-size:13px;font-weight:600;color:var(--muted)}
+.keyboard-setting select,.keyboard-input{font:inherit;color:inherit;background:var(--control);border:1px solid var(--line);border-radius:10px;padding:0 12px;min-height:44px;width:100%}
+.keyboard-setting select{appearance:auto}
+.keyboard-setting small,.sheet-note{font-size:13px;color:var(--muted);margin:0}
+.keyboard-input{margin:8px 0 6px}
+.sheet-done{padding-left:4px;justify-content:center;color:var(--accent);font-weight:600}
+.keyboard-button{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;min-height:52px;background:var(--control);font-weight:600}
+.keyboard-button svg{height:20px;width:20px}

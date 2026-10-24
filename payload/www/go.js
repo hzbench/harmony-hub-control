@@ -64,7 +64,7 @@ async function loadDevices() {
   try {const network=await api('network/devices');state.devices.push(...(network.devices||[]).map(d=>({...d,transport:'roku'})));} catch {/* api() has flagged the connection */}
 }
 
-const SCREEN_HANDLERS = ['onclick','onpointerdown','onpointermove','onpointerup','onpointercancel','onpointerleave','oncontextmenu','onkeydown','onsubmit'];
+const SCREEN_HANDLERS = ['onclick','onpointerdown','onpointermove','onpointerup','onpointercancel','onpointerleave','oncontextmenu','onkeydown','onsubmit','onchange'];
 const screens = {
   // render(ctx) fills ctx.content; ctx.params are the decoded route params.
   // tab: which bottom tab it belongs to (tab screens show the connectivity
@@ -471,22 +471,91 @@ window.harmonyHardwareVolume = function(direction) {
     .finally(()=>{hardwareVolumeBusy=false;});
 };
 
+function bindKeyboard(ctx, device) {
+  ctx.content.querySelector?.('[data-keyboard]')?.addEventListener('click',()=>openKeyboard(device));
+}
 function renderDeviceRemote(ctx) {
   const device=state.devices.find(d=>d.id===ctx.params[0]);
   if(!device){ctx.setTitle('Device');return placeholder(ctx,'This device no longer exists.');}
   ctx.setTitle(device.name);
   const html=deviceRemoteHtml(device);
-  ctx.content.innerHTML=`<div class="remote">${html||'<div class="placeholder"><p>This device has no commands yet.</p></div>'}</div>`;
-  bindCommands(ctx.content);
+  const typing=keyboardButton(device);
+  ctx.content.innerHTML=`<div class="remote">${html||'<div class="placeholder"><p>This device has no commands yet.</p></div>'}</div>${typing?`<div class="pinned">${typing}</div>`:''}`;
+  bindCommands(ctx.content);bindKeyboard(ctx,device);
 }
 function renderActivityRemote(ctx) {
   const activity=(state.config.activities||[]).find(a=>a.id===ctx.params[0]);
   if(!activity){ctx.setTitle('Activity');return placeholder(ctx,'This activity no longer exists.');}
   ctx.setTitle(activity.name);
   if(owner())ctx.actions.innerHTML=`<a class="header-action" href="${routeHash('edit',activity.id)}" aria-label="Edit remote layout" title="Edit remote layout">${icon('Pencil')}</a>`;
+  const keyboardDevice = state.devices.find(d=>d.id===activity.keyboard?.deviceId), typing = keyboardButton(keyboardDevice);
   const {body,pinned}=remoteHtml(activity.screen);
-  ctx.content.innerHTML=`<div class="remote">${body||'<div class="placeholder"><p>No buttons on this remote yet.</p></div>'}</div>${pinned?`<div class="pinned">${pinned}</div>`:''}`;
-  bindCommands(ctx.content);
+  ctx.content.innerHTML=`<div class="remote">${body||'<div class="placeholder"><p>No buttons on this remote yet.</p></div>'}</div>${pinned||typing?`<div class="pinned">${typing}${pinned}</div>`:''}`;
+  bindCommands(ctx.content);bindKeyboard(ctx,keyboardDevice);
+}
+// ---- Keyboard: type on a device from the phone ----
+const TYPE_CHUNK = 64;  // the hub accepts this many characters per request
+// What to send so a device that holds `sent` ends up with `next`: Backspaces for
+// what changed, then the new text. Works the same for typing, deleting and a
+// keyboard's autocorrect replacing a word.
+function typingPlan(sent, next) {
+  const a = Array.from(sent), b = Array.from(next);
+  let k = 0;
+  while(k<a.length&&k<b.length&&a[k]===b[k])k++;
+  return '\b'.repeat(a.length-k)+b.slice(k).join('');
+}
+// One typing session. Changes are sent in order, one request at a time; whatever
+// is typed while a request is running goes out together in the next one.
+function createTyper(deviceId, onReset=()=>{}) {
+  let sent = '', pending = [], busy = false;
+  async function flush() {
+    if(busy)return;
+    busy = true;
+    try {
+      while(pending.length) {
+        const text = pending.splice(0,TYPE_CHUNK).join('');
+        try {const queued=await api('commands/type',{deviceId,text});await operation(queued.id,15);}
+        catch(error) {
+          // What reached the device is unknown now, so start over rather than type relative to a guess.
+          pending = [];sent = '';onReset();
+          notice(`${error.message} The box was cleared; check what reached the device.`,true);
+        }
+      }
+    } finally {busy = false;}
+  }
+  const send = text => {if(text){pending.push(...Array.from(text));flush();}};
+  return {
+    change(value) {send(typingPlan(sent,value));sent = value;},
+    enter() {send('\n');sent = '';},
+  };
+}
+function openKeyboard(device) {
+  const sheet = $('sheet');
+  sheet.innerHTML = `<div class="sheet-handle" aria-hidden="true"></div><h2 id="sheet-title">Type on ${escape(device.name)}</h2>
+    <input id="keyboard-input" class="keyboard-input" type="text" enterkeyhint="send" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="Text to type on ${escape(device.name)}">
+    <p class="sheet-note">Open a text field on the device first. Letters go as you type them, and Enter presses Enter.</p>
+    <button type="button" class="sheet-cancel sheet-done" data-sheet-cancel>Done</button>`;
+  const input = sheet.querySelector('#keyboard-input'), typer = createTyper(device.id,()=>{input.value = '';});
+  const enter = event => {event.preventDefault();typer.enter();input.value = '';};
+  input.oninput = () => typer.change(input.value);
+  input.onkeydown = event => {if(event.key==='Enter')enter(event);};
+  // Some soft keyboards report their Enter key only as a line-break edit.
+  input.onbeforeinput = event => {if(event.inputType==='insertLineBreak')enter(event);};
+  sheet.onclick = event => {if(event.target===sheet||event.target.closest('[data-sheet-cancel]'))sheet.close();};
+  sheet.showModal();
+  history.pushState({sheet:true},'');sheetPushed = true;
+  sheet.onclose = () => {if(sheetPushed){sheetPushed = false;history.back();}};
+  window.onpopstate = () => {if(sheet.open){sheetPushed = false;sheet.close();}};
+  // The Android app asks the page before it acts on the hardware Back key.
+  window.harmonyHandleBack = () => {if(sheet.open){sheet.close();return true;}return false;};
+  input.focus();
+}
+// The remote's Keyboard button, shown above the fixed row when this device (or the
+// activity's keyboard device) can type. Empty when it can't. bindKeyboard() wires it
+// up once the markup is on the page.
+function keyboardButton(device) {
+  if(!device?.keyboard)return '';
+  return `<button type="button" class="keyboard-button" data-keyboard aria-label="Type on ${escape(device.name)}">${icon('Keyboard')}Keyboard</button>`;
 }
 // ---- Edit remote layout (activities only) ----
 // The editor works on a local draft of activity.screen: `cells` (the scrolling
@@ -582,13 +651,15 @@ function editorSlots(zone, extent, columns, extraRows=0, capacity=MAX_CELLS) {
 
 // ---- Draft and save ----
 // Compared as strings to tell whether a layout changed.
-const layoutShape = screen => {const s=cloneScreen(screen);return JSON.stringify([s.columns,s.crossRow,s.cells,s.pinned]);};
-const cloneScreen = screen => {const columns=screen?.columns||4;return {columns, crossRow:crossRowOf(screen), cells:withSlots(screen?.cells,MAX_CELLS), pinned:withSlots(screen?.pinned,columns)};};
+const layoutShape = screen => {const s=cloneScreen(screen);return JSON.stringify([s.columns,s.crossRow,s.cells,s.pinned,s.keyboard]);};
+// What the editor compares: the layout plus the keyboard device, which lives on the activity itself.
+const editedShape = activity => layoutShape({...activity.screen, keyboard:activity.keyboard?.deviceId||''});
+const cloneScreen = screen => {const columns=screen?.columns||4;return {columns, crossRow:crossRowOf(screen), cells:withSlots(screen?.cells,MAX_CELLS), pinned:withSlots(screen?.pinned,columns), keyboard:screen?.keyboard||''};};
 // The editor always starts from the hub's current layout. `base` is that
 // layout: Save later compares the hub against it, not against whatever it is
 // by then, to notice someone else's change.
 function startDraft(activity) {
-  const draft = cloneScreen(activity.screen);
+  const draft = cloneScreen({...activity.screen, keyboard:activity.keyboard?.deviceId||''});
   return {draft, base:layoutShape(draft)};
 }
 // The single write to the hub. It works from the hub's *current* configuration
@@ -599,8 +670,9 @@ async function submitLayout(id, draft, base, confirmReplace) {
   const fresh = await api('configuration');
   const activity = (fresh.activities||[]).find(a=>a.id===id);
   if(!activity)throw Error('This activity no longer exists on the hub.');
-  if(layoutShape(activity.screen)!==base&&!confirmReplace())return false;
+  if(editedShape(activity)!==base&&!confirmReplace())return false;
   activity.screen = {...(activity.screen||{}), columns:draft.columns, crossRow:draft.crossRow, cells:draft.cells, pinned:draft.pinned};
+  if(draft.keyboard)activity.keyboard = {deviceId:draft.keyboard};else delete activity.keyboard;
   await api('configuration',{revision:fresh.revision, configuration:fresh});
   state.config = await api('configuration');
   return true;
@@ -651,6 +723,14 @@ function editPinnedHtml(activity) {
   const cells = Array.from({length:columns},(_,slot)=>editCellHtml(list.find(c=>c.slot===slot)||null,'pinned',slot)).join('');
   return `<div class="cells edit-grid" data-columns="${escape(String(columns))}">${cells}</div>`;
 }
+// The device whose keyboard this remote's Keyboard button types into.
+const keyboardDevices = () => state.devices.filter(d=>d.keyboard);
+function keyboardSettingHtml(selected) {
+  const devices = keyboardDevices(), missing = selected && !devices.some(d=>d.id===selected);
+  return `<div class="keyboard-setting"><label for="keyboard-device">Keyboard</label>
+    <select id="keyboard-device" data-keyboard-device${devices.length||selected?'':' disabled'}><option value="">None</option>${devices.map(d=>`<option value="${escape(d.id)}"${d.id===selected?' selected':''}>${escape(d.name)}</option>`).join('')}${missing?`<option value="${escape(selected)}" selected>Missing device</option>`:''}</select>
+    <small>${devices.length||selected?'Adds a Keyboard button to this remote that types on this device.':'A device that can type, such as a Roku, has to be added first (Setup › Roku).'}</small></div>`;
+}
 function editorHtml(model, ui) {
   const full = zoneList(model,'cells').length>=MAX_CELLS, pad = arrowPadPlan(model);
   return `<p class="edit-hint">${ui.placing?'Tap where the arrow pad should go.':'Tap an empty square to add a button. Press and hold a button to remove it. The bottom row stays on screen while you use the remote.'}</p>
@@ -659,6 +739,7 @@ function editorHtml(model, ui) {
       :pad.crossed?`<button class="add-row" type="button" data-move-pad>${icon('Plus')}Move arrow pad</button>`
       :`<button class="add-row" type="button" data-add-pad ${pad.add.length?'':'disabled'}>${icon('Plus')}Add arrow pad</button>${pad.reason?`<p class="edit-hint">${pad.reason}</p>`:''}`}
     ${full?'<p class="edit-hint">The remote has reached its button limit.</p>':'<button class="add-row" type="button" data-add-row>'+icon('Plus')+'Add row</button>'}
+    ${keyboardSettingHtml(model.screen.keyboard)}
     <div class="pinned">${editPinnedHtml(model)}</div>`;
 }
 
@@ -771,6 +852,9 @@ function renderEditor(ctx) {
       draft.crossRow = row;ui.placing = false;changed();
     }
     else if(event.target.closest('[data-add-row]')){ui.extraRows++;draw();}
+  };
+  ctx.content.onchange = event => {
+    if(event.target.closest?.('[data-keyboard-device]')){draft.keyboard = event.target.value;changed();}
   };
   ctx.actions.onclick = event => {if(event.target.closest('[data-save]'))save();else if(event.target.closest('[data-cancel]'))cancel();};
   draw();
