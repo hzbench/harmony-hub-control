@@ -37,7 +37,7 @@ change one (it is part of the configuration, so it is revision-checked and
 backed up with it). The hub only contacts private-network IPv4 addresses
 (10/8, 172.16/12, 192.168/16) on that fixed port, so a configuration cannot
 point the hub at arbitrary hosts. Controllers can send a saved Roku's commands
-but cannot change its address. Typed text is limited to 64 characters per request, printable characters plus Backspace and Enter, and is sent one key press at a time.
+but cannot change its address. Typed text is limited to 64 characters per request (printable characters plus Backspace and Enter, no control or line-separator characters) and is sent one key press at a time. Because it can be a password, the text is removed from the stored operation record as soon as typing ends; only its length is kept. While a request is queued or running its text is in the hub's temporary operation file, which is cleared on reboot.
 
 ## Data And Recovery
 
