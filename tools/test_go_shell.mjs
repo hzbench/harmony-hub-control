@@ -272,7 +272,7 @@ console.log('Activity remote shows the edit link only to the owner and copes wit
 context.location.hash='#/edit/watch';show();
 assert.equal(el('back').dataset.href,'#/activity/watch');
 context.location.hash='#/activity/watch';show();
-assert.equal(el('back').dataset.href,'#/activities');assert.equal(context.document.body.dataset.reserveNotice,'true');
+assert.equal(el('back').dataset.href,'#/activities');assert.equal(context.document.body.dataset.reserveNotice,'true');assert.equal(context.document.body.dataset.screen,'activity','the screen name is on the body for per-screen styling');
 context.location.hash='#/devices';show();assert.equal(context.document.body.dataset.reserveNotice,'false');
 context.location.hash='#/setup';show();assert.equal(context.document.body.dataset.reserveNotice,'true','Setup holds space for its saved/error notice so the form does not jump');context.location.hash='#/devices';show();
 console.log('Back arrows return to the right parent; only remotes reserve space for send status');
@@ -484,8 +484,8 @@ assert.match(eh,/class="cell missing" type="button" data-zone="cells" data-slot=
 assert.match(eh,/Gone \(its device or command no longer exists\)\. Press and hold to remove\./);
 assert.match(eh,/aria-label="Volume up\. Press and hold to remove\."/);
 assert.match(eh,/aria-label="Empty slot\. Tap to add a button\."/);
-assert.match(eh,/Tap an empty square to add a button\. Press and hold a button to remove it\./);
-assert.match(eh,/The bottom row stays on screen/);assert.doesNotMatch(eh,/Always visible/i);
+assert.doesNotMatch(eh,/class="edit-hint"/,'no paragraph above the grid pushing the buttons down');
+assert.match(eh,/<p class="pinned-caption">Fixed bottom row<\/p>/,'the fixed row says what it is');assert.doesNotMatch(eh,/Always visible/i);
 assert.match(eh,/data-add-row/);assert.doesNotMatch(eh,/data-command=/,'editor buttons must never send commands');
 assert.deepEqual(emptied(X.editorHtml({id:'w',steps:[],screen:editAct},{extraRows:1}),'cells').length,8);
 const fullAct={id:'f',steps:[],screen:{columns:4,cells:Array.from({length:32},(_,i)=>sc('C'+i,i)),pinned:[]}};
@@ -750,6 +750,21 @@ console.log('Editor draws gaps as empty squares, lists every cell (including sta
   context.location.hash='#/activity/w';show();assert.equal(context.window.harmonyHandleBack,null,'the hook goes away with the screen');
   context.location.hash='#/edit/w';
 
+  // The instructions live behind a ? button in the header instead of above the grid.
+  {
+    ({content,ctx}=setup(base0));
+    assert.match(ctx.actions.innerHTML,/<button type="button" class="header-action" data-help aria-label="How editing works"[^>]*>[^]*<button type="button" class="cancel-button"/,'the help button sits in the header, before Cancel');
+    assert.doesNotMatch(content.innerHTML,/Tap an empty square to add a button/);assert.doesNotMatch(content.innerHTML,/class="edit-hint"/);
+    ctx.actions.onclick({target:{closest:sel=>sel==='[data-help]'?{}:null}});
+    assert.equal(sheet.open,true);
+    for(const line of [/Tap an empty square to add a button/,/Press and hold a button to remove it/,/Add arrow pad/,/bottom row stays on screen/,/Nothing changes until you tap Save/])assert.match(sheet.innerHTML,line);
+    assert.equal(saveEnabled(ctx),false,'reading the help changes nothing');
+    assert.equal(context.window.harmonyHandleBack(),true,'Back closes the help first');assert.equal(sheet.open,false);
+    ctx.actions.onclick({target:{closest:sel=>sel==='[data-help]'?{}:null}});sheet.onclick({target:{closest:sel=>sel==='[data-sheet-cancel]'?{}:null}});assert.equal(sheet.open,false,'Done closes it');
+    // The one hint that stays is the one that is needed mid-task.
+    click(content,'[data-add-pad]');assert.match(content.innerHTML,/<p class="edit-hint">Tap where the arrow pad should go\.<\/p>/);
+    click(content,'[data-place-cancel]');assert.doesNotMatch(content.innerHTML,/class="edit-hint"/);
+  }
   // Keyboard setting: which device the remote's Keyboard button types on. It is saved on the activity, not in its layout.
   {
     const kb={id:'kb',name:'Den Roku',type:'Roku',transport:'roku',keyboard:true,commands:[{name:'Home'}]};
