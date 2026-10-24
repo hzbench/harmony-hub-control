@@ -66,6 +66,9 @@ jobs:
       - name: Asset consistency tests
         run: python3 tools/test_assets.py
 
+      - name: Signed release bundle tests
+        run: python3 tools/test_release_bundle.py
+
       - name: Upload/backup logic tests
         run: python3 tools/test_upload.py
 
