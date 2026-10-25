@@ -386,7 +386,7 @@ const TYPE_BY_CATEGORY={TVs:'Television',Projectors:'Television',Monitors:'Telev
   Audio_and_Video_Receivers:'Audio',SoundBars:'Audio',Speakers:'Audio',CD_Players:'Audio',MiniDisc:'Audio',Car_Multimedia:'Audio',
   'Blu-Ray':'Media Player',DVD_Players:'Media Player',Streaming_Devices:'Media Player',Cable_Boxes:'Media Player',VCR:'Media Player',Laserdisc:'Media Player',Consoles:'Media Player',TV_Tuner:'Media Player','DVB-T':'Media Player'};
 const KIND_WORDS=[['Media Player',['dvd','vcr','bluray','blu','cable','catv','satellite','sat','stb','dvr','tivo','player','streaming','console','settop']],
-  ['Television',['tv','tvs','television','projector','monitor','display']],['Audio',['audio','receiver','amplifier','amp','stereo','tuner','cd','speaker','soundbar']]];
+  ['Television',['tv','tvs','hdtv','television','projector','monitor','display']],['Audio',['audio','receiver','amplifier','amp','stereo','tuner','cd','speaker','soundbar']]];
 function profileMeta(path) {
   const p=path.split('/'),converted=p[0]==='_Converted_';
   let brand='',kind='';
@@ -399,17 +399,19 @@ function profileMeta(path) {
   if(bn&&profileNorm(title).startsWith(bn)){let seen='',n=0;while(n<title.length&&seen.length<bn.length){seen+=profileNorm(title[n]);n++;}model=title.slice(n).replace(/^[\s_:-]+/,'')||title;}
   if(kind&&!/^unknown/i.test(kind))model=`${kind.replace(/_/g,' ')} ${model}`;
   if(bn&&profileNorm(model)===bn)model='';   // the brand's generic profile has no model of its own
-  const words=kind.toLowerCase().split(/[^a-z0-9]+/);
-  const deviceType=converted?(KIND_WORDS.find(([,list])=>list.some(w=>words.includes(w)))?.[0]||''):TYPE_BY_CATEGORY[p[0]]||'Other';
+  // A converted profile has no category. Its device-kind folder (CSV ones) or else its file name may say what it is.
+  const typeOfWords = text => {const words=text.toLowerCase().split(/[^a-z0-9]+/);return KIND_WORDS.find(([,list])=>list.some(w=>words.includes(w)))?.[0]||'';};
+  const deviceType=converted?(typeOfWords(kind)||typeOfWords(title)):TYPE_BY_CATEGORY[p[0]]||'Other';
   return {brand,model,deviceType,curated:!converted};
 }
 function findProfiles(tree,{type='',brand='',model=''}) {
   const b=profileNorm(brand),m=profileNorm(model),tokens=model.split(/\s+/).map(profileNorm).filter(Boolean);
   if(!type&&!b&&!tokens.length)return [];
   return tree.filter(f=>f.type==='blob'&&f.path.endsWith('.ir')).map(f=>({...f,...profileMeta(f.path)}))
-    .filter(f=>(!type||f.deviceType===type)&&(!b||profileNorm(f.brand).includes(b))&&tokens.every(t=>profileNorm(f.path).includes(t)))
-    .map(f=>({...f,brandExact:!!b&&profileNorm(f.brand)===b,exact:!!m&&profileNorm(f.model)===m}))
-    .sort((a,c)=>Number(c.brandExact)-Number(a.brandExact)||Number(c.exact)-Number(a.exact)||Number(c.curated)-Number(a.curated)||a.path.localeCompare(c.path));
+    // A chosen type keeps profiles of that type, and also those that do not say (listed after the ones that do).
+    .filter(f=>(!type||f.deviceType===type||!f.deviceType)&&(!b||profileNorm(f.brand).includes(b))&&tokens.every(t=>profileNorm(f.path).includes(t)))
+    .map(f=>({...f,brandExact:!!b&&profileNorm(f.brand)===b,exact:!!m&&profileNorm(f.model)===m,typed:!type||f.deviceType===type}))
+    .sort((a,c)=>Number(c.typed)-Number(a.typed)||Number(c.brandExact)-Number(a.brandExact)||Number(c.exact)-Number(a.exact)||Number(c.curated)-Number(a.curated)||a.path.localeCompare(c.path));
 }
 // The model isn't in the index, but the brand often is: rank that brand's profiles by how likely they are to
 // match, so a near miss is still a short list. This is a guess from the names, which is why the user tests.
@@ -437,7 +439,7 @@ function renderSearch(again=false) {
   // Changing an existing device's commands starts from that device; a new one starts from what was last searched.
   if(device&&!Object.keys(profileSearch).length)profileSearch={type:device.type||'',brand:device.manufacturer||'',model:device.model||''};
   const filters=profileSearch;
-  mount(`<div class="editor">${state.draft?setupProgress('Profile'):''}<h2>Find a profile</h2><form id="search-form"><label for="profile-type">Device type</label><select id="profile-type"><option value="">Any type</option>${PROFILE_TYPES.map(t=>`<option ${t===filters.type?'selected':''}>${t}</option>`).join('')}</select><div class="suggest">${field('Brand','profile-brand',filters.brand||'','search','autocomplete="off"')}<div id="brand-suggestions" class="suggestions" role="listbox" aria-label="Matching brands" hidden></div></div>${field('Model or keywords','profile-model',filters.model||'','search')}<small>Fill in any of these. Some community profiles do not say what type of device they are, so they are hidden when a type is chosen.</small><div class="toolbar"><button class="primary">Search</button><button type="button" id="search-back">Back</button></div></form><div id="profile-results" class="list"></div></div>`);
+  mount(`<div class="editor">${state.draft?setupProgress('Profile'):''}<h2>Find a profile</h2><form id="search-form"><label for="profile-type">Device type</label><select id="profile-type"><option value="">Any type</option>${PROFILE_TYPES.map(t=>`<option ${t===filters.type?'selected':''}>${t}</option>`).join('')}</select><div class="suggest">${field('Brand','profile-brand',filters.brand||'','search','autocomplete="off"')}<div id="brand-suggestions" class="suggestions" role="listbox" aria-label="Matching brands" hidden></div></div>${field('Model or keywords','profile-model',filters.model||'','search')}<small>Fill in any of these. Many community profiles do not say what type of device they are. With a type chosen, those are listed after the ones that match.</small><div class="toolbar"><button class="primary">Search</button><button type="button" id="search-back">Back</button></div></form><div id="profile-results" class="list"></div></div>`);
   $('search-back').onclick=returnToDevice;
   const results=$('profile-results'),form=$('search-form');
   // Brand suggestions come from the index; fetching it early is a convenience, and a failure shows up on Search.
