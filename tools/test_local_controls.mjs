@@ -199,15 +199,31 @@ const layout=JSON.parse(vm.runInContext('JSON.stringify(defaultLayout(activeDevi
 for(const [slot,name] of [['volumeup','VOL+'],['volumedown','VOL-'],['up','UP_ARROW'],['down','DN_ARROW'],['menu','HOME_MENU'],['play','PLAY PAUSE'],['input','INPUT+']])assert.equal(layout.find(b=>b.slot===slot).command,name);
 vm.runInContext('state.config.layouts={tv:[]}',remote);
 assert.equal(vm.runInContext('remoteButton("volumeup",activeDevice())',remote),'','explicitly hidden controls must stay hidden');
-vm.runInContext(source.slice(source.indexOf('const profileNorm='),source.indexOf('let profileIndex;')),remote);
-const matches=vm.runInContext(`findProfiles([
-  {type:'blob',path:'Air_Conditioners/Pioneer/Pioneer_AC.ir'},
-  {type:'blob',path:'Audio_and_Video_Receivers/Pioneer/Pioneer_VSX_LX52.ir'},
-  {type:'blob',path:'_Converted_/Pronto/P/Pioneer/VSX-52.ir'}
-],'Pioneer',{manufacturer:'Pioneer',model:'VSX-LX52',type:'Audio'})`,remote);
-assert.equal(matches[0].exact,true);assert.equal(matches.length,3);
-assert.equal(vm.runInContext(`findProfiles([{type:'blob',path:'SoundBars/Bose/Bose_Solo_5.ir'}],'Bose Solo-5',{manufacturer:'Bose',model:'Solo 5',type:'Audio'}).length`,remote),1);
-console.log('Profile ranking, punctuation-insensitive search, receiver aliases and hidden controls passed');
+vm.runInContext(source.slice(source.indexOf('const profileNorm='),source.indexOf('let profileIndex,')),remote);
+const IR=path=>({type:'blob',path});
+const pioneer=[IR('Air_Conditioners/Pioneer/Pioneer_AC.ir'),IR('Audio_and_Video_Receivers/Pioneer/Pioneer_VSX_LX52.ir'),IR('_Converted_/Pronto/P/Pioneer/VSX-52.ir'),IR('_Converted_/CSV/P/Pioneer/Projector/134_-1.ir')];
+const search=(files,filters)=>JSON.parse(vm.runInContext(`JSON.stringify(findProfiles(${JSON.stringify(files)},${JSON.stringify(filters)}))`,remote));
+let matches=search(pioneer,{brand:'Pioneer',model:'VSX-LX52'});
+assert.equal(matches.length,1);assert.equal(matches[0].exact,true);assert.equal(matches[0].brand,'Pioneer');assert.equal(matches[0].model,'VSX LX52');assert.equal(matches[0].deviceType,'Audio');
+matches=search(pioneer,{brand:'pioneer'});assert.equal(matches.length,4);assert.ok(matches[0].curated,'curated profiles rank before converted ones');
+assert.deepEqual(search(pioneer,{brand:'Pioneer',type:'Audio'}).map(f=>f.path),['Audio_and_Video_Receivers/Pioneer/Pioneer_VSX_LX52.ir'],'a type keeps only profiles known to be that type');
+assert.deepEqual(search(pioneer,{type:'Television'}).map(f=>f.path),['_Converted_/CSV/P/Pioneer/Projector/134_-1.ir'],'a converted CSV profile gets its type from its device folder');
+assert.deepEqual(search(pioneer,{}),[],'an empty search matches nothing');
+assert.equal(search([IR('SoundBars/Bose/Bose_Solo_5.ir')],{model:'Solo-5'}).length,1);
+const vizio=['TVs/Vizio/Vizio.ir','TVs/Vizio/Vizio_D43-C1.ir','TVs/Vizio/Vizio_M70Q6-J03.ir','TVs/Vizio/Vizio_XRT122.ir','SoundBars/Vizio/Vizio_SB4551.ir','TVs/Samsung/Samsung_UN55.ir'].map(IR);
+const closest=filters=>JSON.parse(vm.runInContext(`JSON.stringify(similarProfiles(${JSON.stringify(vizio)},${JSON.stringify(filters)}))`,remote));
+assert.deepEqual(search(vizio,{brand:'Vizio',model:'M55-C2'}),[],'an unknown model has no exact match');
+let near=closest({brand:'Vizio',type:'Television',model:'M55-C2'});
+assert.deepEqual(near.map(f=>f.path.split('/').pop()),['Vizio.ir','Vizio_D43-C1.ir','Vizio_M70Q6-J03.ir','Vizio_XRT122.ir'],'the brand generic profile first, then the same generation, then the rest; only that brand and type');
+assert.equal(near[0].model,'','a brand\'s generic profile has no model of its own');assert.equal(near[0].generic,true);assert.equal(near[1].sameGeneration,true);
+assert.equal(closest({brand:'Vizio',model:'M55-C2'}).length,5,'without a type the soundbar is offered too');
+assert.equal(closest({brand:'Nobody',model:'X1'}).length,0);
+const meta=path=>JSON.parse(vm.runInContext(`JSON.stringify(profileMeta(${JSON.stringify(path)}))`,remote));
+assert.deepEqual(meta('TVs/Samsung/Samsung_UN55.ir'),{brand:'Samsung',model:'UN55',deviceType:'Television',curated:true});
+assert.deepEqual(meta('Car_Multimedia/CD_Players/JVC/JVC_RM-RK50.ir'),{brand:'JVC',model:'RM-RK50',deviceType:'Audio',curated:true});
+assert.deepEqual(meta('_Converted_/Pronto/S/Samsung/PN64D8000.ir'),{brand:'Samsung',model:'PN64D8000',deviceType:'',curated:false});
+assert.deepEqual(meta('Fans/Generic_Fan_HS95104SK.ir'),{brand:'',model:'Generic Fan HS95104SK',deviceType:'Other',curated:true});
+console.log('Profile search by brand, model and type, path-derived details, ranking, receiver aliases and hidden controls passed');
 
 const setupCode=source.slice(source.indexOf('function renderSetupReview()'),source.indexOf('function renderDeviceTest('));
 for(const failRefresh of [false,true]){

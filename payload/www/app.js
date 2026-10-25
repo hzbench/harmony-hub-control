@@ -258,8 +258,8 @@ function deviceTestStatus(device) {
 async function mutate(path,body) {const result=await api(path,{...body,revision:state.config.revision});state.config=await api('configuration');return result;}
 async function saveConfig(configuration) {await mutate('configuration',{configuration});}
 function renderDeviceEditor(device=null) {
-  state.editor=device;
-  mount(`<div class="editor">${device?'':setupProgress(0)}<h2>${device?'Edit device':'Add device'}</h2><form id="device-form">${field('Name','device-name',device?.name||'','text','required maxlength="100"')}
+  state.editor=device;state.draft=null;  // this is the Bluetooth form or an existing device, never the infrared setup
+  mount(`<div class="editor"><h2>${device?'Edit device':'Add device'}</h2><form id="device-form">${field('Name','device-name',device?.name||'','text','required maxlength="100"')}
     ${!device?'<label for="transport">Control type</label><select id="transport"><option value="ir">Infrared</option><option value="bluetooth">Bluetooth keyboard / supported HID profile</option></select>':''}
     <div id="ir-fields" ${device?.transport==='bluetooth'?'hidden':''}><div class="fields"><div>${field('Brand','manufacturer',device?.manufacturer||'','text','required')}</div><div>${field('Model','model',device?.model||'','text','required')}</div></div><label for="device-type">Device type</label><select id="device-type">${deviceTypeOptions(device?.type||'Television')}</select></div>
     <div id="bt-fields" ${device?.transport!=='bluetooth'?'hidden':''}><label for="bt-type">Profile</label><select id="bt-type"><option value="btkeyboard">Bluetooth keyboard</option><option value="fire">Fire TV</option><option value="btkeyboard-nexus">Nexus keyboard</option><option value="ps3">PlayStation 3</option><option value="wii">Nintendo Wii</option></select>${field('Paired address','bt-address',device?.bdaddr||'','text','pattern="[0-9A-Fa-f:]{17}"')}<div class="toolbar"><button type="button" data-action="bt-pair">Start pairing</button><button type="button" data-action="bt-status">Check pairing</button><button type="button" data-action="bt-stop">Finish pairing</button></div><pre id="bt-result" hidden></pre></div>
@@ -267,22 +267,16 @@ function renderDeviceEditor(device=null) {
     ${device?'<section class="section"><h2>Commands</h2><div class="toolbar">'+(device.transport==='bluetooth'?'<button data-action="bt-command">Add key command</button>':'<button data-action="import-profile">Import profile</button><button data-action="learn">Learn a command</button><button data-action="search-profile">Find profile</button>')+'<button data-action="layout">Assign buttons</button></div><div class="list">'+device.commands.map(c=>'<div class="list-row"><span>'+escape(c.name)+'</span><button data-device="'+escape(device.id)+'" data-command="'+escape(c.name)+'" title="Send '+escape(c.name)+'">'+icon('Play')+'</button></div>').join('')+'</div></section>':''}</div>`);
   if(device){$('bt-type').value=device.type||'btkeyboard';if(device.transport==='ir')$('device-type').value=device.type||'Television';}
   if(!device){
-    const draft=state.draft;
-    if(draft){$('device-name').value=draft.name;$('manufacturer').value=draft.manufacturer;$('model').value=draft.model;$('device-type').value=draft.type;}
-    $('device-name').required=false;$('device-name').previousElementSibling.textContent='Name (optional)';
-    $('device-form').querySelector('[type=submit]').textContent='Continue';
-    $('transport').onchange=()=>{const bt=$('transport').value==='bluetooth';$('ir-fields').hidden=bt;$('bt-fields').hidden=!bt;$('manufacturer').required=!bt;$('model').required=!bt;$('device-name').required=bt;$('device-form').querySelector('[type=submit]').textContent=bt?'Save Bluetooth device':'Continue';};
+    // Infrared devices start from a profile (renderProfileChoice); this form is the Bluetooth path.
+    $('transport').value='bluetooth';$('ir-fields').hidden=true;$('bt-fields').hidden=false;
+    $('manufacturer').required=false;$('model').required=false;
+    $('device-form').querySelector('[type=submit]').textContent='Save Bluetooth device';
+    $('transport').onchange=()=>{if($('transport').value==='ir')renderProfileChoice();};
   }
   if(device?.transport==='bluetooth'){$('manufacturer').required=false;$('model').required=false;}
   $('device-form').onsubmit=async event=>{
     event.preventDefault();await busy(event.submitter,'Saving...',async()=>{
       const transport=device?.transport||$('transport').value;
-      if(!device&&transport==='ir'){
-        const manufacturer=$('manufacturer').value.trim(),model=$('model').value.trim();
-        const previous=state.draft?.manufacturer===manufacturer&&state.draft?.model===model?state.draft:{};
-        state.draft={...previous,name:$('device-name').value.trim()||`${manufacturer} ${model}`,manufacturer,model,type:$('device-type').value};
-        renderProfileChoice();return;
-      }
       const result=await mutate('devices',{action:device?'update':'create',deviceId:device?.id||'',name:$('device-name').value,
         transport,manufacturer:$('manufacturer').value,model:$('model').value,type:transport==='bluetooth'?$('bt-type').value:$('device-type').value,bdaddr:$('bt-address').value});
       await loadDevices();const saved=state.devices.find(d=>d.id===(result.deviceId||device?.id))||state.devices.find(d=>d.name===$('device-name').value);
@@ -310,16 +304,45 @@ function renderLayout() {
     $('layout-form').onsubmit=async e=>{e.preventDefault();await busy(e.submitter,'Saving...',async()=>{const config=structuredClone(state.config);config.layouts[device.id]=rows.filter(r=>r.command);await saveConfig(config);writeLocal('harmony-device',device.id);writeLocal('harmony-activity','');show('remote');notice('Remote buttons saved.');});};
   };draw();
 }
-function setupProgress(step) {
-  return `<ol class="setup-progress" aria-label="Device setup">${['Device','Profile','Remote'].map((name,i)=>`<li ${i===step?'aria-current="step"':''}>${i+1}. ${name}</li>`).join('')}</ol>`;
+// The steps the user sees. Learning replaces choosing commands from a profile, so it has one fewer.
+const SETUP_FLOWS={profile:['Profile','Details','Commands','Review'],learn:['Learn','Details','Review']};
+function setupProgress(name) {
+  const steps=SETUP_FLOWS[state.draft?.flow==='learn'?'learn':'profile'],current=name==='Learn'||name==='Profile'?0:steps.indexOf(name);
+  return `<ol class="setup-progress" aria-label="Device setup">${steps.map((label,i)=>`<li ${i===current?'aria-current="step"':''}>${i+1}. ${label}</li>`).join('')}</ol>`;
 }
 function returnToDevice() {state.draft?renderProfileChoice():renderDeviceEditor(state.editor);}
+// A draft that holds something worth a "discard?" prompt (opening the add flow alone does not).
+const draftStarted=()=>!!(state.draft&&(state.draft.commands?.length||state.draft.pending||state.draft.manufacturer||state.draft.model||state.draft.nameInput));
+function startDeviceSetup() {state.draft={};state.editor=null;profileSearch={};renderProfileChoice();}
 function renderProfileChoice() {
-  const draft=state.draft;
-  mount(`<div class="editor">${setupProgress(1)}<h2>${escape(draft.name)}</h2><div class="choice-list"><button class="primary" data-action="search-profile">${icon('Search')} Find a profile</button><button data-action="import-profile">${icon('Archive')} Import a profile file</button><button id="draft-learn">Learn from a remote</button></div>${draft.commands?.length?'<button id="resume-review">Review selected commands</button>':''}<div class="toolbar"><button id="setup-back">Back</button><button data-action="devices">Cancel setup</button></div></div>`);
-  $('setup-back').onclick=()=>renderDeviceEditor();
+  const draft=state.draft||={};state.editor=null;draft.flow='profile';
+  mount(`<div class="editor">${setupProgress('Profile')}<h2>Add device</h2><label for="transport">Control type</label><select id="transport"><option value="ir">Infrared</option><option value="bluetooth">Bluetooth keyboard / supported HID profile</option></select><p>Start from a profile or a remote. You will check the device details next.</p><div class="choice-list"><button class="primary" data-action="search-profile">${icon('Search')} Find a profile</button><button data-action="import-profile">${icon('Archive')} Import a profile file</button><button id="draft-learn">Learn from a remote</button></div>${draft.commands?.length?'<button id="resume-review">Review selected commands</button>':''}<div class="toolbar"><button data-action="devices">Cancel setup</button></div></div>`);
+  $('transport').onchange=()=>{if($('transport').value==='bluetooth')renderDeviceEditor();};
   $('draft-learn').onclick=()=>renderDraftLearn();
   if($('resume-review'))$('resume-review').onclick=()=>renderSetupReview();
+}
+// A profile (found or imported) is chosen: show the details it implies, then pick its commands.
+// Without a draft this is an existing device getting more commands, so go straight to them.
+function chooseProfile(text,path,source,back,meta=null) {
+  const draft=state.draft;
+  if(!draft)return importProfile(text,path,source,back);
+  if(draft.profilePath!==path)Object.assign(draft,{profilePath:path,nameInput:'',nameHint:meta?'':path.split('/').pop().replace(/\.[^.]+$/,''),
+    manufacturer:meta?.brand||'',model:meta?.model||'',type:meta?.deviceType||profileSearch.type||'',typeKnown:!!meta?.deviceType});
+  draft.flow='profile';draft.pending={text,path,source,back};
+  renderDraftDetails();
+}
+function renderDraftDetails() {
+  const draft=state.draft,learn=draft.flow==='learn';
+  mount(`<div class="editor">${setupProgress('Details')}<h2>Device details</h2>${draft.profilePath&&!learn?`<p class="profile-source">${escape(profileTitle(draft.profilePath))}</p>`:''}<form id="details-form">${field('Name (optional)','device-name',draft.nameInput||'','text',`maxlength="100" placeholder="${escape(draft.nameHint||'Brand and model')}"`)}<div class="fields"><div>${field('Brand','manufacturer',draft.manufacturer||'','text','required')}</div><div>${field('Model','model',draft.model||'','text','required')}</div></div><label for="device-type">Device type</label><select id="device-type">${deviceTypeOptions(draft.type||'Television')}</select>${draft.profilePath&&!learn&&!draft.typeKnown?'<small>This profile does not say what kind of device it is. Check the type.</small>':''}<div class="toolbar"><button class="primary" type="submit">Continue</button><button type="button" id="details-back">Back</button><button type="button" data-action="devices">Cancel setup</button></div></form></div>`);
+  window.scrollTo(0,0);
+  const keep=()=>{const manufacturer=$('manufacturer').value.trim(),model=$('model').value.trim(),nameInput=$('device-name').value.trim();
+    Object.assign(draft,{nameInput,name:nameInput||`${manufacturer} ${model}`,manufacturer,model,type:$('device-type').value});};
+  $('details-back').onclick=()=>{keep();learn?renderDraftLearn():draft.pending.back();};
+  $('details-form').onsubmit=async event=>{event.preventDefault();keep();
+    if(learn){draft.reviewBack=renderDraftDetails;renderSetupReview();return;}
+    const {text,path,source}=draft.pending;
+    await busy(event.submitter,'Loading...',()=>importProfile(text,path,source,renderDraftDetails));
+  };
 }
 function profilePayload(rows) {return rows.map(r=>`${String(r.name).replace(/[|"\r\n\\]/g,' ').slice(0,96).trim()}|${r.raw?'raw|'+r.raw:r.keycode}`).join('\n');}
 async function importProfile(text,path='profile.json',source='custom',back=returnToDevice,selection=null) {
@@ -329,7 +352,7 @@ async function importProfile(text,path='profile.json',source='custom',back=retur
   const device=state.editor,basics=new Set(defaultLayout(supported).map(b=>b.command));
   supported.sort((a,b)=>Number(basics.has(b.name))-Number(basics.has(a.name)));
   const selected=new Set(selection??supported.flatMap((r,i)=>supported.length<=40||basics.has(r.name)?[i]:[]));
-  mount(`<div class="editor">${state.draft?setupProgress(1):''}<h2>Choose commands</h2><p class="profile-source">${escape(profileTitle(path))}</p><small>${supported.length} available${rows.length>supported.length?`; ${rows.length-supported.length} unsupported, excluded`:''}</small><form id="profile-form">${field('Filter commands','profile-filter','','search')}<div class="toolbar selection-tools"><button type="button" data-select="basic">Basic controls</button><button type="button" data-select="all">Select all</button><button type="button" data-select="none">Clear</button></div><div id="profile-commands" class="command-selection">${supported.map((r,i)=>`<label class="check-label"><input type="checkbox" name="command" value="${i}" ${selected.has(i)?'checked':''}>${escape(r.name)}</label>`).join('')}</div><div class="toolbar setup-actions"><p id="selection-count" role="status"></p><button class="primary" id="accept-profile">${state.draft?'Review remote':'Save selected commands'}</button><button type="button" id="profile-back">Back</button></div></form></div>`);
+  mount(`<div class="editor">${state.draft?setupProgress('Commands'):''}<h2>Choose commands</h2><p class="profile-source">${escape(profileTitle(path))}</p><small>${supported.length} available${rows.length>supported.length?`; ${rows.length-supported.length} unsupported, excluded`:''}</small><form id="profile-form">${field('Filter commands','profile-filter','','search')}<div class="toolbar selection-tools"><button type="button" data-select="basic">Basic controls</button><button type="button" data-select="all">Select all</button><button type="button" data-select="none">Clear</button></div><div id="profile-commands" class="command-selection">${supported.map((r,i)=>`<label class="check-label"><input type="checkbox" name="command" value="${i}" ${selected.has(i)?'checked':''}>${escape(r.name)}</label>`).join('')}</div><div class="toolbar setup-actions"><p id="selection-count" role="status"></p><button class="primary" id="accept-profile">${state.draft?'Review remote':'Save selected commands'}</button><button type="button" id="profile-back">Back</button></div></form></div>`);
   window.scrollTo(0,0);
   const update=()=>{$('selection-count').textContent=`${selected.size} commands selected`;$('accept-profile').disabled=!selected.size;};
   $('profile-commands').onchange=e=>{e.target.checked?selected.add(+e.target.value):selected.delete(+e.target.value);update();};
@@ -349,48 +372,120 @@ async function importProfile(text,path='profile.json',source='custom',back=retur
   });};
 }
 function renderImport() {
-  mount(`<div class="editor">${state.draft?setupProgress(1):''}<h2>Import a profile</h2><label for="profile-file">Profile file (up to 2 MB)</label><input id="profile-file" type="file" accept=".json,.ir,.csv,.conf,.xml,.txt,.girr"><small>Flipper IR, Pronto, LIRC, GIRR, CSV or JSON</small><div class="toolbar"><button id="import-back">Back</button></div></div>`);
+  mount(`<div class="editor">${state.draft?setupProgress('Profile'):''}<h2>Import a profile</h2><label for="profile-file">Profile file (up to 2 MB)</label><input id="profile-file" type="file" accept=".json,.ir,.csv,.conf,.xml,.txt,.girr"><small>Flipper IR, Pronto, LIRC, GIRR, CSV or JSON</small><div class="toolbar"><button id="import-back">Back</button></div></div>`);
   $('import-back').onclick=returnToDevice;
-  $('profile-file').onchange=async event=>{const input=event.target;try{const file=input.files[0];if(!file)return;if(file.size>2*1024*1024)throw Error('Profile exceeds the 2 MB import limit.');const text=await file.text();if(input.isConnected)await importProfile(text,file.name,'custom',renderImport);}catch(error){if(input.isConnected)notice(error.message,true);}};
+  $('profile-file').onchange=async event=>{const input=event.target;try{const file=input.files[0];if(!file)return;if(file.size>2*1024*1024)throw Error('Profile exceeds the 2 MB import limit.');const text=await file.text();if(input.isConnected)await chooseProfile(text,file.name,'custom',renderImport);}catch(error){if(input.isConnected)notice(error.message,true);}};
 }
 const profileNorm=value=>String(value).toLowerCase().replace(/[^a-z0-9]/g,'');
 function profileTitle(path) {return path.split('/').pop().replace(/\.ir$/i,'').replace(/_/g,' ');}
-function findProfiles(tree,query,device) {
-  const tokens=query.split(/\s+/).map(profileNorm).filter(Boolean),model=profileNorm(device.model),family=(device.model.match(/^[a-z]+/i)||[''])[0].toLowerCase();
-  const category={Audio:/^(Audio|SoundBars|Speakers|Home_Theater)/i,Television:/^(TVs|Projectors)/i,'Media Player':/^(DVD|Blu|Streaming|Set_Top|Media)/i}[device.type];
-  return tree.filter(f=>f.type==='blob'&&f.path.endsWith('.ir')&&tokens.every(t=>profileNorm(f.path).includes(t)))
-    .map(f=>({...f,exact:!!model&&[model,profileNorm(device.manufacturer+device.model)].includes(profileNorm(profileTitle(f.path))),family:family.length>1&&profileNorm(profileTitle(f.path)).includes(family),category:!!category&&category.test(f.path)}))
-    .sort((a,b)=>Number(b.exact)-Number(a.exact)||Number(b.family)-Number(a.family)||Number(b.category)-Number(a.category)||a.path.localeCompare(b.path));
+// The community index (Flipper-IRDB) is a git tree. Hand-curated profiles are Category/Brand/Model.ir (a few have
+// an extra level). _Converted_/Format/Letter/Brand[/Kind]/File.ir holds ~7,000 converted ones with no category;
+// the CSV ones name a kind of device in the folder before the file.
+const PROFILE_TYPES=['Television','Audio','Media Player','Other'];
+const TYPE_BY_CATEGORY={TVs:'Television',Projectors:'Television',Monitors:'Television',Touchscreen_Displays:'Television',Digital_Signs:'Television',
+  Audio_and_Video_Receivers:'Audio',SoundBars:'Audio',Speakers:'Audio',CD_Players:'Audio',MiniDisc:'Audio',Car_Multimedia:'Audio',
+  'Blu-Ray':'Media Player',DVD_Players:'Media Player',Streaming_Devices:'Media Player',Cable_Boxes:'Media Player',VCR:'Media Player',Laserdisc:'Media Player',Consoles:'Media Player',TV_Tuner:'Media Player','DVB-T':'Media Player'};
+const KIND_WORDS=[['Media Player',['dvd','vcr','bluray','blu','cable','catv','satellite','sat','stb','dvr','tivo','player','streaming','console','settop']],
+  ['Television',['tv','tvs','television','projector','monitor','display']],['Audio',['audio','receiver','amplifier','amp','stereo','tuner','cd','speaker','soundbar']]];
+function profileMeta(path) {
+  const p=path.split('/'),converted=p[0]==='_Converted_';
+  let brand='',kind='';
+  if(converted){brand=p[3]||'';kind=p.length>5?p[4]:'';}
+  else if(p[0]==='Car_Multimedia'&&p.length>3)brand=p[2];
+  else if(p.length>2)brand=p[1];
+  brand=brand.replace(/_/g,' ');
+  const title=profileTitle(path),bn=profileNorm(brand);
+  let model=title;
+  if(bn&&profileNorm(title).startsWith(bn)){let seen='',n=0;while(n<title.length&&seen.length<bn.length){seen+=profileNorm(title[n]);n++;}model=title.slice(n).replace(/^[\s_:-]+/,'')||title;}
+  if(kind&&!/^unknown/i.test(kind))model=`${kind.replace(/_/g,' ')} ${model}`;
+  if(bn&&profileNorm(model)===bn)model='';   // the brand's generic profile has no model of its own
+  const words=kind.toLowerCase().split(/[^a-z0-9]+/);
+  const deviceType=converted?(KIND_WORDS.find(([,list])=>list.some(w=>words.includes(w)))?.[0]||''):TYPE_BY_CATEGORY[p[0]]||'Other';
+  return {brand,model,deviceType,curated:!converted};
 }
-let profileIndex;
-function renderSearch(query=null) {
-  const device=state.draft||state.editor;
-  mount(`<div class="editor">${state.draft?setupProgress(1):''}<h2>Find a profile</h2><form id="search-form">${field('Brand and model','profile-query',query??`${device.manufacturer} ${device.model}`,'search','required')}<div class="toolbar"><button class="primary">Search</button><button type="button" id="search-back">Back</button></div></form><div id="profile-results" class="list"></div></div>`);
+function findProfiles(tree,{type='',brand='',model=''}) {
+  const b=profileNorm(brand),m=profileNorm(model),tokens=model.split(/\s+/).map(profileNorm).filter(Boolean);
+  if(!type&&!b&&!tokens.length)return [];
+  return tree.filter(f=>f.type==='blob'&&f.path.endsWith('.ir')).map(f=>({...f,...profileMeta(f.path)}))
+    .filter(f=>(!type||f.deviceType===type)&&(!b||profileNorm(f.brand).includes(b))&&tokens.every(t=>profileNorm(f.path).includes(t)))
+    .map(f=>({...f,brandExact:!!b&&profileNorm(f.brand)===b,exact:!!m&&profileNorm(f.model)===m}))
+    .sort((a,c)=>Number(c.brandExact)-Number(a.brandExact)||Number(c.exact)-Number(a.exact)||Number(c.curated)-Number(a.curated)||a.path.localeCompare(c.path));
+}
+// The model isn't in the index, but the brand often is: rank that brand's profiles by how likely they are to
+// match, so a near miss is still a short list. This is a guess from the names, which is why the user tests.
+function similarProfiles(tree,filters) {
+  const m=profileNorm(filters.model),b=profileNorm(filters.brand),generation=(filters.model.match(/[-_ ]?([a-z])\d*$/i)||[])[1]?.toLowerCase();
+  const prefix=(a,c)=>{let n=0;while(n<a.length&&a[n]===c[n])n++;return n;};
+  const files=findProfiles(tree,{type:filters.type,brand:filters.brand}).map(f=>{
+    const name=profileNorm(f.model),generic=!name||name===b||/generic|universal/i.test(f.model);
+    const sameGeneration=!!generation&&new RegExp(`[-_ ]${generation}\\d*$`,'i').test(f.model);
+    return {...f,generic,sameGeneration,score:(generic?6:0)+(sameGeneration?4:0)+prefix(m,name)+(f.curated?1:0)};
+  });
+  return files.sort((a,c)=>c.score-a.score||a.path.localeCompare(c.path));
+}
+const profileLabel=f=>`${`${f.brand} ${f.model||'generic profile'}`.trim()}${f.deviceType?` (${f.deviceType})`:''}`;
+let profileIndex,profileSearch={};
+async function loadProfileIndex() {
+  if(profileIndex)return profileIndex;
+  const response=await fetch('https://api.github.com/repos/Lucaslhm/Flipper-IRDB/git/trees/main?recursive=1',{signal:AbortSignal.timeout(15000)});
+  if(!response.ok)throw Error('Community search is unavailable. Go back to import a profile file.');
+  const index=await response.json();if(index.truncated)throw Error('Community index is incomplete. Import a profile file instead.');
+  return profileIndex=index.tree||[];
+}
+function renderSearch(again=false) {
+  const device=state.draft?null:state.editor;
+  // Changing an existing device's commands starts from that device; a new one starts from what was last searched.
+  if(device&&!Object.keys(profileSearch).length)profileSearch={type:device.type||'',brand:device.manufacturer||'',model:device.model||''};
+  const filters=profileSearch;
+  mount(`<div class="editor">${state.draft?setupProgress('Profile'):''}<h2>Find a profile</h2><form id="search-form"><label for="profile-type">Device type</label><select id="profile-type"><option value="">Any type</option>${PROFILE_TYPES.map(t=>`<option ${t===filters.type?'selected':''}>${t}</option>`).join('')}</select><div class="suggest">${field('Brand','profile-brand',filters.brand||'','search','autocomplete="off"')}<div id="brand-suggestions" class="suggestions" role="listbox" aria-label="Matching brands" hidden></div></div>${field('Model or keywords','profile-model',filters.model||'','search')}<small>Fill in any of these. Some community profiles do not say what type of device they are, so they are hidden when a type is chosen.</small><div class="toolbar"><button class="primary">Search</button><button type="button" id="search-back">Back</button></div></form><div id="profile-results" class="list"></div></div>`);
   $('search-back').onclick=returnToDevice;
-  const results=$('profile-results');
-  $('search-form').onsubmit=async event=>{event.preventDefault();const query=$('profile-query').value.trim();await busy(event.submitter,'Searching...',async()=>{
+  const results=$('profile-results'),form=$('search-form');
+  // Brand suggestions come from the index; fetching it early is a convenience, and a failure shows up on Search.
+  // (A native <datalist> is drawn by the browser and loses its background in the app's dark theme, so this is a plain list.)
+  let brands=[];
+  loadProfileIndex().then(tree=>{const seen=new Map();for(const f of tree)if(f.type==='blob'&&f.path.endsWith('.ir')){const {brand}=profileMeta(f.path);if(brand&&!seen.has(profileNorm(brand)))seen.set(profileNorm(brand),brand);}
+    brands=[...seen.values()].sort((a,b)=>a.localeCompare(b));suggest();}).catch(()=>{});
+  const box=$('brand-suggestions'),brandInput=$('profile-brand');
+  const suggest=()=>{
+    const typed=profileNorm(brandInput.value),matches=!typed?[]:[...brands.filter(b=>profileNorm(b).startsWith(typed)),...brands.filter(b=>!profileNorm(b).startsWith(typed)&&profileNorm(b).includes(typed))].filter(b=>profileNorm(b)!==typed).slice(0,8);
+    box.innerHTML=matches.map(b=>`<button type="button" role="option" data-brand="${escape(b)}">${escape(b)}</button>`).join('');box.hidden=!matches.length;
+  };
+  brandInput.oninput=suggest;
+  box.onclick=event=>{const b=event.target.closest('[data-brand]');if(!b)return;brandInput.value=b.dataset.brand;box.hidden=true;$('profile-model').focus();};
+  form.onsubmit=async event=>{event.preventDefault();
+    profileSearch={type:$('profile-type').value,brand:$('profile-brand').value.trim(),model:$('profile-model').value.trim()};
+    if(!profileSearch.type&&!profileSearch.brand&&!profileSearch.model)return notice('Enter a brand, a model or a device type.',true);
+    await busy(event.submitter||form.querySelector('button.primary'),'Searching...',async()=>{
     results.textContent='';
-    if(!profileIndex){const response=await fetch('https://api.github.com/repos/Lucaslhm/Flipper-IRDB/git/trees/main?recursive=1',{signal:AbortSignal.timeout(15000)});if(!response.ok)throw Error('Community search is unavailable. Go back to import a profile file.');const index=await response.json();if(index.truncated)throw Error('Community index is incomplete. Import a profile file instead.');profileIndex=index.tree||[];}
+    const tree=await loadProfileIndex();
     if(!results.isConnected)return;
-    const files=findProfiles(profileIndex,query,device);let limit=20;
+    $('brand-suggestions').hidden=true;
+    let files=findProfiles(tree,profileSearch),closest=false;
+    // A model that is not in the index: show what the brand (and type) does have, closest first.
+    if(!files.length&&profileSearch.model&&(profileSearch.brand||profileSearch.type)){files=similarProfiles(tree,profileSearch);closest=files.length>0;}
+    let limit=20;
     const draw=()=>{
-      results.innerHTML=`<p>${files.length?`${files.length} ${files.length===1?'profile':'profiles'}. Compatibility needs a device test.`:'No matching profile.'}</p>${!files.some(f=>f.exact)&&profileNorm(query)!==profileNorm(device.manufacturer)?'<button id="brand-search">Show other '+escape(device.manufacturer)+' profiles</button>':''}${files.slice(0,limit).map((f,i)=>`<div class="list-row"><div class="text"><strong>${escape(profileTitle(f.path))}</strong><small>${f.exact?'Model name matches':'Other model / generic profile'}</small><small>${escape(f.path.split('/').slice(0,-1).join(' / ').replace(/_/g,' '))}</small></div><button data-profile="${i}" aria-label="Choose ${escape(profileTitle(f.path))}">Choose</button></div>`).join('')}${files.length>limit?`<div class="toolbar"><button id="more-profiles">Show more (${files.length-limit} remaining)</button></div>`:''}`;
-      if($('brand-search'))$('brand-search').onclick=()=>{$('profile-query').value=device.manufacturer;$('search-form').requestSubmit($('search-form').querySelector('button.primary'));};
+      const why=f=>closest?(f.generic?'Generic profile for this brand':f.sameGeneration?'Same generation as '+escape(profileSearch.model):'Other model from this brand'):f.exact?'Model name matches':'Other model / generic profile';
+      results.innerHTML=`<p>${closest?`No profile for ${escape(profileSearch.model)}. These are the closest ${escape(profileSearch.brand||'')} profiles, best guess first. Try one and test it.`:files.length?`${files.length} ${files.length===1?'profile':'profiles'}. Compatibility needs a device test.`:profileSearch.model&&!profileSearch.brand&&!profileSearch.type?'No matching profile. Add the brand to see that brand’s profiles.':'No matching profile.'}</p>${files.slice(0,limit).map((f,i)=>`<div class="list-row"><div class="text"><strong>${escape(profileLabel(f))}</strong><small>${why(f)}</small><small>${escape(f.path.split('/').slice(0,-1).join(' / ').replace(/_/g,' '))}</small></div><button data-profile="${i}" aria-label="Choose ${escape(profileLabel(f))}">Choose</button></div>`).join('')}${files.length>limit?`<div class="toolbar"><button id="more-profiles">Show more (${files.length-limit} remaining)</button></div>`:''}`;
       if($('more-profiles'))$('more-profiles').onclick=()=>{limit+=20;draw();};
       results.querySelectorAll('[data-profile]').forEach(button=>button.onclick=()=>busy(button,'Loading...',async()=>{
-        const path=files[+button.dataset.profile].path;
+        const file=files[+button.dataset.profile],path=file.path;
         const response=await fetch('https://raw.githubusercontent.com/Lucaslhm/Flipper-IRDB/main/'+path.split('/').map(encodeURIComponent).join('/'),{signal:AbortSignal.timeout(15000)});
         if(!response.ok)throw Error('Profile download failed. Choose another profile or import a file.');
-        const text=await response.text();if(results.isConnected)await importProfile(text,path,'flipper',()=>renderSearch(query));
+        const text=await response.text();// A stand-in for a model that isn't indexed: the details are the user's TV, not the profile's.
+        if(results.isConnected)await chooseProfile(text,path,'flipper',()=>renderSearch(true),closest?{...file,model:profileSearch.model}:file);
       }));
     };draw();
   });};
+  // Coming back from a later step: show the same results again.
+  if(again&&profileIndex&&(filters.type||filters.brand||filters.model))form.requestSubmit();
 }
 function renderDraftLearn() {
   const draft=state.draft;
-  mount(`<div class="editor">${setupProgress(1)}<h2>Learn a command</h2><form id="draft-learn-form">${field('Command name','draft-command','','text','required maxlength="96"')}<div class="toolbar"><button class="primary">Capture signal</button><button type="button" id="learn-back">Back</button></div></form><div id="learned-commands" class="list"></div><button id="review-learned" ${draft.commands?.length?'':'disabled'}>Review remote</button></div>`);
+  draft.flow='learn';
+  mount(`<div class="editor">${setupProgress('Learn')}<h2>Learn a command</h2><form id="draft-learn-form">${field('Command name','draft-command','','text','required maxlength="96"')}<div class="toolbar"><button class="primary">Capture signal</button><button type="button" id="learn-back">Back</button></div></form><div id="learned-commands" class="list"></div><button id="review-learned" ${draft.commands?.length?'':'disabled'}>Continue</button></div>`);
   const draw=()=>{$('learned-commands').textContent=(draft.commands||[]).map(c=>c.name).join(', ');$('review-learned').disabled=!draft.commands?.length;};draw();
-  $('learn-back').onclick=returnToDevice;$('review-learned').onclick=()=>renderSetupReview();
+  $('learn-back').onclick=returnToDevice;$('review-learned').onclick=()=>renderDraftDetails();
   $('draft-learn-form').onsubmit=async event=>{event.preventDefault();const name=$('draft-command').value.trim(),form=event.target;
     if(draft.commands?.some(c=>c.name===name))return notice('That command name is already in this profile.',true);
     await busy(event.submitter,'Listening...',async()=>{const result=await api('commands/learn',{});if(!form.isConnected)return;
@@ -403,7 +498,7 @@ function renderSetupReview() {
   const draft=state.draft;
   const assigned=new Set(draft.layout.map(b=>b.slot));
   const row=([slot,label,image])=>`<label class="review-control" for="review-${slot}"><span>${image?icon(image):''}${label}</span><select id="review-${slot}" data-review="${slot}"><option value="">Not on remote</option>${draft.commands.map(c=>`<option value="${escape(c.name)}" ${draft.layout.some(b=>b.slot===slot&&b.command===c.name)?'selected':''}>${escape(c.name)}</option>`).join('')}</select></label>`;
-  mount(`<div class="editor">${setupProgress(2)}<h2>Review ${escape(draft.name)}</h2><p>${draft.commands.length} commands - not tested</p><small class="profile-source">${escape(profileTitle(draft.source||''))}</small><form id="setup-review"><div class="review-controls">${controls.filter(c=>assigned.has(c[0])).map(row).join('')}</div><details><summary>More remote buttons</summary><div class="review-controls">${controls.filter(c=>!assigned.has(c[0])).map(row).join('')}</div></details><div class="toolbar"><button class="primary" name="finish" value="test">Save and test</button><button name="finish" value="later">Save without testing</button><button type="button" id="setup-review-back">Back</button></div></form></div>`);
+  mount(`<div class="editor">${setupProgress('Review')}<h2>Review ${escape(draft.name)}</h2><p>${draft.commands.length} commands - not tested</p><small class="profile-source">${escape(profileTitle(draft.source||''))}</small><form id="setup-review"><div class="review-controls">${controls.filter(c=>assigned.has(c[0])).map(row).join('')}</div><details><summary>More remote buttons</summary><div class="review-controls">${controls.filter(c=>!assigned.has(c[0])).map(row).join('')}</div></details><div class="toolbar"><button class="primary" name="finish" value="test">Save and test</button><button name="finish" value="later">Save without testing</button><button type="button" id="setup-review-back">Back</button></div></form></div>`);
   window.scrollTo(0,0);$('setup-review-back').onclick=draft.reviewBack||returnToDevice;
   $('content').querySelectorAll('[data-review]').forEach(input=>input.onchange=()=>{
     draft.layout=draft.layout.filter(b=>b.slot!==input.dataset.review);
@@ -508,7 +603,7 @@ async function loadDevices() {
   const network=await api('network/devices');state.devices.push(...(network.devices||[]).map(d=>({...d,transport:'roku'})));
 }
 function show(view) {
-  if(state.draft&&!confirm('Discard this unsaved device setup?'))return;
+  if(draftStarted()&&!confirm('Discard this unsaved device setup?'))return;
   stopHold(false);state.editor=null;state.draft=null;state.view=['remote','devices','activities','settings'].includes(view)?view:'remote';
   if(location.hash!=='#'+state.view)history.replaceState(null,'','#'+state.view);
   $('title').textContent={remote:'Remote',devices:'Devices',activities:'Activities',settings:'Settings'}[state.view];
@@ -548,12 +643,12 @@ document.addEventListener('click',async event=>{
     if(action==='cancel-pair'){await api('controllers/cancel',{});await boot();return;}
     if(action==='full-access'){await api('controllers/upgrade',{});await boot();return;}
     if(action==='drawer')drawer();
-    else if(action==='add-device'){state.draft=null;renderDeviceEditor();}
+    else if(action==='add-device')startDeviceSetup();
     else if(action==='open-device'){writeLocal('harmony-activity','');writeLocal('harmony-device',button.dataset.id);show('remote');}
     else if(action==='edit-device')renderDeviceEditor(state.devices.find(d=>d.id===button.dataset.id));
     else if(action==='layout')renderLayout();
     else if(action==='import-profile')renderImport();
-    else if(action==='search-profile')renderSearch();
+    else if(action==='search-profile'){if(!state.draft)profileSearch={};renderSearch();}
     else if(action==='test-device')renderDeviceTest(state.editor);
     else if(action==='device-back')renderDeviceEditor(state.editor);
     else if(action==='learn')renderLearn();
