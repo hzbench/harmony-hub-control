@@ -111,8 +111,8 @@ const screens = {
   roku: {title:'Roku', parent:'setup', reserveNotice:true, render:renderRoku},
   update: {title:'Software update', parent:'setup', reserveNotice:true, render:renderUpdate},
   activity: {title:'Activity', parent:'activities', reserveNotice:true, render:renderActivityRemote},
-  layouts: {title:'Remote layouts', parent:'setup', reserveNotice:true, render:renderLayouts},
-  edit: {title:'Edit remote', parent:'layouts', reserveNotice:true, render:renderEditor},
+  // The layout editor is a part of editing an activity (Setup › Activities, in the original UI), so Back goes there.
+  edit: {title:'Edit remote', parent:'setup', backTo:'/#activities', reserveNotice:true, render:renderEditor},
   device: {title:'Device', parent:'devices', reserveNotice:true, render:renderDeviceRemote},
 };
 // There is no hub-side "running" activity: like the original UI, the client
@@ -150,10 +150,9 @@ function activityRow(activity) {
 // setup, IR learning, Bluetooth pairing, activity steps, backups and the rest.
 const SETUP_LINKS = [
   ['#/roku','Wifi','Roku','Add a Roku TV or player on your network'],
-  ['#/layouts','Pencil','Remote layouts','Rearrange the buttons on an activity’s remote'],
   ['#/update','Archive','Software update','Install a new version of the hub’s software'],
   ['/#devices','Radio','Devices','Add devices, learn IR codes, pair Bluetooth'],
-  ['/#activities','SlidersHorizontal','Activities','Create activities and edit their start and power-off steps'],
+  ['/#activities','SlidersHorizontal','Activities','Create activities; edit their steps and remote layouts'],
   ['/#settings','Settings','Settings','Controllers, backups, Wi-Fi, MQTT and updates'],
 ];
 const HUB_NAME_MAX = 40;
@@ -184,11 +183,6 @@ function renderSetup(ctx) {
     try {await saveHubName(name);notice(name?'Hub name saved.':'Hub name cleared.');}
     catch(error) {notice(error.message,true);}
   };
-}
-function renderLayouts(ctx) {
-  if(!owner())return placeholder(ctx,'Only the hub owner can change remote layouts.');
-  const activities = state.config?.activities||[];
-  ctx.content.innerHTML = activities.length ? activities.map(a=>`<div class="row"><a class="row-main" href="${routeHash('edit',a.id)}"><span class="row-icon neutral">${icon('Pencil')}</span><span class="row-text"><strong>${escape(a.name)}</strong></span>${icon('ChevronRight')}</a></div>`).join('') : '<div class="placeholder"><p>No activities yet.</p></div>';
 }
 // ---- Roku (network devices) ----
 const ROKU_MODELS = {tv:'Roku TV', player:'Roku player or box'};
@@ -525,12 +519,16 @@ const CONTROLS = [
   ['forward','Fast forward','FastForward',['fastforward','forward']]
 ];
 const norm = name => String(name).toLowerCase().replace(/\+/g,'up').replace(/-\s*$/,'down').replace(/[^a-z0-9]/g,'');
-const controlFor = command => CONTROLS.find(c=>c[3].includes(norm(command)));
+// The Keyboard button is a cell like the others: it names the device that types and this stand-in for a command.
+const KEYBOARD_COMMAND = '(keyboard)', KEYBOARD_CONTROL = ['keyboard','Keyboard','Keyboard',[]];
+const isKeyboardCell = cell => cell?.command===KEYBOARD_COMMAND;
+const controlFor = command => command===KEYBOARD_COMMAND ? KEYBOARD_CONTROL : CONTROLS.find(c=>c[3].includes(norm(command)));
 const matchCommand = (commands,aliases) => aliases.map(alias=>commands.find(c=>norm(c.name)===alias)).find(Boolean);
 // Turn a stored {deviceId,command} back into the live device/command it
 // refers to; null when either has since been deleted.
 function resolveCell(c) {
   const device=state.devices.find(d=>d.id===c.deviceId);
+  if(isKeyboardCell(c))return device?.keyboard?{device,command:{name:KEYBOARD_COMMAND}}:null;   // only while the device can still type
   const command=device?.commands.find(cmd=>cmd.name===c.command);
   return command?{device,command}:null;
 }
@@ -608,6 +606,10 @@ function remoteBlocks(cells, crossRow=0, columns=4) {
     : grid(rest,0,last);
 }
 function cellButton({cell,control}, extra='', customFace='') {
+  if(isKeyboardCell(cell)) {
+    const device = state.devices.find(d=>d.id===cell.deviceId), label = `Type on ${device?.name||'the device'}`;
+    return `<button class="cell ${extra}" type="button" data-keyboard data-device="${escape(cell.deviceId)}" aria-label="${escape(label)}" title="${escape(label)}">${icon('Keyboard')}</button>`;
+  }
   const label = control?.[1] || cell.command;
   // A command with no known icon shows its own name instead of a generic glyph.
   const face = customFace || (control?.[2] ? icon(control[2]) : `<span class="cell-text">${escape(cell.command)}</span>`);
@@ -734,8 +736,11 @@ window.harmonyHardwareVolume = function(direction) {
     .finally(()=>{hardwareVolumeBusy=false;});
 };
 
-function bindKeyboard(ctx, device) {
-  ctx.content.querySelector?.('[data-keyboard]')?.addEventListener('click',()=>openKeyboard(device));
+function bindKeyboard(ctx) {
+  ctx.content.querySelectorAll?.('[data-keyboard]').forEach(button=>button.addEventListener('click',()=>{
+    const device = state.devices.find(d=>d.id===button.dataset.device);
+    if(device)openKeyboard(device);
+  }));
 }
 function renderDeviceRemote(ctx) {
   const device=state.devices.find(d=>d.id===ctx.params[0]);
@@ -744,16 +749,19 @@ function renderDeviceRemote(ctx) {
   const html=deviceRemoteHtml(device);
   const typing=keyboardButton(device);
   ctx.content.innerHTML=`<div class="remote">${html||'<div class="placeholder"><p>This device has no commands yet.</p></div>'}</div>${typing?`<div class="pinned">${typing}</div>`:''}`;
-  bindCommands(ctx.content);bindKeyboard(ctx,device);
+  bindCommands(ctx.content);bindKeyboard(ctx);
 }
 function renderActivityRemote(ctx) {
   const activity=(state.config.activities||[]).find(a=>a.id===ctx.params[0]);
   if(!activity){ctx.setTitle('Activity');return placeholder(ctx,'This activity no longer exists.');}
   ctx.setTitle(activity.name);
-  const keyboardDevice = state.devices.find(d=>d.id===activity.keyboard?.deviceId), typing = keyboardButton(keyboardDevice);
+  // Older activities name their keyboard device on the activity and get the button above the fixed row;
+  // once the remote has its own Keyboard button that one is used instead.
+  const placed = [...(activity.screen?.cells||[]),...(activity.screen?.pinned||[])].some(isKeyboardCell);
+  const typing = placed ? '' : keyboardButton(state.devices.find(d=>d.id===activity.keyboard?.deviceId));
   const {body,pinned}=remoteHtml(activity.screen);
   ctx.content.innerHTML=`<div class="remote">${body||'<div class="placeholder"><p>No buttons on this remote yet.</p></div>'}</div>${pinned||typing?`<div class="pinned">${typing}${pinned}</div>`:''}`;
-  bindCommands(ctx.content);bindKeyboard(ctx,keyboardDevice);
+  bindCommands(ctx.content);bindKeyboard(ctx);
 }
 // ---- Keyboard: type on a device from the phone ----
 const TYPE_CHUNK = 64;  // the hub accepts this many characters per request
@@ -812,7 +820,7 @@ function openKeyboard(device) {
 // up once the markup is on the page.
 function keyboardButton(device) {
   if(!device?.keyboard)return '';
-  return `<button type="button" class="keyboard-button" data-keyboard aria-label="Type on ${escape(device.name)}">${icon('Keyboard')}Keyboard</button>`;
+  return `<button type="button" class="keyboard-button" data-keyboard data-device="${escape(device.id)}" aria-label="Type on ${escape(device.name)}">${icon('Keyboard')}Keyboard</button>`;
 }
 // ---- Edit remote layout (activities only) ----
 // The editor works on a local draft of activity.screen: `cells` (the scrolling
@@ -832,15 +840,20 @@ const zoneCapacity = (activity, zone) => zone==='pinned' ? (screenOf(activity).c
 const isPlaced = (activity, deviceId, command) => ['cells','pinned'].some(zone=>zoneList(activity,zone).some(c=>c.deviceId===deviceId&&c.command===command));
 // Commands of the devices this activity starts, minus ones already on the remote
 // and the volume pair (the hardware keys handle those).
+// What the add sheet offers: each command of the activity's devices not yet on the remote, then a Keyboard
+// button for each device that can type (a Roku, say), which need not be one of the activity's devices.
 function availableCommands(activity) {
   const ids = [...new Set((activity.steps||[]).map(s=>s.deviceId).filter(Boolean))];
+  const keyboards = keyboardDevices().filter(d=>!isPlaced(activity,d.id,KEYBOARD_COMMAND))
+    .map(device=>({device, command:KEYBOARD_COMMAND, control:KEYBOARD_CONTROL}));
   return ids.flatMap(id=>{
     const device = state.devices.find(d=>d.id===id);
     return (device?.commands||[])
       .filter(c=>!HARDWARE_ONLY.includes(controlFor(c.name)?.[0]) && !isPlaced(activity,device.id,c.name))
       .map(c=>({device, command:c.name, control:controlFor(c.name)}));
-  });
+  }).concat(keyboards);
 }
+const optionLabel = o => `${o.device.name}: ${o.command===KEYBOARD_COMMAND?'Keyboard':o.command}`;
 function addButton(activity, zone, slot, deviceId, command, corner) {
   const list = zoneList(activity, zone);
   if(!(Number.isInteger(slot)&&slot>=0&&slot<zoneCapacity(activity,zone))||list.some(c=>c.slot===slot)||isPlaced(activity,deviceId,command))return false;
@@ -914,15 +927,22 @@ function editorSlots(zone, extent, columns, extraRows=0, capacity=MAX_CELLS) {
 
 // ---- Draft and save ----
 // Compared as strings to tell whether a layout changed.
-const layoutShape = screen => {const s=cloneScreen(screen);return JSON.stringify([s.columns,s.crossRow,s.cells,s.pinned,s.keyboard]);};
-// What the editor compares: the layout plus the keyboard device, which lives on the activity itself.
-const editedShape = activity => layoutShape({...activity.screen, keyboard:activity.keyboard?.deviceId||''});
-const cloneScreen = screen => {const columns=screen?.columns||4;return {columns, crossRow:crossRowOf(screen), cells:withSlots(screen?.cells,MAX_CELLS), pinned:packSlots(withSlots(screen?.pinned,columns)), keyboard:screen?.keyboard||''};};
+const layoutShape = screen => {const s=cloneScreen(screen);return JSON.stringify([s.columns,s.crossRow,s.cells,s.pinned]);};
+// What the editor compares: the layout as the editor would start from it.
+const editedShape = activity => layoutShape(startDraft(activity).draft);
+const cloneScreen = screen => {const columns=screen?.columns||4;return {columns, crossRow:crossRowOf(screen), cells:withSlots(screen?.cells,MAX_CELLS), pinned:packSlots(withSlots(screen?.pinned,columns))};};
 // The editor always starts from the hub's current layout. `base` is that
 // layout: Save later compares the hub against it, not against whatever it is
 // by then, to notice someone else's change.
 function startDraft(activity) {
-  const draft = cloneScreen({...activity.screen, keyboard:activity.keyboard?.deviceId||''});
+  const draft = cloneScreen(activity.screen);
+  // An activity from before the Keyboard was a button names its keyboard device on the activity. The draft
+  // shows it as a button in the first free slot; saving then drops the old setting. With no room it stays as it is.
+  const legacy = activity.keyboard?.deviceId;
+  if(legacy&&![...draft.cells,...draft.pinned].some(isKeyboardCell)) {
+    const slot = Array.from({length:MAX_CELLS},(_,n)=>n).find(n=>!draft.cells.some(c=>c.slot===n));
+    if(slot!==undefined&&draft.cells.length<MAX_CELLS){draft.cells.push({deviceId:legacy,command:KEYBOARD_COMMAND,slot});draft.cells.sort((a,b)=>a.slot-b.slot);draft.movedKeyboard=true;}
+  }
   return {draft, base:layoutShape(draft)};
 }
 // The single write to the hub. It works from the hub's *current* configuration
@@ -935,7 +955,7 @@ async function submitLayout(id, draft, base, confirmReplace) {
   if(!activity)throw Error('This activity no longer exists on the hub.');
   if(editedShape(activity)!==base&&!confirmReplace())return false;
   activity.screen = {...(activity.screen||{}), columns:draft.columns, crossRow:draft.crossRow, cells:draft.cells, pinned:draft.pinned};
-  if(draft.keyboard)activity.keyboard = {deviceId:draft.keyboard};else delete activity.keyboard;
+  if(draft.movedKeyboard)delete activity.keyboard;
   await api('configuration',{revision:fresh.revision, configuration:fresh});
   state.config = await api('configuration');
   return true;
@@ -989,14 +1009,8 @@ function editPinnedHtml(activity) {
   if(list.length<columns)cells.push(editCellHtml(null,'pinned',list.length));
   return `<div class="cells pinned-row edit-grid">${cells.join('')}</div>`;
 }
-// The device whose keyboard this remote's Keyboard button types into.
+// The devices that can type (a Roku, say), which the Keyboard button can be for.
 const keyboardDevices = () => state.devices.filter(d=>d.keyboard);
-function keyboardSettingHtml(selected) {
-  const devices = keyboardDevices(), missing = selected && !devices.some(d=>d.id===selected);
-  return `<div class="keyboard-setting"><label for="keyboard-device">Keyboard</label>
-    <select id="keyboard-device" data-keyboard-device${devices.length||selected?'':' disabled'}><option value="">None</option>${devices.map(d=>`<option value="${escape(d.id)}"${d.id===selected?' selected':''}>${escape(d.name)}</option>`).join('')}${missing?`<option value="${escape(selected)}" selected>Missing device</option>`:''}</select>
-    <small>${devices.length||selected?'Adds a Keyboard button to this remote that types on this device.':'A device that can type, such as a Roku, has to be added first (Setup › Roku).'}</small></div>`;
-}
 // What used to be a paragraph above the grid, which pushed the buttons down.
 function editorHelpHtml() {
   return `<div class="sheet-handle" aria-hidden="true"></div><h2 id="sheet-title">Editing your remote</h2>
@@ -1018,7 +1032,6 @@ function editorHtml(model, ui) {
       :pad.crossed?`<button class="add-row" type="button" data-move-pad>${icon('Plus')}Move arrow pad</button>`
       :`<button class="add-row" type="button" data-add-pad ${pad.add.length?'':'disabled'}>${icon('Plus')}Add arrow pad</button>${pad.reason?`<p class="edit-hint">${pad.reason}</p>`:''}`}
     ${full?'<p class="edit-hint">The remote has reached its button limit.</p>':'<button class="add-row" type="button" data-add-row>'+icon('Plus')+'Add row</button>'}
-    ${keyboardSettingHtml(model.screen.keyboard)}
     <div class="pinned"><p class="pinned-caption">Fixed bottom row</p>${editPinnedHtml(model)}</div>`;
 }
 
@@ -1078,17 +1091,17 @@ function renderEditor(ctx) {
     } catch(error) {notice(`Not saved: ${error.message}`,true);}
     finally {ui.saving=false;draw();}
   };
-  // Cancel drops the draft and returns to the remote layouts list.
+  // Cancel drops the draft and returns to the activity's page in the original UI.
   const cancel = () => {
     if(ui.saving)return;
     if(layoutShape(draft)!==base&&!confirm('Discard your unsaved changes?'))return;
-    notice('');location.hash = routeHash('layouts');
+    notice('');location.assign('/#activities');
   };
   const openSheet = (zone, slot, corner) => {
     const options = availableCommands(model());
     presentSheet(sheet, `<div class="sheet-handle" aria-hidden="true"></div><h2 id="sheet-title">Add a button</h2>
-      ${options.length?`<ul class="sheet-list">${options.map((o,i)=>`<li><button type="button" data-pick="${i}"><span class="sheet-icon">${o.control?.[2]?icon(o.control[2]):''}</span>${escape(o.device.name)}: ${escape(o.command)}</button></li>`).join('')}</ul>`
-        :`<p>${(model().steps).some(s=>s.deviceId)?'Every command from this activity’s devices is already on the remote.':'This activity has no devices yet. Add one to its start actions under Manage activities.'}</p>`}
+      ${options.length?`<ul class="sheet-list">${options.map((o,i)=>`<li><button type="button" data-pick="${i}"><span class="sheet-icon">${o.control?.[2]?icon(o.control[2]):''}</span>${escape(optionLabel(o))}</button></li>`).join('')}</ul>`
+        :`<p>${(model().steps).some(s=>s.deviceId)?'Every command from this activity’s devices is already on the remote.':'This activity has no devices yet. Add one to its start actions under Setup › Activities.'}</p>`}
       <button type="button" class="sheet-cancel" data-sheet-cancel>Cancel</button>`,
     event => {
       const pick = event.target.closest('[data-pick]');if(!pick)return;
@@ -1143,9 +1156,6 @@ function renderEditor(ctx) {
     }
     else if(event.target.closest('[data-add-row]')){ui.extraRows++;draw();}
   };
-  ctx.content.onchange = event => {
-    if(event.target.closest?.('[data-keyboard-device]')){draft.keyboard = event.target.value;changed();}
-  };
   ctx.actions.onclick = event => {if(event.target.closest('[data-save]'))save();else if(event.target.closest('[data-cancel]'))cancel();else if(event.target.closest('[data-help]'))openHelp();};
   draw();
 }
@@ -1163,7 +1173,7 @@ function show() {
   setTitle(screen.title);
   $('back').hidden = !screen.parent;
   $('back').dataset.parent = screen.parent||'';
-  $('back').dataset.href = screen.parent ? routeHash(screen.parent,...(screen.parentParams?.(params)||[])) : '';
+  $('back').dataset.href = screen.backTo || (screen.parent ? routeHash(screen.parent,...(screen.parentParams?.(params)||[])) : '');
   document.body.dataset.reserveNotice = String(!!screen.reserveNotice);
   document.body.dataset.screen = name;
   const remote = REMOTE_ROUTES.includes(name);
@@ -1212,7 +1222,7 @@ async function pollSession() {
 
 if(typeof document!=='undefined'&&$('content')) {
   window.addEventListener('hashchange',()=>{if(state.config)show();});
-  $('back').addEventListener('click',()=>{if(leaveGuard&&!leaveGuard())return;location.hash=$('back').dataset.href||routeHash('activities');});
+  $('back').addEventListener('click',()=>{if(leaveGuard&&!leaveGuard())return;{const href=$('back').dataset.href||routeHash('activities');if(href.startsWith('/'))location.assign(href);else location.hash=href;}});
   const recheck = () => {connection(null);boot();};
   $('connection').addEventListener('click',recheck);
   window.harmonyCheckConnection = recheck;  // the app's toolbar icon calls this
