@@ -11,7 +11,7 @@ const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp
 const readLocal = (key, fallback='') => {try{return localStorage.getItem(key) || fallback;}catch{return fallback;}};
 const writeLocal = (key, value) => {try{localStorage.setItem(key,value);}catch{}};
 const sleep = ms => new Promise(resolve => setTimeout(resolve,ms));
-const icon = name => `<svg aria-hidden="true"><use href="/icons.svg#icon-${escape(name)}"></use></svg>`;
+const icon = name => `<svg aria-hidden="true"><use href="#icon-${escape(name)}"></use></svg>`;
 const CONNECTION_LABEL = {connecting:'Connecting to the hub',online:'Connected to the hub',offline:'Disconnected from the hub. Retrying.'};
 
 // '#/activity/watch%20tv' -> {name:'activity', params:['watch tv']}; anything
@@ -26,12 +26,40 @@ function parseRoute(hash) {
 const routeHash = (name, ...params) => '#/'+[name,...params.map(encodeURIComponent)].join('/');
 
 function notice(message, error=false) {$('notice').textContent=message;$('notice').hidden=!message;$('notice').dataset.error=String(error);}
+// The icons come from one sprite file. The hub serves it with `no-cache`, so a page drawn while the hub is
+// unreachable would lose every icon. The page puts the sprite in its own markup (and keeps a copy for next
+// time), so `<use href="#icon-X">` never needs the network.
+const SPRITE_KEY = 'harmony-sprite';
+function placeSprite(text) {const holder=$('sprite');if(holder&&text)holder.innerHTML=text.replace(/<\?xml[^>]*\?>|<!--[\s\S]*?-->/g,'');}
+async function loadSprite() {
+  const cached = readLocal(SPRITE_KEY);if(cached)placeSprite(cached);
+  try {
+    const response = await fetch('/icons.svg',{credentials:'same-origin'});
+    if(!response.ok)return;
+    const text = await response.text();
+    if(text!==cached){placeSprite(text);writeLocal(SPRITE_KEY,text);}
+  } catch {/* offline: the cached copy is already in place */}
+}
 function connection(online) {
   state.online = online;
   const name = online===null ? 'connecting' : online ? 'online' : 'offline', button = $('connection');
   button.dataset.state = name;
   button.setAttribute('aria-label',CONNECTION_LABEL[name]);button.title=CONNECTION_LABEL[name];
+  // The Android app draws this icon in its own toolbar; anywhere else it does nothing.
+  try {window.HarmonyNative?.setConnection?.(name);} catch {/* no native bridge */}
 }
+// Remotes hide the app's toolbar (and its connection icon), so the page header carries the icon there.
+const REMOTE_ROUTES = ['activity','edit','device'];
+const toolbarHasConnection = () => typeof window.HarmonyNative?.setConnection==='function';
+// Before refusing a press because the hub looks offline, ask it once: it may have come back since
+// the last poll. api() updates state.online, so this just reports the result.
+let probing = null;
+function ensureOnline() {
+  if(state.online)return Promise.resolve(true);
+  probing ||= api('session').then(()=>true,()=>false).finally(()=>{probing=null;});
+  return probing;
+}
+const OFFLINE_NOTICE = 'The hub is disconnected. Check the connection and try again.';
 async function api(path, body) {
   const controller=new AbortController(), timeout=setTimeout(()=>controller.abort(),12000);
   try {
@@ -77,17 +105,18 @@ const screens = {
   roku: {title:'Roku', parent:'setup', reserveNotice:true, render:renderRoku},
   update: {title:'Software update', parent:'setup', reserveNotice:true, render:renderUpdate},
   activity: {title:'Activity', parent:'activities', reserveNotice:true, render:renderActivityRemote},
-  edit: {title:'Edit remote', parent:'activity', parentParams:params=>params.slice(0,1), reserveNotice:true, render:renderEditor},
+  layouts: {title:'Remote layouts', parent:'setup', reserveNotice:true, render:renderLayouts},
+  edit: {title:'Edit remote', parent:'layouts', reserveNotice:true, render:renderEditor},
   device: {title:'Device', parent:'devices', reserveNotice:true, render:renderDeviceRemote},
 };
 // There is no hub-side "running" activity: like the original UI, the client
 // remembers the last one it started in localStorage.
 const ACTIVITY_KEY = 'harmony-activity';
 const activeActivity = () => state.config?.activities?.find(a=>a.id===readLocal(ACTIVITY_KEY));
-// The Android app keeps Volume − / Play / Volume + buttons on the lock screen while an
+// The Android app keeps Play / Mute / Volume − / Volume + buttons on the lock screen while an
 // activity runs. It cannot work out which command each one sends, so the page does:
 // the same choice the hardware volume keys make. An empty string means nothing is running.
-const LOCK_SCREEN_BUTTONS = [['volumedown','Volume down'],['play','Play'],['volumeup','Volume up']];
+const LOCK_SCREEN_BUTTONS = [['play','Play'],['mute','Mute'],['volumedown','Volume down'],['volumeup','Volume up']];
 function announceRunning() {
   const activity = activeActivity();
   const buttons = activity ? LOCK_SCREEN_BUTTONS.flatMap(([slot,label])=>{
@@ -104,17 +133,18 @@ let activityOperation = null;  // {id, activityId} while a start/stop is in flig
 
 function activityRow(activity) {
   const running = activeActivity()?.id===activity.id, id = escape(activity.id), name = escape(activity.name);
-  const subtitle = running ? '<span class="running"><span class="dot" aria-hidden="true"></span>Running</span>' : `<small>${escape(activityDevices(activity).join(' · ')||'No devices')}</small>`;
+  const subtitle = `<small>${escape(activityDevices(activity).join(' · ')||'No devices')}</small>`;
   return `<div class="row" data-running="${running}">
-    <button class="row-main" type="button" data-open="${id}"><span class="row-icon">${icon('Play')}</span><span class="row-text"><strong>${name}</strong>${subtitle}</span>${running?'':icon('ChevronRight')}</button>
+    ${running?`<button class="row-icon row-power" type="button" data-stop aria-label="Stop ${name}" title="Stop">${icon('Power')}</button>`:''}
+    <button class="row-main" type="button" data-open="${id}">${running?'':`<span class="row-icon">${icon('Play')}</span>`}<span class="row-text"><strong>${name}</strong>${subtitle}</span>${icon('ChevronRight')}</button>
     <button class="row-action" type="button" data-fix="${id}" aria-label="Fix device state for ${name}" title="Fix device state">${icon('RefreshCw')}</button>
-    ${running?`<button class="row-action stop" type="button" data-stop aria-label="Stop ${name}" title="Stop">${icon('Square')}</button>`:''}
   </div>`;
 }
 // Setup is a short list of links into the original pages, which keep device
 // setup, IR learning, Bluetooth pairing, activity steps, backups and the rest.
 const SETUP_LINKS = [
   ['#/roku','Wifi','Roku','Add a Roku TV or player on your network'],
+  ['#/layouts','Pencil','Remote layouts','Rearrange the buttons on an activity’s remote'],
   ['#/update','Archive','Software update','Install a new version of the hub’s software'],
   ['/#devices','Radio','Devices','Add devices, learn IR codes, pair Bluetooth'],
   ['/#activities','SlidersHorizontal','Activities','Create activities and edit their start and power-off steps'],
@@ -138,7 +168,9 @@ async function saveHubName(name) {
   announceHub();
 }
 function renderSetup(ctx) {
-  ctx.content.innerHTML = (owner()?hubNameForm():'')+SETUP_LINKS.map(([href,glyph,name,hint])=>`<div class="row"><a class="row-main" href="${href}"><span class="row-icon neutral">${icon(glyph)}</span><span class="row-text"><strong>${name}</strong><small>${hint}</small></span>${icon('ChevronRight')}</a></div>`).join('');
+  const hubAddress = typeof window.HarmonyNative?.changeHubAddress==='function' ? `<div class="row"><button class="row-main" type="button" data-hub-address><span class="row-icon neutral">${icon('Wifi')}</span><span class="row-text"><strong>Hub address</strong><small>Change which hub this app connects to</small></span>${icon('ChevronRight')}</button></div>` : '';
+  ctx.content.onclick = event => {if(event.target.closest('[data-hub-address]')){try {window.HarmonyNative.changeHubAddress();} catch {/* no native bridge */}}};
+  ctx.content.innerHTML = (owner()?hubNameForm():'')+SETUP_LINKS.map(([href,glyph,name,hint])=>`<div class="row"><a class="row-main" href="${href}"><span class="row-icon neutral">${icon(glyph)}</span><span class="row-text"><strong>${name}</strong><small>${hint}</small></span>${icon('ChevronRight')}</a></div>`).join('')+hubAddress;
   if(!owner())return;
   ctx.content.onsubmit = async event => {
     event.preventDefault();
@@ -146,6 +178,11 @@ function renderSetup(ctx) {
     try {await saveHubName(name);notice(name?'Hub name saved.':'Hub name cleared.');}
     catch(error) {notice(error.message,true);}
   };
+}
+function renderLayouts(ctx) {
+  if(!owner())return placeholder(ctx,'Only the hub owner can change remote layouts.');
+  const activities = state.config?.activities||[];
+  ctx.content.innerHTML = activities.length ? activities.map(a=>`<div class="row"><a class="row-main" href="${routeHash('edit',a.id)}"><span class="row-icon neutral">${icon('Pencil')}</span><span class="row-text"><strong>${escape(a.name)}</strong></span>${icon('ChevronRight')}</a></div>`).join('') : '<div class="placeholder"><p>No activities yet.</p></div>';
 }
 // ---- Roku (network devices) ----
 const ROKU_MODELS = {tv:'Roku TV', player:'Roku player or box'};
@@ -312,7 +349,7 @@ function renderUpdate(ctx) {
   ctx.content.onclick = async event => {
     if(event.target.closest('[data-reload]'))return location.reload();
     if(!event.target.closest('[data-install-update]')||!chosen||updateBusy)return;
-    if(!state.online)return say('The hub is disconnected. Check the connection first.');
+    if(!await ensureOnline())return say(OFFLINE_NOTICE);
     const version = chosen.manifest.version;
     if(!confirm(`Install version ${version}? The hub will restart, which takes a minute or two.`))return;
     updateBusy = true;node('[data-install-update]').disabled = true;
@@ -411,8 +448,7 @@ function renderRoku(ctx) {
 function renderActivities(ctx) {
   const activities = state.config.activities||[];
   ctx.content.innerHTML = `${activityOperation?'<div class="busy" role="status"><span>Working…</span><button type="button" data-cancel>Cancel</button></div>':''}
-    <div class="list">${activities.map(activityRow).join('')||'<div class="placeholder"><p>No activities yet. Create one in the full settings pages.</p></div>'}</div>
-    <a class="manage" href="/#activities">${icon('SlidersHorizontal')}Manage activities</a>`;
+    <div class="list">${activities.map(activityRow).join('')||'<div class="placeholder"><p>No activities yet. Create one in the full settings pages.</p></div>'}</div>`;
   // Starting an activity takes seconds and the user may have navigated away
   // by the time it finishes: only touch the screen while it is still showing.
   const onScreen = () => ctx.content.isConnected && parseRoute(location.hash).name==='activities';
@@ -420,7 +456,7 @@ function renderActivities(ctx) {
   const say = (message, error=false) => {if(onScreen())notice(message,error);};
   async function run(activityId, {fixState=false}={}) {
     if(activityOperation)return;
-    if(!state.online)return say('The hub is disconnected. Check the connection before starting an activity.',true);
+    if(!await ensureOnline())return say(OFFLINE_NOTICE,true);
     try {
       const op=await api('activities/run',{activityId,fixState});activityOperation={id:op.id,activityId};redraw();say('');
       const result=await operation(op.id,180);
@@ -452,8 +488,7 @@ function deviceRow(device) {
   return `<div class="row"><a class="row-main" href="${routeHash('device',device.id)}"><span class="row-icon neutral">${icon(Object.hasOwn(DEVICE_ICONS,device.type)?DEVICE_ICONS[device.type]:'Radio')}</span><span class="row-text"><strong>${escape(device.name)}</strong><small>${escape(type)} · ${count} ${count===1?'command':'commands'}</small></span>${icon('ChevronRight')}</a></div>`;
 }
 function renderDevices(ctx) {
-  ctx.content.innerHTML = `<div class="list">${state.devices.map(deviceRow).join('')||'<div class="placeholder"><p>No devices yet. Add one in the full settings pages.</p></div>'}</div>
-    <a class="manage" href="/#devices">${icon('SlidersHorizontal')}Manage devices</a>`;
+  ctx.content.innerHTML = `<div class="list">${state.devices.map(deviceRow).join('')||'<div class="placeholder"><p>No devices yet. Add one in the full settings pages.</p></div>'}</div>`;
 }
 // [slot, label, icon, command-name aliases]. Slot, label and aliases must match
 // app.js's `controls` (test_go_shell.mjs fails if they drift); only the icon
@@ -611,7 +646,7 @@ function deviceRemoteHtml(device) {
 
 // --- command sending (same tap / press-and-hold behaviour as app.js) ---
 async function tap(button) {
-  if(!state.online)return notice('The hub is disconnected. Check the connection before sending.',true);
+  if(!await ensureOnline())return notice(OFFLINE_NOTICE,true);
   const device=state.devices.find(d=>d.id===button.dataset.device);
   try {notice('Sending...');const op=await api('commands/send',{deviceId:device.id,command:button.dataset.command,transport:device.transport,mode:'tap'});const result=await operation(op.id);notice(result.state==='completed'?'Sent to the hub.':'Command cancelled.');}
   catch(error){notice(error.message,true);}
@@ -624,7 +659,9 @@ function stopHold(tapOnRelease=false) {
   else if(tapOnRelease&&!hold.started)tap(hold.button);
 }
 function beginHold(button,pointerId=null) {
-  stopHold(false);if(!state.online)return;
+  stopHold(false);
+  // A press that finds the hub offline checks once instead of sending; a hold can't wait for that, so press again.
+  if(!state.online){ensureOnline().then(ok=>notice(ok?'Reconnected. Press again.':OFFLINE_NOTICE,!ok));return;}
   const hold={button,pointerId,stopped:false,started:false};state.hold=hold;
   button.classList.add('is-held');button.setAttribute('aria-pressed','true');
   hold.timer=setTimeout(async()=>{
@@ -675,7 +712,8 @@ function volumeTarget(activity, slot) {
   return null;
 }
 window.harmonyHardwareVolume = function(direction) {
-  if(!state.online||!state.config||!state.devices.length||hardwareVolumeBusy)return;
+  if(!state.config||!state.devices.length||hardwareVolumeBusy)return;
+  if(!state.online){ensureOnline().then(ok=>notice(ok?'Reconnected. Press again.':OFFLINE_NOTICE,!ok));return;}
   const slot=direction==='up'?'volumeup':'volumedown', route=parseRoute(location.hash);
   // On a device remote the keys drive that device, if it has a volume command;
   // otherwise (or elsewhere) they drive the running activity.
@@ -705,7 +743,6 @@ function renderActivityRemote(ctx) {
   const activity=(state.config.activities||[]).find(a=>a.id===ctx.params[0]);
   if(!activity){ctx.setTitle('Activity');return placeholder(ctx,'This activity no longer exists.');}
   ctx.setTitle(activity.name);
-  if(owner())ctx.actions.innerHTML=`<a class="header-action" href="${routeHash('edit',activity.id)}" aria-label="Edit remote layout" title="Edit remote layout">${icon('Pencil')}</a>`;
   const keyboardDevice = state.devices.find(d=>d.id===activity.keyboard?.deviceId), typing = keyboardButton(keyboardDevice);
   const {body,pinned}=remoteHtml(activity.screen);
   ctx.content.innerHTML=`<div class="remote">${body||'<div class="placeholder"><p>No buttons on this remote yet.</p></div>'}</div>${pinned||typing?`<div class="pinned">${typing}${pinned}</div>`:''}`;
@@ -898,7 +935,7 @@ async function submitLayout(id, draft, base, confirmReplace) {
 }
 
 function editCellHtml(entry, zone, slot, extra='') {
-  if(!entry)return `<button class="cell empty${extra?' '+extra:''}" type="button" data-zone="${zone}" data-slot="${slot}"${CORNERS.includes(extra)?` data-corner="${extra}"`:''} aria-label="Empty slot. Tap to add a button."><svg aria-hidden="true"><use href="/icons.svg#icon-Plus"></use></svg></button>`;
+  if(!entry)return `<button class="cell empty${extra?' '+extra:''}" type="button" data-zone="${zone}" data-slot="${slot}"${CORNERS.includes(extra)?` data-corner="${extra}"`:''} aria-label="Empty slot. Tap to add a button."><svg aria-hidden="true"><use href="#icon-Plus"></use></svg></button>`;
   const control = controlFor(entry.command), live = resolveCell(entry);
   const label = control?.[1] || entry.command;
   const face = control?.[2] ? icon(control[2]) : `<span class="cell-text">${escape(entry.command)}</span>`;
@@ -1034,11 +1071,11 @@ function renderEditor(ctx) {
     } catch(error) {notice(`Not saved: ${error.message}`,true);}
     finally {ui.saving=false;draw();}
   };
-  // Cancel drops the draft and returns to the remote.
+  // Cancel drops the draft and returns to the remote layouts list.
   const cancel = () => {
     if(ui.saving)return;
     if(layoutShape(draft)!==base&&!confirm('Discard your unsaved changes?'))return;
-    notice('');location.hash = routeHash('activity',id);
+    notice('');location.hash = routeHash('layouts');
   };
   const openSheet = (zone, slot, corner) => {
     const options = availableCommands(model());
@@ -1122,7 +1159,9 @@ function show() {
   $('back').dataset.href = screen.parent ? routeHash(screen.parent,...(screen.parentParams?.(params)||[])) : '';
   document.body.dataset.reserveNotice = String(!!screen.reserveNotice);
   document.body.dataset.screen = name;
-  $('connection').hidden = !!screen.parent;
+  const remote = REMOTE_ROUTES.includes(name);
+  $('connection').hidden = remote ? false : (!!screen.parent || toolbarHasConnection());
+  try {window.HarmonyNative?.setToolbarVisible?.(!remote);window.HarmonyNative?.setConnection?.($('connection').dataset.state);} catch {/* no native bridge */}
   $('tabs').hidden = !!screen.parent;
   $('tabs').querySelectorAll('[data-tab]').forEach(a=>{if(a.dataset.tab===screen.tab)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current');});
   notice('');
@@ -1153,18 +1192,26 @@ async function boot() {
     $('content').setAttribute('aria-busy','false');
   }
 }
+// Check on the hub often while it is unreachable, so the icon recovers soon after it comes back.
+function schedulePoll() {clearTimeout(sessionTimer);sessionTimer=setTimeout(pollSession,state.online===false?3000:15000);}
 async function pollSession() {
   try {
     const session=await api('session');
     if(!state.config||!state.session||session.role!==state.session.role||needsFullUi(session))await boot();
   } catch {/* api() has already flagged the connection state; keep retrying */}
-  finally {clearTimeout(sessionTimer);sessionTimer=setTimeout(pollSession,15000);}
+  finally {schedulePoll();}
 }
 
 if(typeof document!=='undefined'&&$('content')) {
   window.addEventListener('hashchange',()=>{if(state.config)show();});
   $('back').addEventListener('click',()=>{if(leaveGuard&&!leaveGuard())return;location.hash=$('back').dataset.href||routeHash('activities');});
-  $('connection').addEventListener('click',()=>{connection(null);boot();});
-  sessionTimer=setTimeout(pollSession,15000);
+  const recheck = () => {connection(null);boot();};
+  $('connection').addEventListener('click',recheck);
+  window.harmonyCheckConnection = recheck;  // the app's toolbar icon calls this
+  schedulePoll();
+  // Coming back to the app, or the phone's network returning, is the moment to look again.
+  const wake = () => {if(state.online!==true&&!document.hidden){clearTimeout(sessionTimer);pollSession();}};
+  window.addEventListener('online',wake);document.addEventListener('visibilitychange',wake);
+  loadSprite();
   boot();
 }
