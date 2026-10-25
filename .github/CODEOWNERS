@@ -1,0 +1,3 @@
+# Changes to CI, release signing and security policy need the owner's review.
+/.github/   @hzbench
+/SECURITY.md @hzbench
