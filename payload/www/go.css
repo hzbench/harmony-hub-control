@@ -44,13 +44,10 @@ a.row-main{color:inherit;text-decoration:none}
 .row-text{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
 .row-text strong{font-size:16px;font-weight:600;overflow-wrap:anywhere}
 .row-text small{font-size:13px;color:var(--muted);overflow-wrap:anywhere}
-.running{display:flex;align-items:center;gap:5px;font-size:13px;font-weight:600;color:var(--accent)}
-.dot{width:7px;height:7px;border-radius:50%;background:var(--accent)}
 .row-action{width:44px;min-height:44px;padding:0;display:grid;place-items:center;border-radius:50%;background:transparent;color:var(--muted)}
 .row-action svg{height:18px;width:18px}
-.row-action.stop{background:var(--control);color:var(--ink)}
-.manage{display:flex;align-items:center;justify-content:center;gap:8px;padding:14px;margin-top:auto;color:var(--muted);font-size:14px;font-weight:600;text-decoration:none;min-height:44px}
-.manage svg{height:18px;width:18px}
+.row-power{margin-left:16px;border:0;padding:0;background:var(--accent);color:#fff;cursor:pointer}
+.row-power+.row-main{padding-left:14px}
 .busy{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 8px 8px 16px;background:var(--surface);border:1px solid var(--warn);border-radius:var(--radius);color:var(--warn);font-weight:600}
 .busy button{padding:0 16px}
 .header-action{width:44px;min-height:44px;display:grid;place-items:center;color:inherit;border-radius:50%;margin-right:-6px}
@@ -140,3 +137,4 @@ dialog.sheet .add-row{width:100%}
 
 .update-version,.update-status{margin:.5rem 0}
 .update-status:empty{display:none}
+.sprite{position:absolute;width:0;height:0;overflow:hidden}

@@ -9,7 +9,7 @@ symbols = {node.attrib["id"] for node in svg if node.tag.endswith("symbol")}
 assert len(symbols) >= 25
 html = (root / "index.html").read_text()
 app = (root / "app.js").read_text()
-references = set(re.findall(r'icons.svg#(icon-[\w]+)', html))
+references = set(re.findall(r'(?:icons.svg)?#(icon-[\w]+)', html))
 references.update("icon-" + name for name in re.findall(r"icon\('([\w]+)'\)", app))
 controls = app[app.index("const controls ="):app.index("function activeDevice")]
 references.update("icon-" + name for name in re.findall(r"\['[^']+','[^']+','([^']+)',\[", controls))
@@ -17,7 +17,7 @@ references.update("icon-" + name for name in re.findall(r"\['[^']+','[^']+','([^
 # icon table and the CONTROLS table's icon column.
 go_html = (root / "go.html").read_text()
 go = (root / "go.js").read_text()
-go_references = set(re.findall(r'icons.svg#(icon-[\w]+)', go_html))
+go_references = set(re.findall(r'(?:icons.svg)?#(icon-[\w]+)', go_html))
 go_references.update("icon-" + name for name in re.findall(r"icon\('([\w]+)'\)", go))
 go_references.update("icon-" + name for name in re.findall(r"\w+\s*\|\|\s*'([A-Z]\w+)'\)", go))
 controls_table = go[go.index("const CONTROLS = ["):go.index("const norm =")]

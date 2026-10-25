@@ -9,9 +9,10 @@
   <script src="/go/go.js" defer></script>
 </head>
 <body>
+  <div id="sprite" class="sprite" aria-hidden="true"></div>
   <div class="app">
     <header class="header" id="header">
-      <button id="back" class="icon-button" type="button" aria-label="Back" hidden><svg aria-hidden="true"><use href="/icons.svg#icon-ChevronLeft"></use></svg></button>
+      <button id="back" class="icon-button" type="button" aria-label="Back" hidden><svg aria-hidden="true"><use href="#icon-ChevronLeft"></use></svg></button>
       <h1 id="title">Harmony Remote</h1>
       <div id="header-actions"></div>
       <button id="connection" class="connection" type="button" data-state="connecting" aria-label="Connecting to the hub" title="Connecting to the hub">
@@ -23,9 +24,9 @@
     <div id="notice" role="status" aria-live="polite" hidden></div>
     <main id="content" tabindex="-1" aria-busy="true"></main>
     <nav class="tabs" id="tabs" aria-label="Main navigation" hidden>
-      <a href="#/activities" data-tab="activities"><svg aria-hidden="true"><use href="/icons.svg#icon-Play"></use></svg><span>Activities</span></a>
-      <a href="#/devices" data-tab="devices"><svg aria-hidden="true"><use href="/icons.svg#icon-Tv"></use></svg><span>Devices</span></a>
-      <a href="#/setup" data-tab="setup"><svg aria-hidden="true"><use href="/icons.svg#icon-Settings"></use></svg><span>Setup</span></a>
+      <a href="#/activities" data-tab="activities"><svg aria-hidden="true"><use href="#icon-Play"></use></svg><span>Activities</span></a>
+      <a href="#/devices" data-tab="devices"><svg aria-hidden="true"><use href="#icon-Tv"></use></svg><span>Devices</span></a>
+      <a href="#/setup" data-tab="setup"><svg aria-hidden="true"><use href="#icon-Settings"></use></svg><span>Setup</span></a>
     </nav>
   </div>
   <dialog id="sheet" class="sheet" aria-labelledby="sheet-title"></dialog>

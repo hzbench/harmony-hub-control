@@ -49,11 +49,14 @@ assert.equal(needsFullUi({role:'owner'},{setupMode:'keep'}),false);
 assert.equal(needsFullUi({role:'controller'},{setupMode:'unselected'}),false);
 console.log('Pairing and first-run setup are handed to the original UI');
 
-// Drill-in screens get a back arrow and no tabs/connection icon; tab screens the reverse.
+// Drill-in screens get a back arrow and no tabs; tab screens the reverse. The connection icon is on tab
+// screens and on remotes (the app hides its toolbar there), but not on other drill-ins.
 state.config={activities:[]};state.session={role:'owner'};
 context.location.hash='#/activity/watch';show();
 assert.equal(el('back').hidden,false);assert.equal(el('back').dataset.parent,'activities');
-assert.equal(el('tabs').hidden,true);assert.equal(el('connection').hidden,true);
+assert.equal(el('tabs').hidden,true);assert.equal(el('connection').hidden,false);
+context.location.hash='#/roku';show();assert.equal(el('connection').hidden,true);
+context.location.hash='#/edit/watch';show();assert.equal(el('connection').hidden,true,'the editor header has no room for the icon');
 context.location.hash='#/devices';show();
 assert.equal(el('back').hidden,true);assert.equal(el('tabs').hidden,false);assert.equal(el('connection').hidden,false);
 assert.equal(el('title').textContent,'Devices');
@@ -61,7 +64,8 @@ console.log('Tab screens show tabs and the connectivity icon; drill-in screens s
 
 // ---- Activities home ----
 const calls=[];let outcome='completed',pending=null;
-context.api=async(path,body)=>{calls.push({path,...body});if(path==='activities/run')return {id:'op'+calls.length};return {};};
+let hubDown=false;
+context.api=async(path,body)=>{calls.push({path,...body});if(path==='session'){if(hubDown){state.online=false;throw Error('down');}state.online=true;return {};}if(path==='activities/run')return {id:'op'+calls.length};return {};};
 context.operation=async()=>pending?await pending:{state:outcome};
 state.online=true;
 state.devices=[{id:'1',name:'LG C5',transport:'ir',commands:['VolumeUp','VolumeDown','Play'].map(name=>({name}))},{id:'2',name:'Receiver'}];
@@ -78,16 +82,16 @@ assert.match(content.innerHTML,/Watch &lt;TV&gt;/);
 assert.match(content.innerHTML,/LG C5 · Receiver/);
 assert.match(content.innerHTML,/No devices/);
 assert.doesNotMatch(content.innerHTML,/Running/);
-assert.match(content.innerHTML,/href="\/#activities"/);
-console.log('Activities home lists activities with their devices, escaped, plus a Manage link');
+assert.doesNotMatch(content.innerHTML,/href="\/#activities"/);
+console.log('Activities home lists activities with their devices, escaped, with no Manage link');
 
 await click({open:'watch'});
 assert.deepEqual(calls.map(c=>[c.path,c.activityId,c.fixState]),[['activities/run','watch',false]]);
 assert.equal(store.get('harmony-activity'),'watch');
-assert.deepEqual(announced.map(v=>v&&JSON.parse(v)),[{id:'watch',name:'Watch <TV>',buttons:[{key:'volumedown',label:'Volume down',deviceId:'1',command:'VolumeDown',transport:'ir'},{key:'play',label:'Play',deviceId:'1',command:'Play',transport:'ir'},{key:'volumeup',label:'Volume up',deviceId:'1',command:'VolumeUp',transport:'ir'}]}],'starting an activity tells the app which buttons to keep on the lock screen');
+assert.deepEqual(announced.map(v=>v&&JSON.parse(v)),[{id:'watch',name:'Watch <TV>',buttons:[{key:'play',label:'Play',deviceId:'1',command:'Play',transport:'ir'},{key:'volumedown',label:'Volume down',deviceId:'1',command:'VolumeDown',transport:'ir'},{key:'volumeup',label:'Volume up',deviceId:'1',command:'VolumeUp',transport:'ir'}]}],'starting an activity tells the app which buttons to keep on the lock screen');
 assert.equal(context.location.hash,'#/activity/watch');
 draw();
-assert.match(content.innerHTML,/Running/);assert.match(content.innerHTML,/data-stop/);
+assert.doesNotMatch(content.innerHTML,/Running/);assert.match(content.innerHTML,/icon-Power/);assert.match(content.innerHTML,/data-stop/);
 console.log('Tapping an activity starts it, remembers it and opens its remote');
 
 calls.length=0;context.location.hash='#/activities';
@@ -117,11 +121,14 @@ assert.match(el('notice').textContent,/Cancelled/);assert.equal(el('notice').dat
 outcome='completed';
 console.log('A cancelled start is not remembered and does not navigate');
 
-calls.length=0;state.online=false;
+calls.length=0;state.online=false;hubDown=true;
 await click({open:'empty'});
-assert.equal(calls.length,0);assert.match(el('notice').textContent,/disconnected/);
-state.online=true;
-console.log('Starting while disconnected is refused without calling the hub');
+assert.deepEqual(calls.map(c=>c.path),['session'],'an offline press only asks the hub whether it is back');assert.match(el('notice').textContent,/disconnected/);
+hubDown=false;calls.length=0;state.online=false;
+await click({open:'empty'});
+assert.equal(calls[0].path,'session');assert.ok(calls.some(c=>c.path==='activities/run'),'the hub is back: the press goes through');
+state.online=true;store.set('harmony-activity','watch');context.location.hash='#/activities';draw();
+console.log('A press while disconnected re-checks the hub: refused if it is still down, sent if it is back');
 
 calls.length=0;let release;pending=new Promise(r=>release=r);context.location.hash='#/activities';draw();
 const first=click({open:"empty"});for(let i=0;i<10;i++)await Promise.resolve();
@@ -160,15 +167,15 @@ assert.match(devicesHtml,/Other · 0 commands/);
 assert.match(devicesHtml,/href="#\/device\/1"/);
 assert.match(devicesHtml,/href="#\/device\/bt%2F1"/);
 assert.match(devicesHtml,/icon-Tv/);assert.match(devicesHtml,/icon-Speaker/);assert.match(devicesHtml,/icon-MonitorPlay/);
-assert.match(devicesHtml,/href="\/#devices"/);
+assert.doesNotMatch(devicesHtml,/href="\/#devices"/);
 state.devices=[{id:'9',name:'Odd',type:'constructor',commands:[]}];context.exports.renderDevices({content:devicesContent,params:[]});
 assert.match(devicesContent.innerHTML,/icon-Radio/);assert.doesNotMatch(devicesContent.innerHTML,/function|undefined/);
 state.devices=[];
 assert.equal(context.exports.parseRoute('#/device/bt%2F1').params[0],'bt/1');
-console.log('Devices list shows type and command count (singular/plural), links to each device remote, and a Manage link');
+console.log('Devices list shows type and command count (singular/plural), links to each device remote');
 state.devices=[];context.exports.renderDevices({content:devicesContent,params:[]});
-assert.match(devicesContent.innerHTML,/No devices yet/);assert.match(devicesContent.innerHTML,/Manage devices/);
-console.log('Devices list has an empty state that still offers Manage devices');
+assert.match(devicesContent.innerHTML,/No devices yet/);assert.doesNotMatch(devicesContent.innerHTML,/Manage devices/);
+console.log('Devices list has an empty state that shows no Manage link');
 
 // ---- Activity remote ----
 const J=v=>JSON.parse(JSON.stringify(v));
@@ -273,21 +280,23 @@ assert.doesNotMatch(arrowRow,/class="dpad"/);
 assert.deepEqual([...arrowRow.matchAll(/aria-label="(\w+)"/g)].map(m=>m[1]),['Right','Up','Down','Left']);
 console.log('Pinned buttons render as their own footer row, skipping stale and volume cells');
 
-// Full screen: header edit link only for the owner, footer outside the scrolling content.
+// Full screen: no edit link in the header for anyone (editing lives in Setup), footer outside the scrolling content.
 state.config={activities:[{id:'watch',name:'Watch <TV>',steps:[{deviceId:'tv'}],screen:{columns:4,cells:[cell('Back')],pinned:[cell('Mute')]}}]};
 const rc={content:{innerHTML:'',querySelectorAll:()=>[]},actions:{innerHTML:''},params:['watch'],setTitle(t){this.title=t;}};
 state.session={role:'owner'};context.exports.renderActivityRemote(rc);
 assert.equal(rc.title,'Watch <TV>');
-assert.match(rc.actions.innerHTML,/href="#\/edit\/watch"/);
+assert.equal(rc.actions.innerHTML,'');
 assert.match(rc.content.innerHTML,/class="pinned"/);
 rc.actions.innerHTML='';state.session={role:'controller'};context.exports.renderActivityRemote(rc);
 assert.equal(rc.actions.innerHTML,'');
 rc.params=['nope'];context.exports.renderActivityRemote(rc);assert.match(rc.content.innerHTML,/no longer exists/);
-console.log('Activity remote shows the edit link only to the owner and copes with a missing activity');
+console.log('Activity remote has no edit link in the header and copes with a missing activity');
 
-// Back from the editor returns to that activity's remote, not the list.
+// Editing is reached from Setup > Remote layouts, and Back from the editor returns there.
+state.session={role:'owner'};context.location.hash='#/layouts';show();
+assert.match(el('content').innerHTML,/href="#\/edit\/watch"/);assert.equal(el('back').dataset.href,'#/setup');
 context.location.hash='#/edit/watch';show();
-assert.equal(el('back').dataset.href,'#/activity/watch');
+assert.equal(el('back').dataset.href,'#/layouts');
 context.location.hash='#/activity/watch';show();
 assert.equal(el('back').dataset.href,'#/activities');assert.equal(context.document.body.dataset.reserveNotice,'true');assert.equal(context.document.body.dataset.screen,'activity','the screen name is on the body for per-screen styling');
 context.location.hash='#/devices';show();assert.equal(context.document.body.dataset.reserveNotice,'false');
@@ -299,7 +308,7 @@ const sent=[];context.api=async(path,body)=>{sent.push({path,...body});return {i
 const flush=async()=>{for(let i=0;i<10;i++)await Promise.resolve();};
 const setActivity=(activity)=>{state.config={activities:[activity]};store.set('harmony-activity',activity?.id||'');};
 state.online=true;
-const press=async d=>{sent.length=0;context.window.harmonyHardwareVolume(d);await flush();return sent.map(c=>[c.deviceId,c.command]);};
+const press=async d=>{sent.length=0;context.window.harmonyHardwareVolume(d);await flush();return sent.filter(c=>c.path!=='session').map(c=>[c.deviceId,c.command]);};
 setActivity({id:'a',steps:[{deviceId:'bar'}],screen:{cells:[cell('VolumeUp'),cell('VolumeDown')]}});
 assert.deepEqual(J(await press('up')),[['tv','VolumeUp']]);
 assert.deepEqual(J(await press('down')),[['tv','VolumeDown']]);
@@ -644,13 +653,13 @@ console.log('Editor draws gaps as empty squares, lists every cell (including sta
   const pressCancel=ctx=>ctx.actions.onclick({target:{closest:sel=>sel==='[data-cancel]'?{}:null}});
   ({content,ctx}=setup(base0));
   assert.match(ctx.actions.innerHTML,/data-cancel/);
-  context.confirmed.length=0;pressCancel(ctx);assert.equal(context.confirmed.length,0,'clean: no prompt');assert.equal(context.location.hash,'#/activity/w');
+  context.confirmed.length=0;pressCancel(ctx);assert.equal(context.confirmed.length,0,'clean: no prompt');assert.equal(context.location.hash,'#/layouts');
   context.location.hash='#/edit/w';
   down(content,slotBtn(content,'cells',0));advance(600);await settle();
   el('notice').textContent='Saved.';
   context.confirmAnswer=false;pressCancel(ctx);assert.deepEqual(layout(content,'cells'),{1:'Down',2:'Mute'});assert.equal(context.location.hash,'#/edit/w','declining stays put');
   context.confirmAnswer=true;pressCancel(ctx);
-  assert.equal(el('notice').textContent,'');assert.equal(context.location.hash,'#/activity/w');
+  assert.equal(el('notice').textContent,'');assert.equal(context.location.hash,'#/layouts');
   assert.equal(posts.length,0);
   context.location.hash='#/edit/w';
 
@@ -868,7 +877,7 @@ console.log('Editing changes only a local draft in fixed slots; Save is one writ
 {
   const content={innerHTML:''};
   X.screens.setup.render({content,actions:{},params:[],setTitle(){}});
-  assert.deepEqual([...content.innerHTML.matchAll(/<a class="row-main" href="([^"]+)"/g)].map(m=>m[1]),['#/roku','#/update','/#devices','/#activities','/#settings']);
+  assert.deepEqual([...content.innerHTML.matchAll(/<a class="row-main" href="([^"]+)"/g)].map(m=>m[1]),['#/roku','#/layouts','#/update','/#devices','/#activities','/#settings']);
   assert.match(content.innerHTML,/IR codes/);
 }
 console.log('Setup links into the original pages');
@@ -1063,10 +1072,10 @@ console.log('The owner can add, test and remove a Roku; Rokus appear as devices'
     {id:'d',name:'Custom',steps:[{deviceId:'tv'}],screen:{columns:4,cells:[{deviceId:'rk',command:'Play',slot:0}],pinned:[]}}]};
   const announce=id=>{log.length=0;store.set('harmony-activity','');context.exports.setRunningActivity(id);return log.at(-1);};
   const labels=json=>JSON.parse(json).buttons.map(b=>`${b.label}:${b.deviceId}.${b.command}.${b.transport}`);
-  assert.deepEqual(labels(announce('a')),['Volume down:tv.VolumeDown.ir','Play:tv.Play.ir','Volume up:tv.VolumeUp.ir']);
+  assert.deepEqual(labels(announce('a')),['Play:tv.Play.ir','Mute:tv.Mute.ir','Volume down:tv.VolumeDown.ir','Volume up:tv.VolumeUp.ir']);
   assert.deepEqual(labels(announce('b')),['Play:rk.Play.roku'],'only the buttons the activity can actually press');
   assert.equal(announce('c'),'','nothing to press: nothing announced');
-  assert.deepEqual(labels(announce('d')),['Volume down:tv.VolumeDown.ir','Play:rk.Play.roku','Volume up:tv.VolumeUp.ir'],'a button on the activity\u2019s own screen wins over the devices');
+  assert.deepEqual(labels(announce('d')),['Play:rk.Play.roku','Mute:tv.Mute.ir','Volume down:tv.VolumeDown.ir','Volume up:tv.VolumeUp.ir'],'a button on the activity\u2019s own screen wins over the devices');
   assert.deepEqual(labels(announce('e')),['Play:bt.Play.bluetooth','Volume up:bt.VolumeUp.bluetooth'],'a Bluetooth device is announced with its own transport');
   // Whenever the devices are reloaded the app hears about it: a removed Roku can't stay on the lock screen.
   store.set('harmony-activity','b');log.length=0;state.devices=[tvd,bt];context.api=async path=>path==='devices'?{devices:[tvd]}:path==='bluetooth/devices'?{devices:[bt]}:{devices:[]};
@@ -1209,7 +1218,7 @@ console.log('Software update: file checks, chunked upload, the wait through the 
   assert.match(withKb.content.innerHTML,/<div class="pinned"><button type="button" class="keyboard-button" data-keyboard aria-label="Type on Den &lt;Roku&gt;">/,'anyone, not only the owner, gets the button, in the fixed bar');
   assert.equal(withKb.actions.innerHTML,'','and it is not in the header');
   for(const id of ['n','g','t'])assert.doesNotMatch(remoteCtx('renderActivityRemote',id).content.innerHTML,/data-keyboard/,id+': no button without a device that can type');
-  state.session={role:'owner'};assert.match(remoteCtx('renderActivityRemote','w').actions.innerHTML,/Edit remote layout/,'the owner keeps the edit pencil in the header');state.session={role:'control'};
+  state.session={role:'owner'};assert.equal(remoteCtx('renderActivityRemote','w').actions.innerHTML,'','the owner has no edit pencil in the header');state.session={role:'control'};
   assert.match(remoteCtx('renderDeviceRemote','kb').content.innerHTML,/<div class="pinned"><button[^>]*data-keyboard/,'a Roku opened on its own has it too');assert.doesNotMatch(remoteCtx('renderDeviceRemote','tv').content.innerHTML,/data-keyboard/);
   // With a fixed row, the button sits directly above it.
   state.config.activities.push({id:'p',name:'Pinned',steps:[],screen:{columns:4,cells:[],pinned:[{deviceId:'tv',command:'Up',slot:0}]},keyboard:{deviceId:'kb'}});

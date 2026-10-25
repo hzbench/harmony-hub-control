@@ -22,7 +22,7 @@ function setup({delayQueue=false}={}){
     getBoundingClientRect:()=>({left:0,top:0,right:60,bottom:60}),addEventListener:(name,fn)=>handlers[name]=fn};
   const schedule=(fn,ms,repeat=false)=>{timers.set(++sequence,{fn,at:now+ms,ms,repeat});return sequence;};
   const surface={hidden:false,addEventListener:(name,fn)=>globals[name]=fn};
-  const context=vm.createContext({state,Date:{now:()=>now},notice(){},root:{querySelectorAll:()=>[button]},window:surface,document:surface,
+  const context=vm.createContext({state,Date:{now:()=>now},notice(){},ensureOnline:async()=>state.online,OFFLINE_NOTICE:'offline',root:{querySelectorAll:()=>[button]},window:surface,document:surface,
     setTimeout:(fn,ms)=>schedule(fn,ms),clearTimeout:id=>timers.delete(id),
     setInterval:(fn,ms)=>schedule(fn,ms,true),clearInterval:id=>timers.delete(id),
     api:async(path,body)=>{
