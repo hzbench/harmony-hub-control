@@ -601,9 +601,11 @@ function crossSplit(entries, occupied) {
 const crossRowOf = screen => Number.isInteger(screen?.crossRow)&&screen.crossRow>0 ? Math.min(screen.crossRow,GRID_SLOTS) : 0;
 function remoteBlocks(cells, crossRow=0, columns=4) {
   const {crossed, pick, corner, rest} = crossSplit(visibleEntries(cells, GRID_SLOTS), new Set(withSlots(cells,GRID_SLOTS).map(c=>c.slot)));
-  const above = rest.filter(e=>Math.floor(e.slot/columns)<crossRow), below = rest.filter(e=>Math.floor(e.slot/columns)>=crossRow);
-  const grid = entries => entries.length?[{kind:'grid',entries}]:[];
-  return crossed ? [...grid(above), {kind:'cross',pick,corner}, ...grid(below)] : grid(rest);
+  const rowOf = e => Math.floor(e.slot/columns), last = rest.reduce((most,e)=>Math.max(most,rowOf(e)),-1);
+  // A block is the grid rows `from` to `to`, empty ones included: a row left empty on purpose stays a blank row.
+  const grid = (entries, from, to) => to>=from?[{kind:'grid',entries,from,to}]:[];
+  return crossed ? [...grid(rest.filter(e=>rowOf(e)<crossRow),0,crossRow-1), {kind:'cross',pick,corner}, ...grid(rest.filter(e=>rowOf(e)>=crossRow),crossRow,last)]
+    : grid(rest,0,last);
 }
 function cellButton({cell,control}, extra='', customFace='') {
   const label = control?.[1] || cell.command;
@@ -612,12 +614,12 @@ function cellButton({cell,control}, extra='', customFace='') {
   return `<button class="cell ${extra}" type="button" data-command="${escape(cell.command)}" data-device="${escape(cell.deviceId)}" aria-label="${escape(label)}" title="${escape(label)}">${face}</button>`;
 }
 const crossHtml = (pick, corner={}) => `<div class="dpad">${CROSS_SQUARES.map(key=>{const e=pick[key]||corner[key];return e?cellButton(e,key):'<span></span>';}).join('')}</div>`;
-// Rows of `columns` slots; a row with no buttons is dropped, gaps inside one stay.
-function gridHtml(entries, columns) {
+// Rows `from` to `to` of `columns` slots. A row with no buttons stays as a blank row, like a gap inside one.
+function gridHtml(entries, columns, from=0, to=-1) {
   const rows = new Map();
   for(const e of entries){const row=Math.floor(e.slot/columns);if(!rows.has(row))rows.set(row,[]);rows.get(row).push(e);}
-  const cells = [...rows.keys()].sort((a,b)=>a-b).flatMap(row=>Array.from({length:columns},(_,col)=>{
-    const e = rows.get(row).find(x=>x.slot===row*columns+col);return e?cellButton(e):'<span></span>';}));
+  const cells = Array.from({length:Math.max(0,to-from+1)},(_,i)=>from+i).flatMap(row=>Array.from({length:columns},(_,col)=>{
+    const e = rows.get(row)?.find(x=>x.slot===row*columns+col);return e?cellButton(e):'<span></span>';}));
   return `<div class="cells" data-columns="${escape(String(columns))}">${cells.join('')}</div>`;
 }
 // The fixed row: its buttons share the whole width, whether there are four or one.
@@ -626,7 +628,7 @@ function pinnedRowHtml(entries) {
 }
 function remoteHtml(screen) {
   const columns = screen?.columns || 4;
-  const body = remoteBlocks(screen?.cells,crossRowOf(screen),columns).map(block=>block.kind==='cross'?crossHtml(block.pick,block.corner):gridHtml(block.entries,columns)).join('');
+  const body = remoteBlocks(screen?.cells,crossRowOf(screen),columns).map(block=>block.kind==='cross'?crossHtml(block.pick,block.corner):gridHtml(block.entries,columns,block.from,block.to)).join('');
   // The pinned footer is one row in the order set (no cross), the buttons filling its width.
   const pinned = visibleEntries(screen?.pinned, columns);
   return {body, pinned: pinned.length ? pinnedRowHtml(pinned) : ''};

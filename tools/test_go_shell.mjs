@@ -221,14 +221,17 @@ assert.deepEqual(kinds(remoteBlocks(['Arrow Up','Select','Arrow Left','Arrow Rig
 state.devices=[tv,bar];
 console.log('The dpad cross is recognised in any placement order, keeps other buttons around it, and needs all four arrows');
 
-// Slots: buttons keep the grid slot they sit in; gaps stay, empty rows collapse.
+// Slots: buttons keep the grid slot they sit in; gaps stay, and so do rows left empty on purpose.
 const slotCell=(command,slot,deviceId='tv')=>({deviceId,command,slot});
 const slotsOf=html=>[...html.matchAll(/<button[^>]*data-command="([^"]*)"|<span><\/span>/g)].map(m=>m[1]||'_');
 let grid=remoteHtml({columns:4,cells:[slotCell('Mute',3),slotCell('Back',0)]}).body;
 assert.deepEqual(slotsOf(grid),['Back','_','_','Mute'],'gaps between buttons stay open, and order follows the slot not the list');
 grid=remoteHtml({columns:4,cells:[slotCell('Back',0),slotCell('Input',9)]}).body;
-assert.deepEqual(slotsOf(grid),['Back','_','_','_','_','Input','_','_'],'a row with no buttons collapses; gaps inside a row stay');
-grid=remoteHtml({columns:3,cells:[slotCell('Back',4)]}).body;assert.deepEqual(slotsOf(grid),['_','Back','_']);
+assert.deepEqual(slotsOf(grid),['Back','_','_','_','_','_','_','_','_','Input','_','_'],'a row with no buttons stays as a blank row; gaps inside a row stay');
+grid=remoteHtml({columns:4,cells:[slotCell('Back',4)]}).body;
+assert.deepEqual(slotsOf(grid),['_','_','_','_','Back','_','_','_'],'rows left empty above the first button are kept too');
+assert.deepEqual(slotsOf(remoteHtml({columns:4,cells:[slotCell('Back',0)]}).body),['Back','_','_','_'],'nothing is added after the last button');
+grid=remoteHtml({columns:3,cells:[slotCell('Back',4)]}).body;assert.deepEqual(slotsOf(grid),['_','_','_','_','Back','_']);
 // Lists saved before slots existed fill the lowest free slots in order; collisions and bad slots are reassigned.
 assert.deepEqual(slotsOf(remoteHtml({columns:4,cells:[cell('Back'),cell('Input'),cell('Mute')]}).body),['Back','Input','Mute','_']);
 assert.deepEqual(slotsOf(remoteHtml({columns:4,cells:[slotCell('Back',1),cell('Input'),cell('Mute')]}).body),['Input','Back','Mute','_']);
@@ -242,6 +245,16 @@ assert.deepEqual(slotsOf(remoteHtml({columns:4,cells:[...arrowsAt(0,1,2,3,4),slo
 const scattered=remoteHtml({columns:4,cells:[slotCell('Right',0),slotCell('Back',1),slotCell('Up',2),slotCell('Input',3),slotCell('OK',4),slotCell('Mute',5),slotCell('Down',6),slotCell('HDMI 1',7),slotCell('Left',8)]}).body;
 assert.deepEqual(slotsOf(scattered.split('</div>').slice(1).join('')),['Back','Input','Mute','HDMI 1'],'arrows scattered through the grid are closed up too');
 assert.deepEqual(slotsOf(remoteHtml({columns:4,cells:[...arrowsAt(0,1,2,3,4),slotCell('Back',5),slotCell('Mute',7)]}).body.split('</div>').slice(1).join('')),['Back','_','Mute','_'],'a gap left on purpose stays');
+// Empty rows around the arrow pad are kept: crossRow rows sit above it, and the rows between it and the next button stay.
+{
+  const html=remoteHtml({columns:4,crossRow:2,cells:[...arrowsAt(8,9,10,11,12),slotCell('Back',0)]}).body;
+  const [above,below]=[html.slice(0,html.indexOf('<div class="dpad">')),html.slice(html.indexOf('</div>',html.indexOf('<div class="dpad">'))+6)];
+  assert.deepEqual(slotsOf(above),['Back','_','_','_','_','_','_','_'],'two rows above the pad, the second empty');
+  assert.deepEqual(slotsOf(below),[],'no buttons below the pad, so no rows below it');
+  const low=remoteHtml({columns:4,crossRow:0,cells:[...arrowsAt(0,1,2,3,4),slotCell('Mute',9)]}).body;
+  assert.deepEqual(slotsOf(low.slice(low.indexOf('</div>',low.indexOf('<div class="dpad">'))+6)),['_','_','_','_','Mute','_','_','_'],'an empty row between the pad and the next button stays');
+  assert.equal(slotsOf(remoteHtml({columns:4,crossRow:2,cells:arrowsAt(0,1,2,3,4)}).body.split('<div class="dpad">')[0]).length,8,'rows above the pad are kept even with no buttons in them');
+}
 // Corner buttons of a complete cross show in the 3x3 block, and the squares they held close up too.
 {
   const withCorner=remoteHtml({columns:4,cells:[...arrowsAt(0,1,2,3,4),{...slotCell('Back',5),corner:'tl'},{...slotCell('Input',6),corner:'br'},slotCell('Mute',7)]}).body;
