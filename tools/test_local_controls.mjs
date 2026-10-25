@@ -247,7 +247,7 @@ console.log('Profile search by brand, model and type, path-derived details, rank
 {
   const code=source.slice(source.indexOf('const ROKU_SCREEN'),source.indexOf('function profilePayload('));
   const fields={transport:{value:'ir'},'draft-learn':{}},assigned=[];
-  const context=vm.createContext({state:{draft:{}},$:id=>fields[id]||(fields[id]={}),escape:String,icon:()=>'',mount:html=>{context.html=html;},setupProgress:()=>'',
+  const context=vm.createContext({state:{draft:{}},profileTitle:p=>p,$:id=>fields[id]||(fields[id]={}),escape:String,icon:()=>'',mount:html=>{context.html=html;},setupProgress:()=>'',
     location:{assign:url=>assigned.push(url)},window:{scrollTo(){}},field:()=>'',deviceTypeOptions:()=>'',busy(){},notice(){}});
   vm.runInContext(code+'\nrenderProfileChoice();',context);
   assert.match(context.html,/<option value="roku">Roku \(on your network\)<\/option>/,'Add device offers Roku');
@@ -257,12 +257,53 @@ console.log('Profile search by brand, model and type, path-derived details, rank
   // The list of devices lets the owner manage a Roku from its edit button.
   assert.match(source,/data-action="'\+\(d\.transport==='roku'\?'edit-roku':'edit-device'\)/);
   assert.match(source,/action==='edit-roku'\)location\.assign\(ROKU_SCREEN\)/);
+  // After "Try another profile" a newly chosen profile does not overwrite what the user entered.
+  context.state.draft={flow:'profile',detailsLocked:true,manufacturer:'Vizio',model:'M55-C2',type:'Television',nameInput:'Den TV',profilePath:'TVs/Vizio/Vizio.ir'};
+  vm.runInContext("chooseProfile('text','TVs/Vizio/Vizio_D43-C1.ir','flipper',()=>{},{brand:'Vizio',model:'D43-C1',deviceType:'Television'})",context);
+  assert.deepEqual([context.state.draft.manufacturer,context.state.draft.model,context.state.draft.nameInput,context.state.draft.profilePath],['Vizio','M55-C2','Den TV','TVs/Vizio/Vizio_D43-C1.ir'],'the details stay, the profile changes');
+  assert.equal(context.state.draft.pending.path,'TVs/Vizio/Vizio_D43-C1.ir');
+  context.state.draft={flow:'profile',manufacturer:'Vizio',model:'M55-C2',type:'Television',profilePath:'TVs/Vizio/Vizio.ir'};
+  vm.runInContext("chooseProfile('text','TVs/Vizio/Vizio_D43-C1.ir','flipper',()=>{},{brand:'Vizio',model:'D43-C1',deviceType:'Television'})",context);
+  assert.equal(context.state.draft.model,'D43-C1','without a retry a new profile still fills the details in');
   console.log('Add device offers Roku, and a Roku in the device list opens its screen');
+}
+// "Try another profile": only for the device just made, only while no activity uses it, and it keeps what was entered.
+{
+  const code=source.slice(source.indexOf('function deviceInUse('),source.indexOf('function updateLearnSave('));
+  const calls=[],searches=[],notices=[];
+  const mk=(config,retry)=>{
+    const context=vm.createContext({state:{config,retry,devices:[{id:'7',name:'Den TV',transport:'ir'}],editor:{id:'7'},draft:null},
+      mount:html=>{context.html=html;},$:id=>(context.fields||={})[id]||(context.fields[id]={}),escape:String,
+      busy:async(button,label,fn)=>fn(),mutate:async(path,body)=>{calls.push({path,...body});},loadDevices:async()=>{},
+      renderSearch:again=>searches.push(again),renderDeviceEditor(){},notice:(m,e)=>notices.push({m,e:!!e})});
+    vm.runInContext(code,context);return context;
+  };
+  const retry={deviceId:'7',tried:['TVs/Vizio/Vizio.ir'],details:{nameInput:'Den TV',name:'Den TV',manufacturer:'Vizio',model:'M55-C2',type:'Television',typeKnown:false}};
+  const device={id:'7',name:'Den TV',transport:'ir'};
+  let c=mk({activities:[]},structuredClone(retry));
+  assert.equal(vm.runInContext('retryAvailable({id:"7"})',c),true);
+  assert.equal(vm.runInContext('retryAvailable({id:"8"})',c),false,'only the device just made');
+  for(const [what,activity] of [['a start step',{steps:[{deviceId:'7'}]}],['an exit step',{exitSteps:[{deviceId:'7'}]}],['a button on its remote',{screen:{cells:[{deviceId:'7',command:'Up'}]}}],['its fixed row',{screen:{pinned:[{deviceId:'7',command:'Up'}]}}]]) {
+    c=mk({activities:[activity]},structuredClone(retry));
+    assert.equal(vm.runInContext('retryAvailable({id:"7"})',c),false,'not offered when an activity uses it as '+what);
+    await assert.rejects(()=>vm.runInContext('tryAnotherProfile({id:"7"})',c),/activity uses this device/);
+  }
+  assert.equal(calls.length,0,'nothing is deleted when it is in use');
+  c=mk({activities:[]},structuredClone(retry));
+  await vm.runInContext('tryAnotherProfile({id:"7",transport:"ir"})',c);
+  assert.deepEqual(calls,[{path:'devices',action:'delete',deviceId:'7',transport:'ir'}],'the unused device is removed');
+  assert.deepEqual(JSON.parse(JSON.stringify(c.state.draft)),{flow:'profile',detailsLocked:true,...retry.details},'what was entered is kept for the next profile');
+  assert.deepEqual(JSON.parse(JSON.stringify(c.state.retry)),{deviceId:null,tried:['TVs/Vizio/Vizio.ir'],details:retry.details},'the tried profiles are remembered');
+  assert.deepEqual(searches,[true],'back to the same search, run again');assert.match(notices.at(-1).m,/Choose another profile/);
+  await assert.rejects(()=>vm.runInContext('tryAnotherProfile({id:"7"})',c),/not just created/,'it cannot be done twice');
+  c=mk({activities:[]},structuredClone(retry));vm.runInContext('renderTestFailed({id:"7",name:"Den <TV>"})',c);
+  assert.match(c.html,/No response from Den &lt;TV&gt;|No response from Den <TV>/);assert.match(c.html,/id="try-another"/);assert.match(c.html,/id="keep-device"/);
+  console.log('Try another profile: offered only for a new, unused device, it removes it and keeps the details and the tried profiles');
 }
 const setupCode=source.slice(source.indexOf('function renderSetupReview()'),source.indexOf('function renderDeviceTest('));
 for(const failRefresh of [false,true]){
   const saveCalls=[],fields={'setup-review-back':{},'content':{querySelectorAll:()=>[]},'setup-review':{}};
-  const setupState={config:{revision:7},devices:[{id:'2'}],draft:{name:'Receiver',manufacturer:'Pioneer',model:'VSX-LX52',type:'Audio',commands:[{name:'VOL+'}],layout:[],source:'candidate.ir'}};
+  const setupState={config:{revision:7},devices:[{id:'2'}],draft:{name:'Receiver',nameInput:'Receiver',manufacturer:'Pioneer',model:'VSX-LX52',type:'Audio',typeKnown:true,flow:'profile',profilePath:'Audio/Pioneer/VSX.ir',commands:[{name:'VOL+'}],layout:[],source:'candidate.ir'},retry:{deviceId:'old',tried:['Audio/Pioneer/Older.ir']}};
   const context=vm.createContext({state:setupState,$:id=>fields[id],controls:[],escape:String,setupProgress:()=>'',profileTitle:String,profilePayload:()=>'',mount(){},returnToDevice(){},notice(){},TextEncoder,
     window:{scrollTo(){}},writeLocal(){},show(){},loadDevices:async()=>{},api:async(path,body)=>{saveCalls.push({path,body});if(path==='devices')return {deviceId:'2'};if(failRefresh)throw Error('offline');return {revision:8};}});
   vm.runInContext(setupCode+'\nrenderSetupReview();',context);
@@ -273,6 +314,7 @@ for(const failRefresh of [false,true]){
   assert.equal(saveCalls.filter(c=>c.path==='devices').length,1);
   assert.equal(saveCalls[0].body.action,'create-profile');assert.equal(saveCalls[0].body.revision,7);
   assert.equal(setupState.draft,null,'a saved draft must never be resubmitted after a refresh failure');
+  assert.deepEqual(JSON.parse(JSON.stringify(setupState.retry)),{deviceId:'2',tried:['Audio/Pioneer/Older.ir','Audio/Pioneer/VSX.ir'],details:{nameInput:'Receiver',name:'Receiver',manufacturer:'Pioneer',model:'VSX-LX52',type:'Audio',typeKnown:true}},'what "Try another profile" needs is kept, with every profile tried so far');
   assert.ok(!saveCalls.some(c=>c.path==='commands/send'),'saving never transmits');
 }
 console.log('Single-save setup, double-submit suppression and refresh-failure handling passed');

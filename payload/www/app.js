@@ -315,7 +315,7 @@ function setupProgress(name) {
 function returnToDevice() {state.draft?renderProfileChoice():renderDeviceEditor(state.editor);}
 // A draft that holds something worth a "discard?" prompt (opening the add flow alone does not).
 const draftStarted=()=>!!(state.draft&&(state.draft.commands?.length||state.draft.pending||state.draft.manufacturer||state.draft.model||state.draft.nameInput));
-function startDeviceSetup() {state.draft={};state.editor=null;profileSearch={};renderProfileChoice();}
+function startDeviceSetup() {state.draft={};state.editor=null;state.retry=null;profileSearch={};renderProfileChoice();}
 function renderProfileChoice() {
   const draft=state.draft||={};state.editor=null;draft.flow='profile';
   mount(`<div class="editor">${setupProgress('Profile')}<h2>Add device</h2><label for="transport">Control type</label><select id="transport"><option value="ir">Infrared</option><option value="bluetooth">Bluetooth keyboard / supported HID profile</option><option value="roku">Roku (on your network)</option></select><p>Start from a profile or a remote. You will check the device details next.</p><div class="choice-list"><button class="primary" data-action="search-profile">${icon('Search')} Find a profile</button><button data-action="import-profile">${icon('Archive')} Import a profile file</button><button id="draft-learn">Learn from a remote</button></div>${draft.commands?.length?'<button id="resume-review">Review selected commands</button>':''}<div class="toolbar"><button data-action="devices">Cancel setup</button></div></div>`);
@@ -328,7 +328,8 @@ function renderProfileChoice() {
 function chooseProfile(text,path,source,back,meta=null) {
   const draft=state.draft;
   if(!draft)return importProfile(text,path,source,back);
-  if(draft.profilePath!==path)Object.assign(draft,{profilePath:path,nameInput:'',nameHint:meta?'':path.split('/').pop().replace(/\.[^.]+$/,''),
+  // After "Try another profile" the details the user already entered stay; otherwise a new profile fills them in.
+  if(draft.profilePath!==path)Object.assign(draft,draft.detailsLocked?{profilePath:path}:{profilePath:path,nameInput:'',nameHint:meta?'':path.split('/').pop().replace(/\.[^.]+$/,''),
     manufacturer:meta?.brand||'',model:meta?.model||'',type:meta?.deviceType||profileSearch.type||'',typeKnown:!!meta?.deviceType});
   draft.flow='profile';draft.pending={text,path,source,back};
   renderDraftDetails();
@@ -467,9 +468,12 @@ function renderSearch(again=false) {
     let files=findProfiles(tree,profileSearch),closest=false;
     // A model that is not in the index: show what the brand (and type) does have, closest first.
     if(!files.length&&profileSearch.model&&(profileSearch.brand||profileSearch.type)){files=similarProfiles(tree,profileSearch);closest=files.length>0;}
+    // Profiles already tried on this device that did not respond go to the end, marked.
+    const tried=new Set(state.retry?.tried||[]);
+    files=[...files.filter(f=>!tried.has(f.path)),...files.filter(f=>tried.has(f.path))];
     let limit=20;
     const draw=()=>{
-      const why=f=>closest?(f.generic?'Generic profile for this brand':f.sameGeneration?'Same generation as '+escape(profileSearch.model):'Other model from this brand'):f.exact?'Model name matches':'Other model / generic profile';
+      const why=f=>tried.has(f.path)?'Already tried: no response':closest?(f.generic?'Generic profile for this brand':f.sameGeneration?'Same generation as '+escape(profileSearch.model):'Other model from this brand'):f.exact?'Model name matches':'Other model / generic profile';
       results.innerHTML=`<p>${closest?`No profile for ${escape(profileSearch.model)}. These are the closest ${escape(profileSearch.brand||'')} profiles, best guess first. Try one and test it.`:files.length?`${files.length} ${files.length===1?'profile':'profiles'}. Compatibility needs a device test.`:profileSearch.model&&!profileSearch.brand&&!profileSearch.type?'No matching profile. Add the brand to see that brand’s profiles.':'No matching profile.'}</p>${files.slice(0,limit).map((f,i)=>`<div class="list-row"><div class="text"><strong>${escape(profileLabel(f))}</strong><small>${why(f)}</small><small>${escape(f.path.split('/').slice(0,-1).join(' / ').replace(/_/g,' '))}</small></div><button data-profile="${i}" aria-label="Choose ${escape(profileLabel(f))}">Choose</button></div>`).join('')}${files.length>limit?`<div class="toolbar"><button id="more-profiles">Show more (${files.length-limit} remaining)</button></div>`:''}`;
       if($('more-profiles'))$('more-profiles').onclick=()=>{limit+=20;draw();};
       results.querySelectorAll('[data-profile]').forEach(button=>button.onclick=()=>busy(button,'Loading...',async()=>{
@@ -518,6 +522,9 @@ function renderSetupReview() {
       if(new TextEncoder().encode(JSON.stringify(payload)).length>500000)throw Error('Selected commands exceed the hub request limit. Choose fewer commands.');
       // Keep the create result even if refreshing the inventory fails.
       const result=await api('devices',{...payload,revision:state.config.revision});saved=true;state.draft=null;
+      // If the test finds no response, "Try another profile" needs the details entered and the profiles already tried.
+      state.retry=draft.flow==='profile'?{deviceId:result.deviceId,tried:[...(state.retry?.tried||[]),draft.profilePath].filter(Boolean),
+        details:{nameInput:draft.nameInput||'',name:draft.name,manufacturer:draft.manufacturer,model:draft.model,type:draft.type,typeKnown:draft.typeKnown}}:null;
       writeLocal('harmony-device',result.deviceId);writeLocal('harmony-activity','');
       state.config=await api('configuration');await loadDevices();
       const device=state.devices.find(d=>d.id===result.deviceId);
@@ -544,9 +551,34 @@ function renderDeviceTest(device) {
   });
   for(const [id,status] of [['test-yes','responded'],['test-no','no-response']])$(id).onclick=event=>busy(event.currentTarget,'Saving...',async()=>{
     if(!sent)return;const command=sent;sent='';
-    try{const config=structuredClone(state.config);config.deviceSetup||={};config.deviceSetup[device.id]={...config.deviceSetup[device.id],status,testedCommand:command};await saveConfig(config);renderDeviceEditor(device);notice(status==='responded'?`${command} confirmed. Other commands are not yet tested.`:'No response recorded. Check the profile and try again.');}
+    try{const config=structuredClone(state.config);config.deviceSetup||={};config.deviceSetup[device.id]={...config.deviceSetup[device.id],status,testedCommand:command};await saveConfig(config);
+      if(status==='responded')state.retry=null;
+      if(status==='no-response'&&retryAvailable(device)){renderTestFailed(device);return;}
+      renderDeviceEditor(device);notice(status==='responded'?`${command} confirmed. Other commands are not yet tested.`:'No response recorded. Check the profile and try again.');}
     catch(error){sent=command;throw error;}
   });
+}
+// A device just made in the wizard can be swapped for another profile, but only while nothing uses it.
+function deviceInUse(id) {
+  return (state.config.activities||[]).some(a=>[...(a.steps||[]),...(a.exitSteps||[])].some(step=>step.deviceId===id)
+    ||[...(a.screen?.cells||[]),...(a.screen?.pinned||[])].some(cell=>cell.deviceId===id));
+}
+const retryAvailable = device => state.retry?.deviceId===device.id&&!deviceInUse(device.id);
+function renderTestFailed(device) {
+  mount(`<div class="editor"><h2>No response from ${escape(device.name)}</h2><p>The profile may not match this device. Try another one: this device is removed, and the details you entered are kept.</p><div class="toolbar"><button class="primary" id="try-another">Try another profile</button><button id="keep-device">Keep this device</button></div></div>`);
+  $('try-another').onclick=event=>busy(event.currentTarget,'Removing...',()=>tryAnotherProfile(device));
+  $('keep-device').onclick=()=>{renderDeviceEditor(device);notice('No response recorded. Check the profile and try again.');};
+}
+async function tryAnotherProfile(device) {
+  const retry=state.retry;
+  if(!retry||retry.deviceId!==device.id)throw Error('This device was not just created, so it cannot be swapped here.');
+  if(deviceInUse(device.id))throw Error('An activity uses this device. Remove it there first, or keep it.');
+  await mutate('devices',{action:'delete',deviceId:device.id,transport:device.transport||'ir'});
+  await loadDevices();
+  state.retry={...retry,deviceId:null};
+  state.editor=null;state.draft={flow:'profile',...retry.details,detailsLocked:true};
+  renderSearch(true);
+  notice('Removed. Choose another profile; your details are kept.');
 }
 function updateLearnSave() {
   const mode=$('learn-mode').value;

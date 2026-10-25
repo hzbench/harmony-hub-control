@@ -96,6 +96,12 @@ class Preview(BaseHTTPRequestHandler):
             configuration["deviceSetup"][device_id] = {"status": "untested", "source": body["source"], "testedCommand": ""}
             configuration["revision"] += 1
             return self.reply({"ok": True, "deviceId": device_id})
+        if self.path == "/api/v1/devices" and body.get("action") == "delete":  # as the hub does: the device and its layout/setup record go
+            devices[:] = [d for d in devices if d["id"] != body.get("deviceId")]
+            configuration["layouts"].pop(body.get("deviceId"), None)
+            configuration["deviceSetup"].pop(body.get("deviceId"), None)
+            configuration["revision"] += 1
+            return self.reply({"ok": True})
         if self.path == "/api/v1/configuration":
             configuration.update(body["configuration"])
             configuration["revision"] += 1
