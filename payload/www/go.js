@@ -54,9 +54,15 @@ const toolbarHasConnection = () => typeof window.HarmonyNative?.setConnection===
 // Before refusing a press because the hub looks offline, ask it once: it may have come back since
 // the last poll. api() updates state.online, so this just reports the result.
 let probing = null;
+const CHECKING_NOTICE = 'Checking the hub…';
 function ensureOnline() {
   if(state.online)return Promise.resolve(true);
-  probing ||= api('session').then(()=>true,()=>false).finally(()=>{probing=null;});
+  // A dead connection can take up to 12 s to give up: say that something is happening. The caller then
+  // shows its own result; this only removes the message if nothing replaced it.
+  if(!probing){
+    notice(CHECKING_NOTICE);
+    probing = api('session').then(()=>true,()=>false).finally(()=>{probing=null;if($('notice').textContent===CHECKING_NOTICE)notice('');});
+  }
   return probing;
 }
 const OFFLINE_NOTICE = 'The hub is disconnected. Check the connection and try again.';
