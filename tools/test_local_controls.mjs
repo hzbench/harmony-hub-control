@@ -17,12 +17,12 @@ let code;
 async function flushMicrotasks(){for(let i=0;i<20;i++)await Promise.resolve();}
 function setup({delayQueue=false}={}){
   let now=0, sequence=0, failRenew=false, queue, finish;
-  const timers=new Map(), calls=[], handlers={}, globals={}, state={online:true,hold:null,devices:[{id:'tv',transport:'ir'}]};
+  const notices=[], timers=new Map(), calls=[], handlers={}, globals={}, state={online:true,hold:null,devices:[{id:'tv',transport:'ir'}]};
   const button={dataset:{device:'tv',command:'VolumeUp'},classList:{add(){},remove(){}},setAttribute(){},setPointerCapture(){},
     getBoundingClientRect:()=>({left:0,top:0,right:60,bottom:60}),addEventListener:(name,fn)=>handlers[name]=fn};
   const schedule=(fn,ms,repeat=false)=>{timers.set(++sequence,{fn,at:now+ms,ms,repeat});return sequence;};
   const surface={hidden:false,addEventListener:(name,fn)=>globals[name]=fn};
-  const context=vm.createContext({state,Date:{now:()=>now},notice(){},ensureOnline:async()=>state.online,OFFLINE_NOTICE:'offline',root:{querySelectorAll:()=>[button]},window:surface,document:surface,
+  const context=vm.createContext({state,Date:{now:()=>now},notice:(text,error)=>notices.push({text,error:!!error}),ensureOnline:async()=>state.online,OFFLINE_NOTICE:'offline',root:{querySelectorAll:()=>[button]},window:surface,document:surface,
     setTimeout:(fn,ms)=>schedule(fn,ms),clearTimeout:id=>timers.delete(id),
     setInterval:(fn,ms)=>schedule(fn,ms,true),clearInterval:id=>timers.delete(id),
     api:async(path,body)=>{
@@ -45,7 +45,7 @@ function setup({delayQueue=false}={}){
     now=end;await flush();
   }
   function event(type,props={}){handlers[type]?.({button:0,pointerId:1,key:'Enter',repeat:false,clientX:30,clientY:30,preventDefault(){},...props});}
-  return {event,advance,flush,calls,state,timers,surface,
+  return {event,advance,flush,calls,notices,state,timers,surface,
     surfaceEvent:type=>globals[type]?.(),failRenew:()=>failRenew=true,
     finish:async(error=false)=>{error?finish.reject(Error('failed')):finish.resolve({state:'completed'});await flush();},
     queued:async()=>{queue({id:'operation-1'});await flush();}};
@@ -68,6 +68,13 @@ for(const transport of ['bluetooth','roku']){
   t=setup();t.state.devices[0].transport=transport;t.event('pointerdown');await t.advance(1600);t.event('pointerup');t.event('click');await t.flush();
   assert.deepEqual(t.calls.filter(c=>c.path==='commands/send').map(c=>[c.mode,c.transport]),[['tap',transport]],transport+' hold sends a single tap');
   assert.equal(t.state.hold,null);
+}
+if(name==='go.js'){
+  // A press that works says nothing; a stale message is cleared, and failures still show.
+  t=setup();t.event('pointerdown');await t.advance(100);t.event('pointerup');t.event('click');await t.flush();await t.finish();
+  assert.deepEqual(t.notices.filter(n=>n.text),[],'a tap that completes shows no message');
+  t=setup();t.event('pointerdown');await t.advance(1600);t.event('pointerup');t.event('click');await t.flush();await t.finish();
+  assert.deepEqual(t.notices.filter(n=>n.text),[],'a hold that completes shows no message');
 }
 console.log('New remote ('+name+'): touch, keyboard, long-hold release, pointer cancellation and synthetic-click suppression passed');
 
