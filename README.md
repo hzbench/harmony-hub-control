@@ -1,5 +1,7 @@
 # Harmony Hub Control
 
+> Forked from [Ripthulhu/harmony-hub-control](https://github.com/Ripthulhu/harmony-hub-control). See [NOTICE.md](NOTICE.md) for credit and licensing.
+
 A local remote that runs on the Harmony Hub. Open `http://<hub-ip>:8080/` from
 your phone or computer. No always-on computer or Logitech account is needed for
 the installed local controls.
