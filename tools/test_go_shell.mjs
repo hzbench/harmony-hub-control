@@ -64,8 +64,8 @@ console.log('Tab screens show tabs and the connectivity icon; drill-in screens s
 
 // ---- Activities home ----
 const calls=[];let outcome='completed',pending=null;
-let hubDown=false;
-context.api=async(path,body)=>{calls.push({path,...body});if(path==='session'){if(hubDown){state.online=false;throw Error('down');}state.online=true;return {};}if(path==='activities/run')return {id:'op'+calls.length};return {};};
+let hubDown=false,sessionGate=null;
+context.api=async(path,body)=>{calls.push({path,...body});if(path==='session'){if(sessionGate)await sessionGate;if(hubDown){state.online=false;throw Error('down');}state.online=true;return {};}if(path==='activities/run')return {id:'op'+calls.length};return {};};
 context.operation=async()=>pending?await pending:{state:outcome};
 state.online=true;
 state.devices=[{id:'1',name:'LG C5',transport:'ir',commands:['VolumeUp','VolumeDown','Play'].map(name=>({name}))},{id:'2',name:'Receiver'}];
@@ -124,6 +124,15 @@ console.log('A cancelled start is not remembered and does not navigate');
 calls.length=0;state.online=false;hubDown=true;
 await click({open:'empty'});
 assert.deepEqual(calls.map(c=>c.path),['session'],'an offline press only asks the hub whether it is back');assert.match(el('notice').textContent,/disconnected/);
+// While the hub is being asked, the screen says so; the message goes away when the answer arrives.
+{
+  let open;sessionGate=new Promise(r=>open=r);hubDown=false;calls.length=0;state.online=false;
+  const pressing=click({open:'empty'});for(let i=0;i<10;i++)await Promise.resolve();
+  assert.equal(el('notice').textContent,'Checking the hub…','a press waiting on the hub says so');
+  open();sessionGate=null;await pressing;
+  assert.doesNotMatch(el('notice').textContent,/Checking/,'the message does not outlive the check');
+  store.set('harmony-activity','watch');context.location.hash='#/activities';draw();
+}
 hubDown=false;calls.length=0;state.online=false;
 await click({open:'empty'});
 assert.equal(calls[0].path,'session');assert.ok(calls.some(c=>c.path==='activities/run'),'the hub is back: the press goes through');
