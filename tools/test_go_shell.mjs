@@ -56,6 +56,7 @@ context.location.hash='#/activity/watch';show();
 assert.equal(el('back').hidden,false);assert.equal(el('back').dataset.parent,'activities');
 assert.equal(el('tabs').hidden,true);assert.equal(el('connection').hidden,false);
 context.location.hash='#/roku';show();assert.equal(el('connection').hidden,true);
+context.location.hash='#/edit/watch';show();assert.equal(el('connection').hidden,true,'the editor header has no room for the icon');
 context.location.hash='#/devices';show();
 assert.equal(el('back').hidden,true);assert.equal(el('tabs').hidden,false);assert.equal(el('connection').hidden,false);
 assert.equal(el('title').textContent,'Devices');

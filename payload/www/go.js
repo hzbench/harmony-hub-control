@@ -1160,7 +1160,8 @@ function show() {
   document.body.dataset.reserveNotice = String(!!screen.reserveNotice);
   document.body.dataset.screen = name;
   const remote = REMOTE_ROUTES.includes(name);
-  $('connection').hidden = remote ? false : (!!screen.parent || toolbarHasConnection());
+  // The editor's header already holds Help, Cancel and Save and would truncate its title, so it goes without the icon.
+  $('connection').hidden = name==='edit' || (remote ? false : (!!screen.parent || toolbarHasConnection()));
   try {window.HarmonyNative?.setToolbarVisible?.(!remote);window.HarmonyNative?.setConnection?.($('connection').dataset.state);} catch {/* no native bridge */}
   $('tabs').hidden = !!screen.parent;
   $('tabs').querySelectorAll('[data-tab]').forEach(a=>{if(a.dataset.tab===screen.tab)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current');});
