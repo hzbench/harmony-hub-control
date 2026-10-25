@@ -31,6 +31,18 @@ assert.equal(routeHash('activity','a/b c'),'#/activity/a%2Fb%20c');
 assert.equal(parseRoute(routeHash('activity','a/b c')).params[0],'a/b c');
 console.log('Hash routing parses tabs and drill-ins, decodes params and falls back to Activities');
 
+// A button must let a vertical swipe scroll the page: touch-action none on a remote's buttons made the remote
+// impossible to scroll from anywhere a button was. (The press itself is cancelled by pointercancel when a pan starts.)
+{
+  const rule=selector=>(css.match(new RegExp('(?:^|\\n|\\})\\s*'+selector.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\s*\\{([^}]*)\\}'))||[])[1]||'';
+  assert.match(rule('.cell'),/touch-action:\s*pan-y/,'remote buttons let a vertical swipe scroll');
+  assert.doesNotMatch(rule('.cell'),/touch-action:\s*none/);
+  assert.match(rule('.pinned .cell'),/touch-action:\s*none/,'the fixed row never scrolls, so its holds stay exact');
+  const oldCss=fs.readFileSync(new URL('../payload/www/app.css',import.meta.url),'utf8');
+  assert.match(oldCss,/button\[data-command\]\{touch-action:pan-y/,'the original UI\'s remote scrolls the same way');
+  console.log('Remote buttons let a vertical swipe scroll the page; the fixed row does not');
+}
+
 assert.equal(state.online,null);
 assert.equal(!state.online,true);
 connection(null);assert.equal(el('connection').dataset.state,'connecting');

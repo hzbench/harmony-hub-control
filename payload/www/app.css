@@ -13,7 +13,7 @@ button:disabled{opacity:.45;cursor:default}
 button.primary{background:var(--accent);color:var(--surface)}
 button.danger{color:var(--danger)}
 button[aria-pressed=true],button.is-held{background:var(--accent);color:var(--surface)}
-button[data-command]{touch-action:none;user-select:none;-webkit-user-select:none;display:flex;align-items:center;justify-content:center;gap:8px}
+button[data-command]{touch-action:pan-y;user-select:none;-webkit-user-select:none;display:flex;align-items:center;justify-content:center;gap:8px}
 :focus-visible{outline:3px solid var(--focus);outline-offset:3px}
 main:focus{outline:0}
 a{color:var(--accent);text-underline-offset:3px}
