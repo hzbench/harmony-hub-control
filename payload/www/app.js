@@ -248,7 +248,7 @@ function drawer() {
 $('close-drawer').addEventListener('click',()=>{stopHold(false);$('drawer').close();});
 $('drawer').addEventListener('close',()=>stopHold(false));
 function renderDevices() {
-  mount(`<div class="toolbar">${owner()?'<button data-action="add-device" class="primary">'+icon('Plus')+' Add device</button>':''}</div><div class="list">${state.devices.map(d=>`<div class="list-row"><div class="text"><strong>${escape(d.name)}</strong>${d.name===`${d.manufacturer} ${d.model}`?'':`<small>${d.transport==='roku'?(d.model==='tv'?'Roku TV':'Roku player'):escape(d.manufacturer||'Bluetooth')+' '+escape(d.model||d.type||'')}</small>`}<small>${d.commands.length} commands${d.transport==='ir'?' - '+escape(deviceTestStatus(d)):''}</small></div><div class="row-actions"><button data-action="open-device" data-id="${escape(d.id)}" title="Open ${escape(d.name)} remote">${icon('Radio')}</button>${owner()&&d.transport!=='roku'?'<button data-action="edit-device" data-id="'+escape(d.id)+'" title="Edit '+escape(d.name)+'">'+icon('SlidersHorizontal')+'</button>':''}</div></div>`).join('')||'<p>No saved devices.</p>'}</div>${owner()&&state.devices.some(d=>d.transport==='roku')?'<p>Rokus are managed under <a href="/go/#/roku">Setup › Roku</a>.</p>':''}`);
+  mount(`<div class="toolbar">${owner()?'<button data-action="add-device" class="primary">'+icon('Plus')+' Add device</button>':''}</div><div class="list">${state.devices.map(d=>`<div class="list-row"><div class="text"><strong>${escape(d.name)}</strong>${d.name===`${d.manufacturer} ${d.model}`?'':`<small>${d.transport==='roku'?(d.model==='tv'?'Roku TV':'Roku player'):escape(d.manufacturer||'Bluetooth')+' '+escape(d.model||d.type||'')}</small>`}<small>${d.commands.length} commands${d.transport==='ir'?' - '+escape(deviceTestStatus(d)):''}</small></div><div class="row-actions"><button data-action="open-device" data-id="${escape(d.id)}" title="Open ${escape(d.name)} remote">${icon('Radio')}</button>${owner()?'<button data-action="'+(d.transport==='roku'?'edit-roku':'edit-device')+'" data-id="'+escape(d.id)+'" title="Edit '+escape(d.name)+'">'+icon('SlidersHorizontal')+'</button>':''}</div></div>`).join('')||'<p>No saved devices.</p>'}</div>${owner()&&state.devices.some(d=>d.transport==='roku')?'<p>Rokus are managed under <a href="/go/#/roku">Setup › Roku</a>.</p>':''}`);
 }
 function deviceTestStatus(device) {
   if(!device.commands.length)return 'No commands yet';
@@ -257,10 +257,12 @@ function deviceTestStatus(device) {
 }
 async function mutate(path,body) {const result=await api(path,{...body,revision:state.config.revision});state.config=await api('configuration');return result;}
 async function saveConfig(configuration) {await mutate('configuration',{configuration});}
+// A Roku is found and added on the network, in the daily UI's Roku screen (which also renames, tests and removes them).
+const ROKU_SCREEN='/go/#/roku';
 function renderDeviceEditor(device=null) {
   state.editor=device;state.draft=null;  // this is the Bluetooth form or an existing device, never the infrared setup
   mount(`<div class="editor"><h2>${device?'Edit device':'Add device'}</h2><form id="device-form">${field('Name','device-name',device?.name||'','text','required maxlength="100"')}
-    ${!device?'<label for="transport">Control type</label><select id="transport"><option value="ir">Infrared</option><option value="bluetooth">Bluetooth keyboard / supported HID profile</option></select>':''}
+    ${!device?'<label for="transport">Control type</label><select id="transport"><option value="ir">Infrared</option><option value="bluetooth">Bluetooth keyboard / supported HID profile</option><option value="roku">Roku (on your network)</option></select>':''}
     <div id="ir-fields" ${device?.transport==='bluetooth'?'hidden':''}><div class="fields"><div>${field('Brand','manufacturer',device?.manufacturer||'','text','required')}</div><div>${field('Model','model',device?.model||'','text','required')}</div></div><label for="device-type">Device type</label><select id="device-type">${deviceTypeOptions(device?.type||'Television')}</select></div>
     <div id="bt-fields" ${device?.transport!=='bluetooth'?'hidden':''}><label for="bt-type">Profile</label><select id="bt-type"><option value="btkeyboard">Bluetooth keyboard</option><option value="fire">Fire TV</option><option value="btkeyboard-nexus">Nexus keyboard</option><option value="ps3">PlayStation 3</option><option value="wii">Nintendo Wii</option></select>${field('Paired address','bt-address',device?.bdaddr||'','text','pattern="[0-9A-Fa-f:]{17}"')}<div class="toolbar"><button type="button" data-action="bt-pair">Start pairing</button><button type="button" data-action="bt-status">Check pairing</button><button type="button" data-action="bt-stop">Finish pairing</button></div><pre id="bt-result" hidden></pre></div>
     <div class="toolbar"><button class="primary" type="submit">${device?'Save device':'Create device'}</button><button type="button" data-action="devices">Cancel</button>${device?'<button type="button" data-action="delete-device" class="danger">Delete device</button>':''}</div></form>
@@ -271,7 +273,7 @@ function renderDeviceEditor(device=null) {
     $('transport').value='bluetooth';$('ir-fields').hidden=true;$('bt-fields').hidden=false;
     $('manufacturer').required=false;$('model').required=false;
     $('device-form').querySelector('[type=submit]').textContent='Save Bluetooth device';
-    $('transport').onchange=()=>{if($('transport').value==='ir')renderProfileChoice();};
+    $('transport').onchange=()=>{if($('transport').value==='ir')renderProfileChoice();else if($('transport').value==='roku')location.assign(ROKU_SCREEN);};
   }
   if(device?.transport==='bluetooth'){$('manufacturer').required=false;$('model').required=false;}
   $('device-form').onsubmit=async event=>{
@@ -316,8 +318,8 @@ const draftStarted=()=>!!(state.draft&&(state.draft.commands?.length||state.draf
 function startDeviceSetup() {state.draft={};state.editor=null;profileSearch={};renderProfileChoice();}
 function renderProfileChoice() {
   const draft=state.draft||={};state.editor=null;draft.flow='profile';
-  mount(`<div class="editor">${setupProgress('Profile')}<h2>Add device</h2><label for="transport">Control type</label><select id="transport"><option value="ir">Infrared</option><option value="bluetooth">Bluetooth keyboard / supported HID profile</option></select><p>Start from a profile or a remote. You will check the device details next.</p><div class="choice-list"><button class="primary" data-action="search-profile">${icon('Search')} Find a profile</button><button data-action="import-profile">${icon('Archive')} Import a profile file</button><button id="draft-learn">Learn from a remote</button></div>${draft.commands?.length?'<button id="resume-review">Review selected commands</button>':''}<div class="toolbar"><button data-action="devices">Cancel setup</button></div></div>`);
-  $('transport').onchange=()=>{if($('transport').value==='bluetooth')renderDeviceEditor();};
+  mount(`<div class="editor">${setupProgress('Profile')}<h2>Add device</h2><label for="transport">Control type</label><select id="transport"><option value="ir">Infrared</option><option value="bluetooth">Bluetooth keyboard / supported HID profile</option><option value="roku">Roku (on your network)</option></select><p>Start from a profile or a remote. You will check the device details next.</p><div class="choice-list"><button class="primary" data-action="search-profile">${icon('Search')} Find a profile</button><button data-action="import-profile">${icon('Archive')} Import a profile file</button><button id="draft-learn">Learn from a remote</button></div>${draft.commands?.length?'<button id="resume-review">Review selected commands</button>':''}<div class="toolbar"><button data-action="devices">Cancel setup</button></div></div>`);
+  $('transport').onchange=()=>{if($('transport').value==='bluetooth')renderDeviceEditor();else if($('transport').value==='roku')location.assign(ROKU_SCREEN);};
   $('draft-learn').onclick=()=>renderDraftLearn();
   if($('resume-review'))$('resume-review').onclick=()=>renderSetupReview();
 }
@@ -646,6 +648,7 @@ document.addEventListener('click',async event=>{
     else if(action==='add-device')startDeviceSetup();
     else if(action==='open-device'){writeLocal('harmony-activity','');writeLocal('harmony-device',button.dataset.id);show('remote');}
     else if(action==='edit-device')renderDeviceEditor(state.devices.find(d=>d.id===button.dataset.id));
+    else if(action==='edit-roku')location.assign(ROKU_SCREEN);
     else if(action==='layout')renderLayout();
     else if(action==='import-profile')renderImport();
     else if(action==='search-profile'){if(!state.draft)profileSearch={};renderSearch();}
