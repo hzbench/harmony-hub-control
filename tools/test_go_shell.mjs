@@ -15,10 +15,10 @@ console.log('Entry page and shell script use no inline styles or scripts (CSP-sa
 
 const elements={}, store=new Map();
 const el=id=>elements[id]||=({id,dataset:{},classList:{add(){},remove(){}},hidden:false,textContent:'',innerHTML:'',title:'',attrs:{},setAttribute(k,v){this.attrs[k]=v;},removeAttribute(k){delete this.attrs[k];},focus(){},addEventListener(){},querySelectorAll:()=>[]});
-const context=vm.createContext({document:{getElementById:el,title:'',body:{dataset:{}},addEventListener(){},hidden:false},window:{addEventListener(){},scrollTo(){}},location:{hash:'',replace(url){context.replaced=url;}},history:{replaceState(){},pushState(){context.pushed=(context.pushed||0)+1;},back(){context.backed=(context.backed||0)+1;}},
+const context=vm.createContext({document:{getElementById:el,title:'',body:{dataset:{}},addEventListener(){},hidden:false},window:{addEventListener(){},scrollTo(){}},location:{hash:'',replace(url){context.replaced=url;},assign(url){context.assigned=url;}},history:{replaceState(){},pushState(){context.pushed=(context.pushed||0)+1;},back(){context.backed=(context.backed||0)+1;}},
   confirm:message=>{(context.confirmed||(context.confirmed=[])).push(message);return context.confirmAnswer!==false;},navigator:{vibrate(){context.vibrated=(context.vibrated||0)+1;}},localStorage:{getItem:k=>store.get(k)??null,setItem:(k,v)=>store.set(k,v)},setTimeout:()=>0,clearTimeout(){},fetch:async()=>{throw new TypeError('offline');},AbortController,URL,structuredClone,atob});
 const inert=source.replace(/\n  boot\(\);\n\}\s*$/,'\n}');assert.notEqual(inert,source,'boot() auto-run not found');
-vm.runInContext(inert.replace('const state =','var state =')+'\nthis.exports={parseRoute,routeHash,connection,state,needsFullUi,api,show,screens,renderActivities,renderDevices,deviceRemoteHtml,renderDeviceRemote,remoteBlocks,remoteHtml,renderActivityRemote,CONTROLS,controlFor,volumeTarget,editorSlots,availableCommands,addButton,removeButton,editorHtml,renderEditor,screenOf,MAX_CELLS,layoutShape,startDraft,submitLayout,getLeaveGuard:()=>leaveGuard,cloneScreen,withSlots,announceHub,loadDevices,typingPlan,createTyper,openKeyboard,keyboardSetting:keyboardSettingHtml,setRunningActivity,announceRunning,channelChoices,ROKU_BUILTIN_NAMES,channelRowHtml,parseRelease,installRelease,waitForHub,pauses};',context);
+vm.runInContext(inert.replace('const state =','var state =')+'\nthis.exports={parseRoute,routeHash,connection,state,needsFullUi,api,show,screens,renderActivities,renderDevices,deviceRemoteHtml,renderDeviceRemote,remoteBlocks,remoteHtml,renderActivityRemote,CONTROLS,controlFor,volumeTarget,editorSlots,availableCommands,addButton,removeButton,editorHtml,renderEditor,screenOf,MAX_CELLS,layoutShape,startDraft,submitLayout,getLeaveGuard:()=>leaveGuard,cloneScreen,withSlots,announceHub,loadDevices,typingPlan,createTyper,openKeyboard,KEYBOARD_COMMAND,setRunningActivity,announceRunning,channelChoices,ROKU_BUILTIN_NAMES,channelRowHtml,parseRelease,installRelease,waitForHub,pauses};',context);
 const {parseRoute,routeHash,connection,state,needsFullUi,api,show}=context.exports;
 
 assert.deepEqual(JSON.parse(JSON.stringify(parseRoute(''))),{name:'activities',params:[]});
@@ -314,11 +314,11 @@ assert.equal(rc.actions.innerHTML,'');
 rc.params=['nope'];context.exports.renderActivityRemote(rc);assert.match(rc.content.innerHTML,/no longer exists/);
 console.log('Activity remote has no edit link in the header and copes with a missing activity');
 
-// Editing is reached from Setup > Remote layouts, and Back from the editor returns there.
-state.session={role:'owner'};context.location.hash='#/layouts';show();
-assert.match(el('content').innerHTML,/href="#\/edit\/watch"/);assert.equal(el('back').dataset.href,'#/setup');
+// The layout editor is part of editing an activity (in the original UI), and Back from it returns there.
+state.session={role:'owner'};
 context.location.hash='#/edit/watch';show();
-assert.equal(el('back').dataset.href,'#/layouts');
+assert.equal(el('back').dataset.href,'/#activities');assert.equal(el('back').hidden,false);
+assert.equal('layouts' in context.exports.screens,false,'there is no separate Remote layouts screen');
 context.location.hash='#/activity/watch';show();
 assert.equal(el('back').dataset.href,'#/activities');assert.equal(context.document.body.dataset.reserveNotice,'true');assert.equal(context.document.body.dataset.screen,'activity','the screen name is on the body for per-screen styling');
 context.location.hash='#/devices';show();assert.equal(context.document.body.dataset.reserveNotice,'false');
@@ -481,7 +481,7 @@ assert.notEqual(shapeOf(mk([sc('Up',0)])),shapeOf(mk([sc('Up',3)])),'moving a bu
   store.set('harmony-layout-draft:w','{"base":"x","draft":{"cells":[],"pinned":[]}}');   // a leftover from an older version is ignored
   const d=X.startDraft(act);store.delete('harmony-layout-draft:w');
   assert.equal(d.base,shapeOf(act.screen));
-  assert.deepEqual(J(d.draft),{columns:4,crossRow:0,cells:[sc('Up',0),sc('Down',1)],pinned:[],keyboard:''},'the draft gives every button a slot');
+  assert.deepEqual(J(d.draft),{columns:4,crossRow:0,cells:[sc('Up',0),sc('Down',1)],pinned:[]},'the draft gives every button a slot');
   assert.equal(shapeOf(d.draft),d.base,'...without counting as a change');
   d.draft.cells.push(sc('Mute',2));assert.equal(act.screen.cells.length,2);assert.equal(act.screen.cells[0].slot,undefined,'the draft is a copy');
 }
@@ -675,13 +675,13 @@ console.log('Editor draws gaps as empty squares, lists every cell (including sta
   const pressCancel=ctx=>ctx.actions.onclick({target:{closest:sel=>sel==='[data-cancel]'?{}:null}});
   ({content,ctx}=setup(base0));
   assert.match(ctx.actions.innerHTML,/data-cancel/);
-  context.confirmed.length=0;pressCancel(ctx);assert.equal(context.confirmed.length,0,'clean: no prompt');assert.equal(context.location.hash,'#/layouts');
+  context.confirmed.length=0;pressCancel(ctx);assert.equal(context.confirmed.length,0,'clean: no prompt');assert.equal(context.assigned,'/#activities','cancel returns to the activity page in the original UI');context.assigned=undefined;
   context.location.hash='#/edit/w';
   down(content,slotBtn(content,'cells',0));advance(600);await settle();
   el('notice').textContent='Saved.';
   context.confirmAnswer=false;pressCancel(ctx);assert.deepEqual(layout(content,'cells'),{1:'Down',2:'Mute'});assert.equal(context.location.hash,'#/edit/w','declining stays put');
   context.confirmAnswer=true;pressCancel(ctx);
-  assert.equal(el('notice').textContent,'');assert.equal(context.location.hash,'#/layouts');
+  assert.equal(el('notice').textContent,'');assert.equal(context.assigned,'/#activities');context.assigned=undefined;
   assert.equal(posts.length,0);
   context.location.hash='#/edit/w';
 
@@ -841,29 +841,32 @@ console.log('Editor draws gaps as empty squares, lists every cell (including sta
     click(content,'[data-add-pad]');assert.match(content.innerHTML,/<p class="edit-hint">Tap where the arrow pad should go\.<\/p>/);
     click(content,'[data-place-cancel]');assert.doesNotMatch(content.innerHTML,/class="edit-hint"/);
   }
-  // Keyboard setting: which device the remote's Keyboard button types on. It is saved on the activity, not in its layout.
+  // The Keyboard is a button like the others: offered for a device that can type, placed in a slot, and saved in the layout.
   {
     const kb={id:'kb',name:'Den Roku',type:'Roku',transport:'roku',keyboard:true,commands:[{name:'Home'}]};
+    const cancelSheet=()=>sheet.onclick({target:{closest:sel=>sel==='[data-sheet-cancel]'?{}:null}});
     ({content,ctx}=setup(base0));
-    assert.match(content.innerHTML,/data-keyboard-device disabled/,'no device can type yet: the picker is off and says why');assert.match(content.innerHTML,/Setup › Roku/);
+    assert.doesNotMatch(content.innerHTML,/keyboard-device|keyboard-setting/,'there is no separate Keyboard setting');
+    tapSlot(content,'cells',3);assert.doesNotMatch(sheet.innerHTML,/Keyboard/,'no device can type, so none is offered');cancelSheet();
     ({content,ctx}=setup(base0,{extraDevices:[kb]}));
-    assert.match(content.innerHTML,/<select id="keyboard-device" data-keyboard-device><option value="">None<\/option><option value="kb">Den Roku<\/option>/,'only devices that can type are offered');
-    assert.doesNotMatch(content.innerHTML,/<option value="tv">/);
-    const pick=value=>content.onchange({target:{value,closest:sel=>sel==='[data-keyboard-device]'?{}:null}});
-    assert.equal(saveEnabled(ctx),false);
-    pick('kb');assert.equal(saveEnabled(ctx),true,'choosing one is a change');assert.match(content.innerHTML,/<option value="kb" selected>/);
-    pick('');assert.equal(saveEnabled(ctx),false,'choosing None again is no change');
-    pick('kb');await pressSave(ctx);
-    assert.deepEqual(hub.activities[0].keyboard,{deviceId:'kb'});assert.deepEqual(hub.activities[0].screen.cells,base0.screen.cells,'the layout is untouched');assert.equal('keyboard' in hub.activities[0].screen,false,'and the device is not stored inside it');
-    pick('');await pressSave(ctx);assert.equal('keyboard' in hub.activities[0],false,'None removes it');
-    // A saved choice shows when the editor reopens, even if its device is gone.
-    ({content,ctx}=setup({...base0,keyboard:{deviceId:'kb'}},{extraDevices:[kb]}));assert.match(content.innerHTML,/<option value="kb" selected>/);assert.equal(saveEnabled(ctx),false);
-    ({content,ctx}=setup({...base0,keyboard:{deviceId:'gone'}}));assert.match(content.innerHTML,/<option value="gone" selected>Missing device/);assert.equal(saveEnabled(ctx),false);
-    // Changing it on another device since this editor opened is a conflict, like a layout change.
-    ({content,ctx}=setup(base0,{extraDevices:[kb]}));pick('kb');
-    hub.activities[0].keyboard={deviceId:'other'};context.confirmed=[];context.confirmAnswer=false;await pressSave(ctx);
-    assert.match(context.confirmed.at(-1),/changed on another device/);assert.deepEqual(hub.activities[0].keyboard,{deviceId:'other'},'declined: nothing replaced');
-    context.confirmAnswer=true;
+    tapSlot(content,'cells',3);assert.match(sheet.innerHTML,/Den Roku: Keyboard/,'a device that can type is offered like any command');
+    assert.doesNotMatch(sheet.innerHTML,/\(keyboard\)/,'the stand-in command name is never shown');
+    await choose('Den Roku: Keyboard');
+    assert.equal(layout(content,'cells')[3],'Keyboard');assert.equal(saveEnabled(ctx),true);
+    await pressSave(ctx);
+    assert.deepEqual(hub.activities[0].screen.cells.find(c=>c.command==='(keyboard)'),{deviceId:'kb',command:'(keyboard)',slot:3},'saved as a cell of the layout');
+    assert.equal('keyboard' in hub.activities[0],false,'and not on the activity');
+    tapSlot(content,'cells',4+0);assert.doesNotMatch(sheet.innerHTML,/Den Roku: Keyboard/,'once placed it is not offered again');cancelSheet();
+    // An activity from before it was a button names its keyboard device. The editor shows that as a button; saving moves it.
+    ({content,ctx}=setup({...base0,keyboard:{deviceId:'kb'}},{extraDevices:[kb]}));
+    assert.equal(layout(content,'cells')[3],'Keyboard','the old setting appears as a button in the first free slot');
+    assert.equal(saveEnabled(ctx),false,'opening it is not a change');
+    down(content,slotBtn(content,'cells',2));advance(600);await settle();
+    assert.equal(saveEnabled(ctx),true);await pressSave(ctx);
+    assert.equal('keyboard' in hub.activities[0],false,'the old setting is gone');assert.ok(hub.activities[0].screen.cells.some(c=>c.command==='(keyboard)'&&c.deviceId==='kb'),'and the button is in the layout');
+    // A device that can no longer type shows as missing, like any deleted device.
+    ({content,ctx}=setup({...base0,screen:{columns:4,cells:[...base0.screen.cells,{deviceId:'gone',command:'(keyboard)',slot:3}],pinned:[]}}));
+    assert.match(content.innerHTML,/class="cell missing"[^>]*aria-label="Keyboard \(its device or command no longer exists\)/);
   }
   // Keyboard: an empty square opens the sheet from its normal click (Enter/Space), Delete removes the focused button.
   ({content,ctx}=setup({...base0,screen:{columns:4,cells:[sc('Up',0)],pinned:[]}}));
@@ -899,7 +902,7 @@ console.log('Editing changes only a local draft in fixed slots; Save is one writ
 {
   const content={innerHTML:''};
   X.screens.setup.render({content,actions:{},params:[],setTitle(){}});
-  assert.deepEqual([...content.innerHTML.matchAll(/<a class="row-main" href="([^"]+)"/g)].map(m=>m[1]),['#/roku','#/layouts','#/update','/#devices','/#activities','/#settings']);
+  assert.deepEqual([...content.innerHTML.matchAll(/<a class="row-main" href="([^"]+)"/g)].map(m=>m[1]),['#/roku','#/update','/#devices','/#activities','/#settings']);
   assert.match(content.innerHTML,/IR codes/);
 }
 console.log('Setup links into the original pages');
@@ -1235,9 +1238,9 @@ console.log('Software update: file checks, chunked upload, the wait through the 
   const kb={id:'kb',name:'Den <Roku>',type:'Roku',transport:'roku',keyboard:true,commands:[{name:'Home'}]};
   state.devices=[{id:'tv',name:'TV',commands:[{name:'Up'}]},kb];state.session={role:'control'};
   state.config={activities:[{id:'w',name:'Watch',steps:[],screen:{columns:4,cells:[],pinned:[]},keyboard:{deviceId:'kb'}},{id:'n',name:'No kb',steps:[],screen:{columns:4,cells:[],pinned:[]}},{id:'g',name:'Gone',steps:[],screen:{columns:4,cells:[],pinned:[]},keyboard:{deviceId:'gone'}},{id:'t',name:'TV kb',steps:[],screen:{columns:4,cells:[],pinned:[]},keyboard:{deviceId:'tv'}}]};
-  const remoteCtx=(render,id)=>{const ctx={content:{innerHTML:'',querySelectorAll:()=>[],querySelector(sel){const has=sel==='[data-keyboard]'&&this.innerHTML.includes('data-keyboard');return has?{addEventListener:(type,fn)=>{(this.listeners||={})[type]=fn;}}:null;}},actions:{innerHTML:'',onclick:null},params:[id],setTitle(){}};X[render](ctx);return ctx;};
+  const remoteCtx=(render,id)=>{const ctx={content:{innerHTML:'',querySelectorAll(sel){return sel!=='[data-keyboard]'?[]:[...this.innerHTML.matchAll(/data-keyboard data-device="([^"]*)"/g)].map(m=>({dataset:{device:m[1]},addEventListener:(type,fn)=>{(this.listeners||={})[type]=fn;}}));}},actions:{innerHTML:'',onclick:null},params:[id],setTitle(){}};X[render](ctx);return ctx;};
   const withKb=remoteCtx('renderActivityRemote','w');
-  assert.match(withKb.content.innerHTML,/<div class="pinned"><button type="button" class="keyboard-button" data-keyboard aria-label="Type on Den &lt;Roku&gt;">/,'anyone, not only the owner, gets the button, in the fixed bar');
+  assert.match(withKb.content.innerHTML,/<div class="pinned"><button type="button" class="keyboard-button" data-keyboard data-device="kb" aria-label="Type on Den &lt;Roku&gt;">/,'anyone, not only the owner, gets the button, in the fixed bar');
   assert.equal(withKb.actions.innerHTML,'','and it is not in the header');
   for(const id of ['n','g','t'])assert.doesNotMatch(remoteCtx('renderActivityRemote',id).content.innerHTML,/data-keyboard/,id+': no button without a device that can type');
   state.session={role:'owner'};assert.equal(remoteCtx('renderActivityRemote','w').actions.innerHTML,'','the owner has no edit pencil in the header');state.session={role:'control'};
@@ -1246,6 +1249,17 @@ console.log('Software update: file checks, chunked upload, the wait through the 
   state.config.activities.push({id:'p',name:'Pinned',steps:[],screen:{columns:4,cells:[],pinned:[{deviceId:'tv',command:'Up',slot:0}]},keyboard:{deviceId:'kb'}});
   const withPinned=remoteCtx('renderActivityRemote','p').content.innerHTML;
   assert.ok(withPinned.indexOf('data-keyboard')>withPinned.indexOf('class="pinned"')&&withPinned.indexOf('data-keyboard')<withPinned.indexOf('aria-label="Up"'),'above the fixed row\u2019s buttons, inside the same bar');
+  // A Keyboard button placed in the layout is an ordinary cell: in the grid or the fixed row, with no second one above the bar.
+  state.config.activities.push({id:'c',name:'Cell',steps:[],screen:{columns:4,cells:[{deviceId:'kb',command:'(keyboard)',slot:1},{deviceId:'tv',command:'Up',slot:0}],pinned:[]},keyboard:{deviceId:'kb'}});
+  const withCell=remoteCtx('renderActivityRemote','c');
+  assert.equal((withCell.content.innerHTML.match(/data-keyboard/g)||[]).length,1,'one Keyboard button, not the old one as well');
+  assert.match(withCell.content.innerHTML,/<div class="remote">.*data-keyboard data-device="kb" aria-label="Type on Den &lt;Roku&gt;" title=.*<\/div>/s,'inside the grid');
+  assert.doesNotMatch(withCell.content.innerHTML,/keyboard-button/);
+  assert.equal(typeof withCell.content.listeners.click,'function','and it opens the keyboard');
+  state.config.activities.push({id:'f',name:'FixedKb',steps:[],screen:{columns:4,cells:[],pinned:[{deviceId:'kb',command:'(keyboard)',slot:0}]}});
+  assert.match(remoteCtx('renderActivityRemote','f').content.innerHTML,/<div class="pinned"><div class="cells pinned-row"><button class="cell " type="button" data-keyboard data-device="kb"/,'or in the fixed row');
+  state.config.activities.push({id:'x',name:'StaleKb',steps:[],screen:{columns:4,cells:[{deviceId:'tv',command:'(keyboard)',slot:0}],pinned:[]}});
+  assert.doesNotMatch(remoteCtx('renderActivityRemote','x').content.innerHTML,/data-keyboard/,'a device that cannot type gets no Keyboard button');
   // Tapping it opens the sheet with the input focused; typing goes to the hub.
   const input={value:'',focused:false,focus(){this.focused=true;}};
   const sheet=Object.assign(el('sheet'),{open:false,innerHTML:'',onclick:null,onclose:null,showModal(){this.open=true;},close(){const was=this.open;this.open=false;if(was)this.onclose?.();},querySelector:sel=>sel==='#keyboard-input'?input:null});
