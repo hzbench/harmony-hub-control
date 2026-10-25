@@ -648,7 +648,7 @@ function deviceRemoteHtml(device) {
 async function tap(button) {
   if(!await ensureOnline())return notice(OFFLINE_NOTICE,true);
   const device=state.devices.find(d=>d.id===button.dataset.device);
-  try {notice('Sending...');const op=await api('commands/send',{deviceId:device.id,command:button.dataset.command,transport:device.transport,mode:'tap'});const result=await operation(op.id);notice(result.state==='completed'?'Sent to the hub.':'Command cancelled.');}
+  try {notice('');const op=await api('commands/send',{deviceId:device.id,command:button.dataset.command,transport:device.transport,mode:'tap'});const result=await operation(op.id);if(result.state!=='completed')notice('Command cancelled.');}
   catch(error){notice(error.message,true);}
 }
 function stopHold(tapOnRelease=false) {
@@ -671,9 +671,8 @@ function beginHold(button,pointerId=null) {
     try {
       const queued=await api('commands/send',{deviceId:device.id,command:button.dataset.command,transport:'ir',mode:'hold'});hold.id=queued.id;
       if(hold.stopped){await api('operations',{id:hold.id,action:'cancel'});return;}
-      notice('Sending while held...');
       hold.renew=setInterval(()=>api('operations',{id:hold.id,action:'keepalive'}).catch(error=>{stopHold(false);notice(error.message,true);}),250);
-      await operation(hold.id);if(state.hold===hold)stopHold(false);notice('Transmission stopped.');
+      await operation(hold.id);if(state.hold===hold)stopHold(false);
     }catch(error){if(state.hold===hold)stopHold(false);notice(error.message,true);}
   },300);
 }
