@@ -18,7 +18,7 @@ const el=id=>elements[id]||=({id,dataset:{},classList:{add(){},remove(){}},hidde
 const context=vm.createContext({document:{getElementById:el,title:'',body:{dataset:{}},addEventListener(){},hidden:false},window:{addEventListener(){},scrollTo(){}},location:{hash:'',replace(url){context.replaced=url;},assign(url){context.assigned=url;}},history:{replaceState(){},pushState(){context.pushed=(context.pushed||0)+1;},back(){context.backed=(context.backed||0)+1;}},
   confirm:message=>{(context.confirmed||(context.confirmed=[])).push(message);return context.confirmAnswer!==false;},navigator:{vibrate(){context.vibrated=(context.vibrated||0)+1;}},localStorage:{getItem:k=>store.get(k)??null,setItem:(k,v)=>store.set(k,v)},setTimeout:()=>0,clearTimeout(){},fetch:async()=>{throw new TypeError('offline');},AbortController,URL,structuredClone,atob});
 const inert=source.replace(/\n  boot\(\);\n\}\s*$/,'\n}');assert.notEqual(inert,source,'boot() auto-run not found');
-vm.runInContext(inert.replace('const state =','var state =')+'\nthis.exports={parseRoute,routeHash,connection,state,needsFullUi,api,show,screens,renderActivities,renderDevices,deviceRemoteHtml,renderDeviceRemote,remoteBlocks,remoteHtml,renderActivityRemote,CONTROLS,controlFor,volumeTarget,editorSlots,availableCommands,addButton,removeButton,editorHtml,renderEditor,screenOf,MAX_CELLS,layoutShape,startDraft,submitLayout,getLeaveGuard:()=>leaveGuard,cloneScreen,withSlots,announceHub,loadDevices,typingPlan,createTyper,openKeyboard,KEYBOARD_COMMAND,setRunningActivity,announceRunning,channelChoices,ROKU_BUILTIN_NAMES,channelRowHtml,parseRelease,installRelease,waitForHub,pauses};',context);
+vm.runInContext(inert.replace('const state =','var state =')+'\nthis.exports={parseRoute,routeHash,connection,state,needsFullUi,api,show,screens,renderActivities,renderDevices,deviceRemoteHtml,renderDeviceRemote,remoteBlocks,remoteHtml,renderActivityRemote,CONTROLS,controlFor,volumeTarget,editorSlots,availableCommands,addButton,insertRow,removeButton,editorHtml,renderEditor,screenOf,MAX_CELLS,layoutShape,startDraft,submitLayout,getLeaveGuard:()=>leaveGuard,cloneScreen,withSlots,announceHub,loadDevices,typingPlan,createTyper,openKeyboard,KEYBOARD_COMMAND,setRunningActivity,announceRunning,channelChoices,ROKU_BUILTIN_NAMES,channelRowHtml,parseRelease,installRelease,waitForHub,pauses};',context);
 const {parseRoute,routeHash,connection,state,needsFullUi,api,show}=context.exports;
 
 assert.deepEqual(JSON.parse(JSON.stringify(parseRoute(''))),{name:'activities',params:[]});
@@ -254,6 +254,28 @@ assert.deepEqual(slotsOf(remoteHtml({columns:4,cells:[...arrowsAt(0,1,2,3,4),slo
   const low=remoteHtml({columns:4,crossRow:0,cells:[...arrowsAt(0,1,2,3,4),slotCell('Mute',9)]}).body;
   assert.deepEqual(slotsOf(low.slice(low.indexOf('</div>',low.indexOf('<div class="dpad">'))+6)),['_','_','_','_','Mute','_','_','_'],'an empty row between the pad and the next button stays');
   assert.equal(slotsOf(remoteHtml({columns:4,crossRow:2,cells:arrowsAt(0,1,2,3,4)}).body.split('<div class="dpad">')[0]).length,8,'rows above the pad are kept even with no buttons in them');
+}
+// Inserting a row: buttons from that row down move one row later, counted the way the editor draws rows.
+{
+  const insertRow=context.exports.insertRow;
+  const act=(cells,crossRow=0)=>({id:'a',steps:[],screen:{columns:4,crossRow,cells:cells.map(c=>({...c})),pinned:[]}});
+  const slots=a=>Object.fromEntries(a.screen.cells.map(c=>[c.command,c.slot]));
+  let a=act([slotCell('Back',0),slotCell('Input',4)]);
+  assert.deepEqual(J(insertRow(a,1)),{moved:1});assert.deepEqual(slots(a),{Back:0,Input:8},'between two rows');
+  a=act([slotCell('Back',0)]);insertRow(a,0);assert.deepEqual(slots(a),{Back:4},'above the first row');
+  a=act([slotCell('Back',0)]);assert.deepEqual(J(insertRow(a,1)),{moved:0});assert.deepEqual(slots(a),{Back:0},'after the last row nothing moves');
+  a=act([slotCell('Back',0),slotCell('Input',31)]);assert.equal(insertRow(a,1),false,'a button would go past the end');assert.deepEqual(slots(a),{Back:0,Input:31},'and nothing changes');
+  // With the arrow pad (the five arrows hold squares that are closed up): crossRow 1 puts one row above the pad.
+  const pad=(cross,more)=>act([...arrowsAt(20,21,22,23,24),slotCell('Back',0),...more],cross);
+  a=pad(1,[slotCell('Mute',5)]);insertRow(a,1,'above');assert.equal(a.screen.crossRow,2,'a row above the pad pushes the pad down');assert.equal(slots(a).Mute,9);assert.equal(slots(a).Back,0);
+  a=pad(1,[slotCell('Mute',5)]);insertRow(a,1,'below');assert.equal(a.screen.crossRow,1,'a row below the pad leaves it where it is');assert.equal(slots(a).Mute,9);
+  a=pad(1,[slotCell('Mute',5)]);insertRow(a,0);assert.equal(a.screen.crossRow,2,'a row above everything pushes the pad down too');assert.equal(slots(a).Back,4);assert.equal(slots(a).Mute,9);
+  a=act([...arrowsAt(0,1,2,3,4),slotCell('Back',5),slotCell('Mute',6)],0);insertRow(a,0,'below');
+  assert.equal(a.screen.crossRow,0);assert.deepEqual([slots(a).Back,slots(a).Mute],[9,10],'rows are counted without the squares the pad holds: Back and Mute were in the first row, and each moves down one row of four');
+  a=act([...arrowsAt(0,1,2,3,4),slotCell('Back',5),slotCell('Mute',6)],0);insertRow(a,0,'above');assert.equal(a.screen.crossRow,1,'a row above a pad that was at the top pushes it down');
+  a=pad(0,[slotCell('Mute',6)]);insertRow(a,0,'below');assert.deepEqual([slots(a).Back,slots(a).Mute],[4,10],'buttons elsewhere simply move four slots on');
+  // The pad's own buttons never move.
+  a=pad(1,[slotCell('Mute',5)]);insertRow(a,1,'above');assert.deepEqual(['Up','Left','OK','Right','Down'].map(c=>slots(a)[c]),[20,21,22,23,24]);
 }
 // Corner buttons of a complete cross show in the 3x3 block, and the squares they held close up too.
 {
@@ -618,7 +640,7 @@ console.log('Editor draws gaps as empty squares, lists every cell (including sta
 
   // Tapping an empty square adds the chosen command in THAT slot (grid and footer); still only the draft changes.
   ({content,ctx}=setup({...base0,screen:{columns:4,cells:[sc('Up',0)],pinned:[]}}));
-  click(content,'[data-add-row]');   // a second row of empty squares
+  click(content,'[data-add-row]');content.onclick({target:{closest:sel=>sel==='[data-place-row]'?{dataset:{placeRow:'1'}}:null}});   // a second row of empty squares, below the last
   tapSlot(content,'cells',6);
   assert.equal(sheet.open,true);assert.match(sheet.innerHTML,/TV: Down/);assert.doesNotMatch(sheet.innerHTML,/TV: Up</);assert.doesNotMatch(sheet.innerHTML,/TV: Volume/);
   await choose('TV: Down');
@@ -878,11 +900,33 @@ console.log('Editor draws gaps as empty squares, lists every cell (including sta
   assert.equal(context.vibrated,vibratedBefore,'only a real long-press vibrates');
   assert.equal(key(slotBtn(content,'cells',2),'Delete'),false,'Delete on an empty square does nothing');
 
-  // Add row reveals another row of empty slots.
-  ({content}=setup({...base0,screen:{columns:4,cells:[],pinned:[]}}));
+  // Add row asks where, and the new row goes there.
+  ({content,ctx}=setup({...base0,screen:{columns:4,cells:[],pinned:[]}}));
   const before=empties(content,'cells').length;
   click(content,'[data-add-row]');
-  assert.equal(empties(content,'cells').length,before+4);
+  assert.match(content.innerHTML,/Tap where the new row should go\./);assert.doesNotMatch(content.innerHTML,/data-add-row/,'the Add row button gives way to Cancel while choosing');
+  assert.deepEqual([...content.innerHTML.matchAll(/data-place-row="(\d+)"/g)].map(m=>+m[1]),[0,1],'a bar above the first row and one below the last');
+  click(content,'[data-place-cancel]');assert.doesNotMatch(content.innerHTML,/data-place-row/);assert.equal(empties(content,'cells').length,before);assert.equal(saveEnabled(ctx),false,'cancelling changes nothing');
+  const placeAt=(row,side)=>content.onclick({target:{closest:sel=>sel==='[data-place-row]'?{dataset:{placeRow:String(row),...(side?{placeSide:side}:{})}}:null}});
+  click(content,'[data-add-row]');placeAt(1);
+  assert.equal(empties(content,'cells').length,before+4,'at the end it is another row of empty squares');
+  // In the middle it opens a blank row between two rows, and Save keeps it.
+  ({content,ctx}=setup({...base0,screen:{columns:4,cells:[sc('Up',0),sc('Down',4)],pinned:[]}}));
+  click(content,'[data-add-row]');
+  assert.deepEqual([...content.innerHTML.matchAll(/data-place-row="(\d+)"/g)].map(m=>+m[1]),[0,1,2]);
+  placeAt(1);
+  assert.deepEqual(layout(content,'cells'),{0:'Up',8:'Down'},'the second row moves down one row');assert.equal(saveEnabled(ctx),true);
+  await pressSave(ctx);assert.deepEqual(hub.activities[0].screen.cells.map(c=>[c.command,c.slot]),[['Up',0],['Down',8]],'saved with the gap');
+  // With no room, it says so and changes nothing.
+  ({content,ctx}=setup({...base0,screen:{columns:4,cells:[sc('Up',0),sc('Down',31)],pinned:[]}}));
+  click(content,'[data-add-row]');placeAt(0);
+  assert.match(el('notice').textContent,/no room for another row/);assert.equal(saveEnabled(ctx),false);assert.deepEqual(layout(content,'cells'),{0:'Up',31:'Down'});
+  // Above or below the arrow pad are separate places.
+  ({content,ctx}=setup({...base0,screen:{columns:4,crossRow:1,cells:[sc('Back',0),sc('Up',20),sc('Left',21),sc('OK',22),sc('Right',23),sc('Down',24),sc('Mute',5)],pinned:[]}}));
+  click(content,'[data-add-row]');
+  assert.deepEqual([...content.innerHTML.matchAll(/data-place-row="(\d+)"(?: data-place-side="(\w+)")?/g)].map(m=>m[1]+(m[2]?m[2][0]:'')),['0','1a','1b','2'],'two bars at the pad, above and below it');
+  placeAt(1,'above');await pressSave(ctx);
+  assert.equal(hub.activities[0].screen.crossRow,2);assert.equal(hub.activities[0].screen.cells.find(c=>c.command==='Mute').slot,9);
 
   // Not the owner, or an activity that is gone: no editor, no handlers, no guard.
   ({content}=setup(base0,{owner:false}));assert.match(content.innerHTML,/Only the hub owner/);assert.equal(content.onpointerdown,undefined);
