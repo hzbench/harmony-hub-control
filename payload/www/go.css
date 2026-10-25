@@ -60,6 +60,7 @@ body[data-reserve-notice=true] #notice[hidden]{display:block!important;visibilit
 .cell-text{font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;max-width:100%;white-space:nowrap}
 .cell.is-held{background:var(--accent);color:var(--surface)}
 .cells{display:grid;gap:10px;grid-template-columns:repeat(4,1fr)}
+.cells>span{min-height:50px}   /* an empty slot keeps its row's height, so a row with no buttons is still a row */
 .cells[data-columns="1"]{grid-template-columns:1fr}
 .cells[data-columns="2"]{grid-template-columns:repeat(2,1fr)}
 .cells[data-columns="3"]{grid-template-columns:repeat(3,1fr)}
