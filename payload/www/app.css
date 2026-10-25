@@ -151,3 +151,7 @@ button .label{font-size:14px}
   dialog[open]{animation:drawer-in 140ms ease-out}
   @keyframes drawer-in{from{transform:translateY(12px)}to{transform:translateY(0)}}
 }
+.suggest{position:relative}
+.suggestions{position:absolute;left:0;right:0;z-index:5;display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:0 6px 18px rgb(0 0 0/.25);overflow:hidden}
+.suggestions button{border-radius:0;background:var(--surface);text-align:left;border-bottom:1px solid var(--line)}
+.suggestions button:last-child{border-bottom:0}
