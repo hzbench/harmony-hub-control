@@ -1,8 +1,14 @@
-a20c26c86514c671a4720c0069f80b7e  codex_bthid_keyboard
+-rwxr-xr-x 1 mpdeglau mpdeglau 117808 Oct 25 09:22 codex_bthid_keyboard
+-rwxr-xr-x 1 mpdeglau mpdeglau 104168 Oct 25 09:22 codex_dhcpd
+-rwxr-xr-x 1 mpdeglau mpdeglau 108764 Oct 25 09:22 codex_hal_ltcp
+-rwxr-xr-x 1 mpdeglau mpdeglau 117816 Oct 25 09:22 codex_hbus
+-rwxr-xr-x 1 mpdeglau mpdeglau 104312 Oct 25 09:22 codex_portal
+-rwxr-xr-x 1 mpdeglau mpdeglau 358952 Oct 25 09:22 codex_webui
+-rwxr-xr-x 1 mpdeglau mpdeglau 577296 Oct 25 09:23 dropbearmulti
 2f0a6fc6303743eeccc77d1b93e7253f  codex_dhcpd
-4c40847878f3bb3d9ee9213c177e0a29  codex_hal_ltcp
-66885f24237df3f29293820cfdd15cab  codex_hbus
 d16934c94f0cf1bc12f947e61accb931  codex_portal
-aaece7bdc35a4463830ca1799894fc20  codex_webui
+66885f24237df3f29293820cfdd15cab  codex_hbus
+4c40847878f3bb3d9ee9213c177e0a29  codex_hal_ltcp
+a20c26c86514c671a4720c0069f80b7e  codex_bthid_keyboard
+1e5d6dfb9d5990e39b19090eeeb7fc18  codex_webui
 3733327fd04bca282dbf06f33da0bf6c  dropbearmulti
-034252e3dc78cb548d6b99d6dcbad836  FILES
