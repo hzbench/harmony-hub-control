@@ -213,8 +213,8 @@ const search=(files,filters)=>JSON.parse(vm.runInContext(`JSON.stringify(findPro
 let matches=search(pioneer,{brand:'Pioneer',model:'VSX-LX52'});
 assert.equal(matches.length,1);assert.equal(matches[0].exact,true);assert.equal(matches[0].brand,'Pioneer');assert.equal(matches[0].model,'VSX LX52');assert.equal(matches[0].deviceType,'Audio');
 matches=search(pioneer,{brand:'pioneer'});assert.equal(matches.length,4);assert.ok(matches[0].curated,'curated profiles rank before converted ones');
-assert.deepEqual(search(pioneer,{brand:'Pioneer',type:'Audio'}).map(f=>f.path),['Audio_and_Video_Receivers/Pioneer/Pioneer_VSX_LX52.ir'],'a type keeps only profiles known to be that type');
-assert.deepEqual(search(pioneer,{type:'Television'}).map(f=>f.path),['_Converted_/CSV/P/Pioneer/Projector/134_-1.ir'],'a converted CSV profile gets its type from its device folder');
+assert.deepEqual(search(pioneer,{brand:'Pioneer',type:'Audio'}).map(f=>f.path),['Audio_and_Video_Receivers/Pioneer/Pioneer_VSX_LX52.ir','_Converted_/Pronto/P/Pioneer/VSX-52.ir'],'a type keeps that type, then the profiles that do not say; other types are dropped');
+assert.deepEqual(search(pioneer,{type:'Television'}).map(f=>f.path),['_Converted_/CSV/P/Pioneer/Projector/134_-1.ir','_Converted_/Pronto/P/Pioneer/VSX-52.ir'],'a converted CSV profile gets its type from its device folder, and comes before the profile that does not say');
 assert.deepEqual(search(pioneer,{}),[],'an empty search matches nothing');
 assert.equal(search([IR('SoundBars/Bose/Bose_Solo_5.ir')],{model:'Solo-5'}).length,1);
 const vizio=['TVs/Vizio/Vizio.ir','TVs/Vizio/Vizio_D43-C1.ir','TVs/Vizio/Vizio_M70Q6-J03.ir','TVs/Vizio/Vizio_XRT122.ir','SoundBars/Vizio/Vizio_SB4551.ir','TVs/Samsung/Samsung_UN55.ir'].map(IR);
@@ -225,6 +225,17 @@ assert.deepEqual(near.map(f=>f.path.split('/').pop()),['Vizio.ir','Vizio_D43-C1.
 assert.equal(near[0].model,'','a brand\'s generic profile has no model of its own');assert.equal(near[0].generic,true);assert.equal(near[1].sameGeneration,true);
 assert.equal(closest({brand:'Vizio',model:'M55-C2'}).length,5,'without a type the soundbar is offered too');
 assert.equal(closest({brand:'Nobody',model:'X1'}).length,0);
+// A converted profile with no device folder may say what it is in its file name; the rest stay untyped.
+const typeOf=path=>JSON.parse(vm.runInContext(`JSON.stringify(profileMeta(${JSON.stringify(path)}))`,remote)).deviceType;
+assert.equal(typeOf('_Converted_/IR_Plus/V/VIZIO/TV-Generic.ir'),'Television');
+assert.equal(typeOf('_Converted_/Pronto/S/Samsung/SOUNDBAR-HW.ir'),'Audio');
+assert.equal(typeOf('_Converted_/Pronto/M/Marantz/RECEIVER.ir'),'Audio');
+assert.equal(typeOf('_Converted_/Pronto/P/Panasonic/VCR_VTR_2.ir'),'Media Player');
+assert.equal(typeOf('_Converted_/Pronto/Y/Yamaha/DVD-C900.ir'),'Media Player');
+assert.equal(typeOf('_Converted_/Pronto/V/ViZIO/VO42LFHDTV.ir'),'','a model number that merely contains letters is not a word');
+assert.equal(typeOf('_Converted_/Pronto/S/Samsung/PN64D8000.ir'),'');
+assert.equal(typeOf('TVs/Samsung/Samsung_UN55.ir'),'Television','curated profiles still take their folder\'s type');
+assert.equal(typeOf('_Converted_/CSV/P/Pioneer/Projector/AV_DVD_9.ir'),'Television','the device folder is checked before the file name');
 const meta=path=>JSON.parse(vm.runInContext(`JSON.stringify(profileMeta(${JSON.stringify(path)}))`,remote));
 assert.deepEqual(meta('TVs/Samsung/Samsung_UN55.ir'),{brand:'Samsung',model:'UN55',deviceType:'Television',curated:true});
 assert.deepEqual(meta('Car_Multimedia/CD_Players/JVC/JVC_RM-RK50.ir'),{brand:'JVC',model:'RM-RK50',deviceType:'Audio',curated:true});
