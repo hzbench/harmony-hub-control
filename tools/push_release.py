@@ -28,7 +28,7 @@ from pathlib import Path
 
 DEFAULT_PORT = 8080
 CHUNK_BYTES = 8192   # sent as hex, so twice as long; the hub takes up to 32768 hex characters per request
-REPO = "mpdeglau/harmony-hub-control"
+REPO = "hzbench/harmony-hub-control"
 NETWORK_ERRORS = (OSError, http.client.HTTPException)   # includes refused connections and timeouts
 
 
