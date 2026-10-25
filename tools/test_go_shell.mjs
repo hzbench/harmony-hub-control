@@ -902,7 +902,7 @@ console.log('Editing changes only a local draft in fixed slots; Save is one writ
 {
   const content={innerHTML:''};
   X.screens.setup.render({content,actions:{},params:[],setTitle(){}});
-  assert.deepEqual([...content.innerHTML.matchAll(/<a class="row-main" href="([^"]+)"/g)].map(m=>m[1]),['#/roku','#/update','/#devices','/#activities','/#settings']);
+  assert.deepEqual([...content.innerHTML.matchAll(/<a class="row-main" href="([^"]+)"/g)].map(m=>m[1]),['#/update','/#devices','/#activities','/#settings']);
   assert.match(content.innerHTML,/IR codes/);
 }
 console.log('Setup links into the original pages');
@@ -1083,7 +1083,7 @@ console.log('The owner can name the hub and the app is told');
   // Only the owner can change Rokus.
   state.session={role:'control'};const plain={innerHTML:''};X.screens.roku.render({content:plain,actions:{},params:[],setTitle(){}});
   assert.match(plain.innerHTML,/Only the hub owner/);assert.doesNotMatch(plain.innerHTML,/roku-name/);
-  assert.equal(X.screens.roku.parent,'setup');
+  assert.equal(X.screens.roku.parent,'devices');assert.equal(X.screens.roku.backTo,'/#devices','Back goes to the device list it was opened from');
 }
 console.log('The owner can add, test and remove a Roku; Rokus appear as devices');
 // Which commands the lock-screen buttons send: the same choice the hardware volume keys make.

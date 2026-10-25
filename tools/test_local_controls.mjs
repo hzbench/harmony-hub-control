@@ -243,6 +243,22 @@ assert.deepEqual(meta('_Converted_/Pronto/S/Samsung/PN64D8000.ir'),{brand:'Samsu
 assert.deepEqual(meta('Fans/Generic_Fan_HS95104SK.ir'),{brand:'',model:'Generic Fan HS95104SK',deviceType:'Other',curated:true});
 console.log('Profile search by brand, model and type, path-derived details, ranking, receiver aliases and hidden controls passed');
 
+// A Roku is a kind of device: Add device offers it next to Infrared and Bluetooth and hands over to the Roku screen.
+{
+  const code=source.slice(source.indexOf('const ROKU_SCREEN'),source.indexOf('function profilePayload('));
+  const fields={transport:{value:'ir'},'draft-learn':{}},assigned=[];
+  const context=vm.createContext({state:{draft:{}},$:id=>fields[id]||(fields[id]={}),escape:String,icon:()=>'',mount:html=>{context.html=html;},setupProgress:()=>'',
+    location:{assign:url=>assigned.push(url)},window:{scrollTo(){}},field:()=>'',deviceTypeOptions:()=>'',busy(){},notice(){}});
+  vm.runInContext(code+'\nrenderProfileChoice();',context);
+  assert.match(context.html,/<option value="roku">Roku \(on your network\)<\/option>/,'Add device offers Roku');
+  fields.transport.value='roku';fields.transport.onchange();
+  assert.deepEqual(assigned,['/go/#/roku'],'choosing it opens the Roku screen');
+  fields.transport.value='ir';fields.transport.onchange();assert.equal(assigned.length,1,'Infrared stays on this screen');
+  // The list of devices lets the owner manage a Roku from its edit button.
+  assert.match(source,/data-action="'\+\(d\.transport==='roku'\?'edit-roku':'edit-device'\)/);
+  assert.match(source,/action==='edit-roku'\)location\.assign\(ROKU_SCREEN\)/);
+  console.log('Add device offers Roku, and a Roku in the device list opens its screen');
+}
 const setupCode=source.slice(source.indexOf('function renderSetupReview()'),source.indexOf('function renderDeviceTest('));
 for(const failRefresh of [false,true]){
   const saveCalls=[],fields={'setup-review-back':{},'content':{querySelectorAll:()=>[]},'setup-review':{}};

@@ -108,7 +108,8 @@ const screens = {
   activities: {title:'Activities', tab:'activities', render:renderActivities},
   devices: {title:'Devices', tab:'devices', render:renderDevices},
   setup: {title:'Setup', tab:'setup', reserveNotice:true, render:renderSetup},
-  roku: {title:'Roku', parent:'setup', reserveNotice:true, render:renderRoku},
+  // Rokus are devices: they are added from Add device in the original UI and Back goes to that device list.
+  roku: {title:'Roku', parent:'devices', backTo:'/#devices', reserveNotice:true, render:renderRoku},
   update: {title:'Software update', parent:'setup', reserveNotice:true, render:renderUpdate},
   activity: {title:'Activity', parent:'activities', reserveNotice:true, render:renderActivityRemote},
   // The layout editor is a part of editing an activity (Setup › Activities, in the original UI), so Back goes there.
@@ -149,9 +150,8 @@ function activityRow(activity) {
 // Setup is a short list of links into the original pages, which keep device
 // setup, IR learning, Bluetooth pairing, activity steps, backups and the rest.
 const SETUP_LINKS = [
-  ['#/roku','Wifi','Roku','Add a Roku TV or player on your network'],
   ['#/update','Archive','Software update','Install a new version of the hub’s software'],
-  ['/#devices','Radio','Devices','Add devices, learn IR codes, pair Bluetooth'],
+  ['/#devices','Radio','Devices','Add infrared, Bluetooth or Roku devices; learn IR codes'],
   ['/#activities','SlidersHorizontal','Activities','Create activities; edit their steps and remote layouts'],
   ['/#settings','Settings','Settings','Controllers, backups, Wi-Fi, MQTT and updates'],
 ];
