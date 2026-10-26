@@ -711,7 +711,10 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden)stopHold(fa
 let hardwareVolumeBusy = false;
 function volumeTarget(activity, slot) {
   const aliases = CONTROLS.find(c=>c[0]===slot)[3];
-  const fromScreen = (activity.screen?.cells||[]).filter(c=>aliases.includes(norm(c.command)))
+  // What the person sees on the remote comes first: the grid, then the fixed row. Only then the devices'
+  // own commands, so the lock screen's Play is the Roku's Play when that is what the remote shows,
+  // not a sound bar's Play_Pause that happens to come first in the start steps.
+  const fromScreen = [...(activity.screen?.cells||[]),...(activity.screen?.pinned||[])].filter(c=>aliases.includes(norm(c.command)))
     .map(c=>resolveCell(c)).find(Boolean);
   if(fromScreen)return {device:fromScreen.device, command:fromScreen.command.name};
   for(const id of new Set((activity.steps||[]).map(s=>s.deviceId).filter(Boolean))) {

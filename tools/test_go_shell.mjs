@@ -1148,15 +1148,21 @@ console.log('The owner can add, test and remove a Roku; Rokus appear as devices'
   const tvd={id:'tv',name:'TV',transport:'ir',commands:['VolumeUp','VolumeDown','Play','Mute'].map(name=>({name}))};
   const rk={id:'rk',name:'Roku',transport:'roku',commands:[{name:'Play'}]};
   const bt={id:'bt',name:'Fire',transport:'bluetooth',commands:['Play','VolumeUp'].map(name=>({name}))};
-  state.devices=[tvd,rk,bt];
+  const bar2={id:'bar2',name:'Sound bar',transport:'ir',commands:['Play_Pause','VolumeUp','VolumeDown','Mute'].map(name=>({name}))};
+  state.devices=[tvd,rk,bt,bar2];
   state.config={activities:[{id:'e',name:'Streaming',steps:[{deviceId:'bt'}]},{id:'a',name:'Watch',steps:[{deviceId:'tv'}]},{id:'b',name:'Roku only',steps:[{deviceId:'rk'}]},{id:'c',name:'Nothing',steps:[{deviceId:'gone'}]},
-    {id:'d',name:'Custom',steps:[{deviceId:'tv'}],screen:{columns:4,cells:[{deviceId:'rk',command:'Play',slot:0}],pinned:[]}}]};
+    {id:'d',name:'Custom',steps:[{deviceId:'tv'}],screen:{columns:4,cells:[{deviceId:'rk',command:'Play',slot:0}],pinned:[]}},
+    // A sound bar comes first in the start steps and has Play_Pause, but the remote's Play (in the fixed row) is the Roku's.
+    {id:'f',name:'Watch Roku',steps:[{deviceId:'bar2'},{deviceId:'rk'}],screen:{columns:4,cells:[],pinned:[{deviceId:'rk',command:'Rewind',slot:0},{deviceId:'rk',command:'Play',slot:1}]}},
+    {id:'g',name:'Both',steps:[{deviceId:'bar2'}],screen:{columns:4,cells:[{deviceId:'tv',command:'Play',slot:0}],pinned:[{deviceId:'rk',command:'Play',slot:0}]}}]};
   const announce=id=>{log.length=0;store.set('harmony-activity','');context.exports.setRunningActivity(id);return log.at(-1);};
   const labels=json=>JSON.parse(json).buttons.map(b=>`${b.label}:${b.deviceId}.${b.command}.${b.transport}`);
   assert.deepEqual(labels(announce('a')),['Play:tv.Play.ir','Mute:tv.Mute.ir','Volume down:tv.VolumeDown.ir','Volume up:tv.VolumeUp.ir']);
   assert.deepEqual(labels(announce('b')),['Play:rk.Play.roku'],'only the buttons the activity can actually press');
   assert.equal(announce('c'),'','nothing to press: nothing announced');
   assert.deepEqual(labels(announce('d')),['Play:rk.Play.roku','Mute:tv.Mute.ir','Volume down:tv.VolumeDown.ir','Volume up:tv.VolumeUp.ir'],'a button on the activity\u2019s own screen wins over the devices');
+  assert.deepEqual(labels(announce('f')),['Play:rk.Play.roku','Mute:bar2.Mute.ir','Volume down:bar2.VolumeDown.ir','Volume up:bar2.VolumeUp.ir'],'the Play on the remote\u2019s fixed row, not the first device\u2019s Play_Pause');
+  assert.deepEqual(labels(announce('g')).slice(0,1),['Play:tv.Play.ir'],'the grid is looked at before the fixed row');
   assert.deepEqual(labels(announce('e')),['Play:bt.Play.bluetooth','Volume up:bt.VolumeUp.bluetooth'],'a Bluetooth device is announced with its own transport');
   // Whenever the devices are reloaded the app hears about it: a removed Roku can't stay on the lock screen.
   store.set('harmony-activity','b');log.length=0;state.devices=[tvd,bt];context.api=async path=>path==='devices'?{devices:[tvd]}:path==='bluetooth/devices'?{devices:[bt]}:{devices:[]};
