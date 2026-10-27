@@ -924,6 +924,43 @@ function insertRow(activity, row, side, extraRows=0) {
   }
   return {moved:moving.length};
 }
+// The scrolling grid as the editor draws it: the squares the arrow pad holds are closed up, `free[n]` is the real
+// slot behind drawn position n, `rowCount` the rows drawn (including `extraRows` of room) and `at` the drawn row the
+// arrow pad sits before. The row edits below renumber slots in that drawn space and map back.
+function gridRows(activity, extraRows=0) {
+  const screen = screenOf(activity), columns = screen.columns||4;
+  const all = withSlots(screen.cells,MAX_CELLS).map(cell=>({cell,control:controlFor(cell.command),slot:cell.slot}));
+  const {crossed, vacated, rest} = crossSplit(all, new Set(all.map(e=>e.slot)));
+  const free = Array.from({length:MAX_CELLS},(_,slot)=>slot).filter(slot=>!vacated.includes(slot));
+  const extent = rest.reduce((most,e)=>Math.max(most,e.slot+1),0);
+  const rowCount = Math.ceil(editorSlots('cells',extent,columns,extraRows,free.length)/columns);
+  const rowOf = e => Math.floor(e.slot/columns);
+  return {screen, columns, all, crossed, rest, free, rowCount, rowOf, at:crossed?Math.min(crossRowOf(screen),rowCount):rowCount,
+    last:rest.reduce((most,e)=>Math.max(most,rowOf(e)),-1)};
+}
+// Moves every button to the drawn position mapSlot() gives it; false (and nothing changed) if one would fall off the grid.
+function applyRowMap(g, mapSlot) {
+  const to = new Map();
+  for(const e of g.rest){const n=mapSlot(e.slot);if(n<0||n>=g.free.length)return false;if(n!==e.slot)to.set(e.cell,g.free[n]);}
+  g.screen.cells = g.all.map(e=>to.has(e.cell)?{...e.cell,slot:to.get(e.cell)}:e.cell).sort((a,b)=>a.slot-b.slot);
+  return true;
+}
+// Swaps drawn row `row` with the one above (dir -1) or below (dir 1), buttons and gaps together. A row never moves
+// across the arrow pad (move the pad to change which side a row is on).
+function moveRow(activity, row, dir, extraRows=0) {
+  const g = gridRows(activity,extraRows), other = row+dir;
+  if(!(dir===1||dir===-1)||row<0||other<0||row>=g.rowCount||other>=g.rowCount)return false;
+  if(g.crossed&&(row<g.at)!==(other<g.at))return false;
+  return applyRowMap(g,s=>{const r=Math.floor(s/g.columns);return r===row?s+dir*g.columns:r===other?s-dir*g.columns:s;});
+}
+// Closes up a blank row: the rows below move up one (and the arrow pad with them if the row was above it).
+function removeRow(activity, row, extraRows=0) {
+  const g = gridRows(activity,extraRows);
+  if(row<0||row>=g.rowCount||g.rest.some(e=>g.rowOf(e)===row))return false;
+  if(!applyRowMap(g,s=>Math.floor(s/g.columns)>row?s-g.columns:s))return false;
+  if(g.crossed&&row<g.at)g.screen.crossRow = g.at-1;
+  return true;
+}
 function addArrowPad(activity) {
   const {add} = arrowPadPlan(activity), list = zoneList(activity,'cells');
   const free = Array.from({length:MAX_CELLS},(_,n)=>MAX_CELLS-1-n).filter(n=>!list.some(c=>c.slot===n));
@@ -1018,12 +1055,22 @@ function editGridHtml(activity, ui) {
       if(ui.placing&&!(crossed&&row===at))items.push({bar:row});
       if(crossed&&row===at)items.push({cross:true});
     }
-    if(row<rows.length)items.push({row:rows[row]});
+    if(row<rows.length){if(ui.editRows)items.push({tools:row});items.push({row:rows[row]});}
   }
   const out = [];let run = [];
   const flush = () => {if(run.length)out.push(`<div class="cells edit-grid" data-columns="${escape(String(columns))}">${run.join('')}</div>`);run=[];};
+  // Row-editing mode: a strip above each row. Up and down stay on their side of the arrow pad; only a blank row
+  // with something after it can be removed (the room after the last button is not a row to remove).
+  const g = ui.editRows ? gridRows(activity,ui.extraRows) : null;
+  const toolsHtml = row => {
+    const blank = !g.rest.some(e=>g.rowOf(e)===row);
+    const up = row>0&&!(g.crossed&&row===g.at), down = row+1<g.rowCount&&!(g.crossed&&row+1===g.at), remove = blank&&(row<g.last||(g.crossed&&row<g.at));
+    const tool = (attr,glyph,label,on) => `<button type="button" class="row-tool" data-row-${attr}="${row}" aria-label="${label} row ${row+1}"${on?'':' disabled'}>${icon(glyph)}</button>`;
+    return `<div class="row-tools"><span class="row-tools-label">Row ${row+1}${blank?' (blank)':''}</span>${tool('up','ChevronUp','Move up',up)}${tool('down','ChevronDown','Move down',down)}${tool('insert','Plus','Add a row above',true)}${tool('remove','Minus','Remove blank',remove)}</div>`;
+  };
   for(const item of items){
     if(item.row){run.push(...item.row);continue;}
+    if(item.tools!==undefined){flush();out.push(toolsHtml(item.tools));continue;}
     flush();
     out.push(item.cross?`<div class="dpad">${CROSS_SQUARES.map(crossCell).join('')}</div>`:`<button class="place-bar" type="button" data-place-row="${item.bar}"${item.side?` data-place-side="${item.side}"`:''}>${ui.placing==='row'?'Add a row here':'Place arrow pad here'}</button>`);
   }
@@ -1048,6 +1095,7 @@ function editorHelpHtml() {
       <li>Press and hold a button to remove it.</li>
       <li>Add arrow pad puts the arrow keys in a cross; Move arrow pad changes where it sits.</li>
       <li>Add row puts an empty row where you tap: above, between or below your buttons.</li>
+      <li>Edit rows moves a row up or down, adds a row above it, or removes a blank one.</li>
       <li>The bottom row stays on screen while you use the remote.</li>
       <li>Nothing changes until you tap Save.</li>
     </ul>
@@ -1055,12 +1103,12 @@ function editorHelpHtml() {
 }
 function editorHtml(model, ui) {
   const full = zoneList(model,'cells').length>=MAX_CELLS, pad = arrowPadPlan(model);
-  return `${ui.placing?`<p class="edit-hint">${ui.placing==='row'?'Tap where the new row should go.':'Tap where the arrow pad should go.'}</p>`:''}
+  return `${ui.placing?`<p class="edit-hint">${ui.placing==='row'?'Tap where the new row should go.':'Tap where the arrow pad should go.'}</p>`:ui.editRows?'<p class="edit-hint">Move a row with the arrows, add a row above it with +, or remove a blank row with −. Rows stay on their side of the arrow pad.</p>':''}
     ${editGridHtml(model,ui)}
-    ${ui.placing?'<button class="add-row" type="button" data-place-cancel>Cancel</button>'
+    ${ui.editRows?'<button class="add-row" type="button" data-rows-done>Done</button>':ui.placing?'<button class="add-row" type="button" data-place-cancel>Cancel</button>'
       :pad.crossed?`<button class="add-row" type="button" data-move-pad>${icon('Plus')}Move arrow pad</button>`
       :`<button class="add-row" type="button" data-add-pad ${pad.add.length?'':'disabled'}>${icon('Plus')}Add arrow pad</button>${pad.reason?`<p class="edit-hint">${pad.reason}</p>`:''}`}
-    ${ui.placing?'':full?'<p class="edit-hint">The remote has reached its button limit.</p>':'<button class="add-row" type="button" data-add-row>'+icon('Plus')+'Add row</button>'}
+    ${ui.placing||ui.editRows?'':(full?'<p class="edit-hint">The remote has reached its button limit.</p>':'<button class="add-row" type="button" data-add-row>'+icon('Plus')+'Add row</button>')+'<button class="add-row" type="button" data-edit-rows>'+icon('List')+'Edit rows</button>'}
     <div class="pinned"><p class="pinned-caption">Fixed bottom row</p>${editPinnedHtml(model)}</div>`;
 }
 
@@ -1191,6 +1239,17 @@ function renderEditor(ctx) {
       draft.crossRow = row;ui.placing = false;changed();
     }
     else if(event.target.closest('[data-add-row]')){ui.placing='row';draw();}
+    else if(event.target.closest('[data-edit-rows]')){ui.editRows=true;draw();}
+    else if(event.target.closest('[data-rows-done]')){ui.editRows=false;draw();}
+    else if(event.target.closest('[data-row-up],[data-row-down],[data-row-insert],[data-row-remove]')){
+      const tool = event.target.closest('[data-row-up],[data-row-down],[data-row-insert],[data-row-remove]');
+      const row = +(tool.dataset.rowUp??tool.dataset.rowDown??tool.dataset.rowInsert??tool.dataset.rowRemove);
+      const done = tool.dataset.rowUp!==undefined?moveRow(model(),row,-1,ui.extraRows):tool.dataset.rowDown!==undefined?moveRow(model(),row,1,ui.extraRows)
+        :tool.dataset.rowInsert!==undefined?insertRow(model(),row,'below',ui.extraRows):removeRow(model(),row,ui.extraRows);
+      if(!done)notice(tool.dataset.rowInsert!==undefined?`There is no room for another row: the remote holds ${MAX_CELLS} positions.`:'That row cannot move there.',true);
+      else changed();
+      if(!done)draw();
+    }
   };
   ctx.actions.onclick = event => {if(event.target.closest('[data-save]'))save();else if(event.target.closest('[data-cancel]'))cancel();else if(event.target.closest('[data-help]'))openHelp();};
   draw();

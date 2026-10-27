@@ -18,7 +18,7 @@ const el=id=>elements[id]||=({id,dataset:{},classList:{add(){},remove(){}},hidde
 const context=vm.createContext({document:{getElementById:el,title:'',body:{dataset:{}},addEventListener(){},hidden:false},window:{addEventListener(){},scrollTo(){}},location:{hash:'',replace(url){context.replaced=url;},assign(url){context.assigned=url;}},history:{replaceState(){},pushState(){context.pushed=(context.pushed||0)+1;},back(){context.backed=(context.backed||0)+1;}},
   confirm:message=>{(context.confirmed||(context.confirmed=[])).push(message);return context.confirmAnswer!==false;},navigator:{vibrate(){context.vibrated=(context.vibrated||0)+1;}},localStorage:{getItem:k=>store.get(k)??null,setItem:(k,v)=>store.set(k,v)},setTimeout:()=>0,clearTimeout(){},fetch:async()=>{throw new TypeError('offline');},AbortController,URL,structuredClone,atob});
 const inert=source.replace(/\n  boot\(\);\n\}\s*$/,'\n}');assert.notEqual(inert,source,'boot() auto-run not found');
-vm.runInContext(inert.replace('const state =','var state =')+'\nthis.exports={parseRoute,routeHash,connection,state,needsFullUi,api,show,screens,renderActivities,renderDevices,deviceRemoteHtml,renderDeviceRemote,remoteBlocks,remoteHtml,renderActivityRemote,CONTROLS,controlFor,volumeTarget,editorSlots,availableCommands,addButton,insertRow,removeButton,editorHtml,renderEditor,screenOf,MAX_CELLS,layoutShape,startDraft,submitLayout,getLeaveGuard:()=>leaveGuard,cloneScreen,withSlots,announceHub,loadDevices,typingPlan,createTyper,openKeyboard,KEYBOARD_COMMAND,setRunningActivity,announceRunning,channelChoices,ROKU_BUILTIN_NAMES,channelRowHtml,parseRelease,installRelease,waitForHub,pauses};',context);
+vm.runInContext(inert.replace('const state =','var state =')+'\nthis.exports={parseRoute,routeHash,connection,state,needsFullUi,api,show,screens,renderActivities,renderDevices,deviceRemoteHtml,renderDeviceRemote,remoteBlocks,remoteHtml,renderActivityRemote,CONTROLS,controlFor,volumeTarget,editorSlots,availableCommands,addButton,insertRow,moveRow,removeRow,gridRows,removeButton,editorHtml,renderEditor,screenOf,MAX_CELLS,layoutShape,startDraft,submitLayout,getLeaveGuard:()=>leaveGuard,cloneScreen,withSlots,announceHub,loadDevices,typingPlan,createTyper,openKeyboard,KEYBOARD_COMMAND,setRunningActivity,announceRunning,channelChoices,ROKU_BUILTIN_NAMES,channelRowHtml,parseRelease,installRelease,waitForHub,pauses};',context);
 const {parseRoute,routeHash,connection,state,needsFullUi,api,show}=context.exports;
 
 assert.deepEqual(JSON.parse(JSON.stringify(parseRoute(''))),{name:'activities',params:[]});
@@ -288,6 +288,27 @@ assert.deepEqual(slotsOf(remoteHtml({columns:4,cells:[...arrowsAt(0,1,2,3,4),slo
   a=pad(0,[slotCell('Mute',6)]);insertRow(a,0,'below');assert.deepEqual([slots(a).Back,slots(a).Mute],[4,10],'buttons elsewhere simply move four slots on');
   // The pad's own buttons never move.
   a=pad(1,[slotCell('Mute',5)]);insertRow(a,1,'above');assert.deepEqual(['Up','Left','OK','Right','Down'].map(c=>slots(a)[c]),[20,21,22,23,24]);
+}
+// Moving and removing rows, counted the way the editor draws them.
+{
+  const {moveRow,removeRow}=context.exports;
+  const act=(cells,crossRow=0)=>({id:'a',steps:[],screen:{columns:4,crossRow,cells:cells.map(c=>({...c})),pinned:[]}});
+  const slots=a=>Object.fromEntries(a.screen.cells.map(c=>[c.command,c.slot]));
+  let a=act([slotCell('Back',0),slotCell('Input',4),slotCell('Mute',8)]);
+  assert.equal(moveRow(a,1,-1),true);assert.deepEqual(slots(a),{Back:4,Input:0,Mute:8},'a row swaps with the one above');
+  assert.equal(moveRow(a,0,-1),false,'the first row cannot move up');assert.equal(moveRow(a,2,1),false,'and the last cannot move down when there is no room below');
+  a=act([slotCell('Back',0)]);assert.equal(moveRow(a,0,1),false,'no room below');assert.equal(moveRow(a,0,1,1),true);assert.deepEqual(slots(a),{Back:4},'with a row of room below it can move into it');
+  a=act([slotCell('Back',0),slotCell('Mute',5)]);moveRow(a,1,-1);assert.deepEqual(slots(a),{Back:4,Mute:1},'a button keeps its column when its row moves');
+  a=act([slotCell('Back',0),slotCell('Input',8)]);assert.equal(removeRow(a,1),true);assert.deepEqual(slots(a),{Back:0,Input:4},'a blank row closes up');
+  assert.equal(removeRow(a,0),false,'a row with a button is not removed');assert.deepEqual(slots(a),{Back:0,Input:4});
+  // With the arrow pad: rows stay on their side of it.
+  const pad=(crossRow,cells)=>act([...arrowsAt(20,21,22,23,24),...cells],crossRow);
+  a=pad(1,[slotCell('Back',0),slotCell('Mute',5)]);
+  assert.equal(moveRow(a,0,1),false,'the row above the pad cannot move down past it');assert.equal(moveRow(a,1,-1),false,'nor the row below move up past it');
+  a=pad(2,[slotCell('Back',0),slotCell('Mute',8)]);assert.equal(removeRow(a,1),true);assert.equal(a.screen.crossRow,1,'removing a blank row above the pad moves the pad up with the rows below');assert.deepEqual([slots(a).Back,slots(a).Mute],[0,4]);
+  a=pad(1,[slotCell('Back',0),slotCell('Mute',9)]);assert.equal(removeRow(a,1),true);assert.equal(a.screen.crossRow,1,'a blank row below the pad leaves the pad where it is');assert.equal(slots(a).Mute,5);
+  a=pad(1,[slotCell('Back',0),slotCell('Mute',5),slotCell('Input',9)]);moveRow(a,1,1);assert.deepEqual([slots(a).Mute,slots(a).Input],[9,5],'rows below the pad swap');
+  assert.deepEqual(['Up','Left','OK','Right','Down'].map(c=>slots(a)[c]),[20,21,22,23,24],'the pad\'s own buttons never move');
 }
 // Corner buttons of a complete cross show in the 3x3 block, and the squares they held close up too.
 {
@@ -929,6 +950,25 @@ console.log('Editor draws gaps as empty squares, lists every cell (including sta
   placeAt(1);
   assert.deepEqual(layout(content,'cells'),{0:'Up',8:'Down'},'the second row moves down one row');assert.equal(saveEnabled(ctx),true);
   await pressSave(ctx);assert.deepEqual(hub.activities[0].screen.cells.map(c=>[c.command,c.slot]),[['Up',0],['Down',8]],'saved with the gap');
+  // Row-editing mode: each row has up, down, add-above and remove-blank controls.
+  ({content,ctx}=setup({...base0,screen:{columns:4,cells:[sc('Up',0),sc('Down',8)],pinned:[]}}));
+  const rowTool=(kind,row)=>content.onclick({target:{closest:sel=>sel.startsWith('[data-row-up]')?{dataset:{['row'+kind]:String(row)}}:null}});
+  assert.doesNotMatch(content.innerHTML,/data-row-up/,'the controls only show in the mode');assert.match(content.innerHTML,/data-edit-rows/);
+  click(content,'[data-edit-rows]');
+  assert.match(content.innerHTML,/Move a row with the arrows/);assert.doesNotMatch(content.innerHTML,/data-add-row/);assert.match(content.innerHTML,/data-rows-done/);
+  assert.match(content.innerHTML,/data-row-up="0"[^>]*disabled/,'the first row cannot move up');
+  assert.match(content.innerHTML,/data-row-remove="1"(?![^>]*disabled)/,'the blank row between the two can be removed');
+  assert.match(content.innerHTML,/data-row-remove="0"[^>]*disabled/,'a row with a button cannot');
+  rowTool('Remove',1);assert.deepEqual(layout(content,'cells'),{0:'Up',4:'Down'},'the blank row closed up');assert.equal(saveEnabled(ctx),true);
+  rowTool('Up',1);assert.deepEqual(layout(content,'cells'),{0:'Down',4:'Up'},'the rows swapped');
+  rowTool('Insert',1);assert.deepEqual(layout(content,'cells'),{0:'Down',8:'Up'},'a row added above row 2');
+  rowTool('Down',0);assert.deepEqual(layout(content,'cells'),{4:'Down',8:'Up'},'moved down into the blank row');
+  await pressSave(ctx);assert.deepEqual(hub.activities[0].screen.cells.map(c=>[c.command,c.slot]),[['Down',4],['Up',8]],'saved');
+  click(content,'[data-rows-done]');assert.doesNotMatch(content.innerHTML,/data-row-up/);assert.match(content.innerHTML,/data-add-row/);
+  // The arrow pad is a wall: no controls move a row across it.
+  ({content,ctx}=setup({...base0,screen:{columns:4,crossRow:1,cells:[sc('Back',0),sc('Up',20),sc('Left',21),sc('OK',22),sc('Right',23),sc('Down',24),sc('Mute',5)],pinned:[]}}));
+  click(content,'[data-edit-rows]');
+  assert.match(content.innerHTML,/data-row-down="0"[^>]*disabled/,'the last row above the pad cannot go down');assert.match(content.innerHTML,/data-row-up="1"[^>]*disabled/,'the first row below it cannot go up');
   // With no room, it says so and changes nothing.
   ({content,ctx}=setup({...base0,screen:{columns:4,cells:[sc('Up',0),sc('Down',31)],pinned:[]}}));
   click(content,'[data-add-row]');placeAt(0);

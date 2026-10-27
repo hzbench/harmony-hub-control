@@ -139,3 +139,7 @@ dialog.sheet .add-row{width:100%}
 .update-version,.update-status{margin:.5rem 0}
 .update-status:empty{display:none}
 .sprite{position:absolute;width:0;height:0;overflow:hidden}
+.row-tools{display:flex;align-items:center;gap:8px;margin:10px 0 2px}
+.row-tools-label{flex:1;font-size:13px;font-weight:600;color:var(--muted)}
+.row-tool{min-width:44px;min-height:40px;padding:0;display:grid;place-items:center}
+.row-tool svg{height:18px;width:18px}
