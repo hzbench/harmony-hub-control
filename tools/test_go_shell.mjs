@@ -18,7 +18,7 @@ const el=id=>elements[id]||=({id,dataset:{},classList:{add(){},remove(){}},hidde
 const context=vm.createContext({document:{getElementById:el,title:'',body:{dataset:{}},addEventListener(){},hidden:false},window:{addEventListener(){},scrollTo(){}},location:{hash:'',replace(url){context.replaced=url;},assign(url){context.assigned=url;}},history:{replaceState(){},pushState(){context.pushed=(context.pushed||0)+1;},back(){context.backed=(context.backed||0)+1;}},
   confirm:message=>{(context.confirmed||(context.confirmed=[])).push(message);return context.confirmAnswer!==false;},navigator:{vibrate(){context.vibrated=(context.vibrated||0)+1;}},localStorage:{getItem:k=>store.get(k)??null,setItem:(k,v)=>store.set(k,v)},setTimeout:()=>0,clearTimeout(){},fetch:async()=>{throw new TypeError('offline');},AbortController,URL,structuredClone,atob});
 const inert=source.replace(/\n  boot\(\);\n\}\s*$/,'\n}');assert.notEqual(inert,source,'boot() auto-run not found');
-vm.runInContext(inert.replace('const state =','var state =')+'\nthis.exports={parseRoute,routeHash,connection,state,needsFullUi,api,show,screens,renderActivities,renderDevices,deviceRemoteHtml,renderDeviceRemote,remoteBlocks,remoteHtml,renderActivityRemote,CONTROLS,controlFor,volumeTarget,editorSlots,availableCommands,addButton,insertRow,removeButton,editorHtml,renderEditor,screenOf,MAX_CELLS,layoutShape,startDraft,submitLayout,getLeaveGuard:()=>leaveGuard,cloneScreen,withSlots,announceHub,loadDevices,typingPlan,createTyper,openKeyboard,KEYBOARD_COMMAND,setRunningActivity,announceRunning,channelChoices,ROKU_BUILTIN_NAMES,channelRowHtml,parseRelease,installRelease,waitForHub,pauses};',context);
+vm.runInContext(inert.replace('const state =','var state =')+'\nthis.exports={parseRoute,routeHash,connection,state,needsFullUi,api,show,screens,renderActivities,renderDevices,deviceRemoteHtml,renderDeviceRemote,remoteBlocks,remoteHtml,renderActivityRemote,CONTROLS,controlFor,volumeTarget,editorSlots,availableCommands,addButton,insertRow,removeButton,editorHtml,renderEditor,screenOf,MAX_CELLS,layoutShape,startDraft,submitLayout,getLeaveGuard:()=>leaveGuard,cloneScreen,withSlots,announceHub,loadDevices,typingPlan,createTyper,openKeyboard,KEYBOARD_COMMAND,setRunningActivity,syncHubActivity,announceRunning,channelChoices,ROKU_BUILTIN_NAMES,channelRowHtml,parseRelease,installRelease,waitForHub,pauses};',context);
 const {parseRoute,routeHash,connection,state,needsFullUi,api,show}=context.exports;
 
 assert.deepEqual(JSON.parse(JSON.stringify(parseRoute(''))),{name:'activities',params:[]});
@@ -76,8 +76,8 @@ console.log('Tab screens show tabs and the connectivity icon; drill-in screens s
 
 // ---- Activities home ----
 const calls=[];let outcome='completed',pending=null;
-let hubDown=false,sessionGate=null;
-context.api=async(path,body)=>{calls.push({path,...body});if(path==='session'){if(sessionGate)await sessionGate;if(hubDown){state.online=false;throw Error('down');}state.online=true;return {};}if(path==='activities/run')return {id:'op'+calls.length};return {};};
+let hubDown=false,sessionGate=null,hubState={activityId:'',estimated:true};
+context.api=async(path,body)=>{calls.push({path,...body});if(path==='activities/state')return hubState;if(path==='session'){if(sessionGate)await sessionGate;if(hubDown){state.online=false;throw Error('down');}state.online=true;return {};}if(path==='activities/run')return {id:'op'+calls.length};return {};};
 context.operation=async()=>pending?await pending:{state:outcome};
 state.online=true;
 state.devices=[{id:'1',name:'LG C5',transport:'ir',commands:['VolumeUp','VolumeDown','Play'].map(name=>({name}))},{id:'2',name:'Receiver'}];
@@ -125,6 +125,41 @@ assert.deepEqual(calls.map(c=>[c.activityId,c.fixState]),[['-1',false]]);
 assert.equal(store.get('harmony-activity'),'');assert.equal(announced.at(-1),'','stopping clears them');
 console.log('Stop sends the hub power-off request and clears the running activity');
 
+// ---- The hub's own estimate of what is running (a change made by Home Assistant or another phone) ----
+{
+  const {syncHubActivity,setRunningActivity}=context.exports;
+  let now=Date.now()+10000;context.Date=class extends Date{static now(){return now;}};
+  const sync=async hub=>{hubState=hub;calls.length=0;return syncHubActivity();};
+  now+=10000;   // clear of the settle window the earlier clicks started
+  store.set('harmony-activity','watch');
+  assert.equal(await sync({activityId:'watch',estimated:true}),false,'the hub agrees: nothing changes');
+  assert.deepEqual(calls.map(c=>c.path),['activities/state']);
+  assert.equal(await sync({activityId:'',estimated:true}),true,'the hub says nothing is running');
+  assert.equal(store.get('harmony-activity'),'');assert.equal(announced.at(-1),'','the lock-screen buttons go too');
+  assert.equal(await sync({activityId:'empty',estimated:true}),true,'another phone or Home Assistant started one');
+  assert.equal(store.get('harmony-activity'),'empty');
+  assert.equal(await sync({activityId:'-1',estimated:true}),true,'"-1" is the hub\'s power-off request');
+  assert.equal(store.get('harmony-activity'),'');
+  store.set('harmony-activity','watch');
+  assert.equal(await sync({activityId:'deleted',estimated:true}),true,'an id the hub no longer has is nothing running');
+  assert.equal(store.get('harmony-activity'),'');
+  // Just after this phone starts or stops one, the hub may not have written its estimate yet.
+  setRunningActivity('watch');
+  assert.equal(await sync({activityId:'',estimated:true}),false);assert.equal(calls.length,0,'it does not even ask inside the settle window');
+  assert.equal(store.get('harmony-activity'),'watch');
+  now+=3500;
+  assert.equal(await sync({activityId:'',estimated:true}),true,'then the hub is believed');
+  assert.equal(store.get('harmony-activity'),'');
+  // While a start is running the hub has not answered yet.
+  store.set('harmony-activity','watch');now+=10000;
+  let finish;pending=new Promise(resolve=>{finish=resolve;});outcome='completed';
+  const running=click({open:'empty'});for(let i=0;i<10;i++)await Promise.resolve();
+  assert.equal(await sync({activityId:'',estimated:true}),false,'no sync while an operation is in flight');
+  assert.equal(calls.length,0);
+  finish({state:'completed'});await running;pending=null;delete context.Date;
+  context.location.hash='#/activities';
+  console.log('The page takes the hub\'s estimate of what is running, but not mid-operation or just after its own change');
+}
 store.set('harmony-activity','watch');calls.length=0;outcome='cancelled';context.location.hash='#/activities';draw();
 const announcedBefore=announced.length;
 await click({open:'empty'});assert.equal(announced.length,announcedBefore,'a cancelled start announces nothing');
