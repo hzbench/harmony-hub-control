@@ -206,8 +206,9 @@ local function activities()
         op.state = ok and "completed" or err == "cancelled" and "cancelled" or "failed"
         op.result = {ok = ok and true or false, error = err, stateEstimated = true}
         write(ROOT .. current .. ".json", op)
+        -- A cancel stops the rest of the sequence but keeps what was running before, so Stop can still power it off.
         if ok and not op.request.stopAll then previous = op.request
-        else previous = nil end
+        elseif ok or err ~= "cancelled" then previous = nil end
         write(ROOT .. "activity-state.json", {activityId = ok and op.request.id or "", estimated = true})
       end
     end

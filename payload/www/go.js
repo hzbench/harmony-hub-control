@@ -26,6 +26,8 @@ function parseRoute(hash) {
 const routeHash = (name, ...params) => '#/'+[name,...params.map(encodeURIComponent)].join('/');
 
 function notice(message, error=false) {$('notice').textContent=message;$('notice').hidden=!message;$('notice').dataset.error=String(error);}
+// On the Activities and Devices tabs the notice floats over the page (CSS); a tap puts it away.
+const dismissFloatingNotice = () => {if(document.body.dataset.reserveNotice==='false')notice('');};
 // The icons come from one sprite file. The hub serves it with `no-cache`, so a page drawn while the hub is
 // unreachable would lose every icon. The page puts the sprite in its own markup (and keeps a copy for next
 // time), so `<use href="#icon-X">` never needs the network.
@@ -151,15 +153,36 @@ async function syncHubActivity() {
 }
 const activityDevices = activity => [...new Set((activity.steps||[]).map(s=>s.deviceId).filter(Boolean))]
   .map(id=>state.devices.find(d=>d.id===id)?.name).filter(Boolean);
-let activityOperation = null;  // {id, activityId} while a start/stop is in flight
+// A start, stop or fix that is in flight: {id, activityId, kind, shown}. `id` is empty until the hub has accepted it.
+// Its progress is drawn on the row that was tapped, and only once it has run for BUSY_SHOW_MS, so a quick start
+// shows nothing at all. Nothing is added to the list, so nothing moves.
+let activityOperation = null;
+let unknownActivity = '';   // the activity whose last start, stop or fix was cancelled or failed: its devices may be half switched
+const BUSY_SHOW_MS = 400;
+const SPINNER = '<svg class="spinner" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 1-6.36 2.64"/></svg>';
+const BUSY_WORDS = {start:'Starting…', fix:'Fixing device state…', stop:'Powering off…'};
+const CANCEL_WORDS = {start:'Stop starting', fix:'Stop starting', stop:'Stop powering off'};
+const NOT_UNDONE = 'Devices already switched stay as they are.';
+// A stop is asked of the hub as "-1" and acts on whatever is running.
+const busyActivityId = () => activityOperation ? (activityOperation.activityId==='-1' ? activeActivity()?.id : activityOperation.activityId) : null;
+function announceStatus(text) {const live=$('sr-status');if(live)live.textContent=text;}
 
 function activityRow(activity) {
   const running = activeActivity()?.id===activity.id, id = escape(activity.id), name = escape(activity.name);
-  const subtitle = `<small>${escape(activityDevices(activity).join(' · ')||'No devices')}</small>`;
-  return `<div class="row" data-running="${running}">
-    ${running?`<button class="row-icon row-power" type="button" data-stop aria-label="Stop ${name}" title="Stop">${icon('Power')}</button>`:''}
-    <button class="row-main" type="button" data-open="${id}">${running?'':`<span class="row-icon">${icon('Play')}</span>`}<span class="row-text"><strong>${name}</strong>${subtitle}</span>${icon('ChevronRight')}</button>
-    <button class="row-action" type="button" data-fix="${id}" aria-label="Fix device state for ${name}" title="Fix device state">${icon('RefreshCw')}</button>
+  const drawn = !!activityOperation?.shown, mine = drawn && busyActivityId()===activity.id;
+  const unknown = !mine && unknownActivity===activity.id;
+  const text = mine ? BUSY_WORDS[activityOperation.kind] : unknown ? 'Device state is unknown' : activityDevices(activity).join(' · ')||'No devices';
+  const subtitle = `<small${unknown?' class="unknown"':''}>${escape(text)}</small>`;
+  const lead = mine ? SPINNER : icon(running?'Power':'Play');
+  const power = running ? (mine ? `<span class="row-icon row-power">${lead}</span>`
+    : `<button class="row-icon row-power" type="button" data-stop aria-label="Stop ${name}" title="Stop">${lead}</button>`) : '';
+  const action = mine
+    ? `<button class="row-cancel" type="button" data-cancel title="${NOT_UNDONE}"${activityOperation.id?'':' disabled'}>${CANCEL_WORDS[activityOperation.kind]}</button>`
+    : `<button class="row-action" type="button" data-fix="${id}" aria-label="Fix device state for ${name}" title="Fix device state">${icon('RefreshCw')}</button>`;
+  return `<div class="row" data-running="${running}"${drawn&&!mine?' data-dim="true"':''}>
+    ${power}
+    <button class="row-main" type="button" data-open="${id}">${running?'':`<span class="row-icon">${lead}</span>`}<span class="row-text"><strong>${name}</strong>${subtitle}</span>${icon('ChevronRight')}</button>
+    ${action}
   </div>`;
 }
 // Setup is a short list of links into the original pages, which keep device
@@ -462,8 +485,7 @@ function renderRoku(ctx) {
 }
 function renderActivities(ctx) {
   const activities = state.config.activities||[];
-  ctx.content.innerHTML = `${activityOperation?'<div class="busy" role="status"><span>Working…</span><button type="button" data-cancel>Cancel</button></div>':''}
-    <div class="list">${activities.map(activityRow).join('')||'<div class="placeholder"><p>No activities yet. Create one in the full settings pages.</p></div>'}</div>`;
+  ctx.content.innerHTML = `<div class="list">${activities.map(activityRow).join('')||'<div class="placeholder"><p>No activities yet. Create one in the full settings pages.</p></div>'}</div>`;
   // Starting an activity takes seconds and the user may have navigated away
   // by the time it finishes: only touch the screen while it is still showing.
   const onScreen = () => ctx.content.isConnected && parseRoute(location.hash).name==='activities';
@@ -472,17 +494,31 @@ function renderActivities(ctx) {
   async function run(activityId, {fixState=false}={}) {
     if(activityOperation)return;
     if(!await ensureOnline())return say(OFFLINE_NOTICE,true);
+    if(activityOperation)return;   // a second tap while the hub was being asked
+    const kind = activityId==='-1' ? 'stop' : fixState ? 'fix' : 'start', current = activityOperation = {id:'', activityId, kind, shown:false};
+    current.timer = setTimeout(()=>{
+      if(activityOperation!==current)return;
+      current.shown = true;redraw();
+      announceStatus(`${BUSY_WORDS[kind]} ${state.config.activities?.find(a=>a.id===busyActivityId())?.name||''}`.trim());
+    },BUSY_SHOW_MS);
+    const target = () => busyActivityId() || activityId;
+    let accepted = false;
     try {
-      const op=await api('activities/run',{activityId,fixState});activityOperation={id:op.id,activityId};redraw();say('');
+      const op=await api('activities/run',{activityId,fixState});current.id = op.id;accepted = true;
+      if(current.shown)redraw();say('');
       const result=await operation(op.id,180);
-      if(result.state==='completed')return true;
-      say('Cancelled. Device state is unknown.',true);
-    } catch(error) {say(error.message,true);}
-    finally {activityOperation=null;redraw();}
+      if(result.state==='completed'){unknownActivity = '';return true;}
+      unknownActivity = target();
+      say(`Cancelled. ${NOT_UNDONE} Device state is unknown.`,true);
+    } catch(error) {
+      if(accepted)unknownActivity = target();
+      say(error.message,true);
+    }
+    finally {clearTimeout(current.timer);activityOperation=null;announceStatus('');redraw();}
   }
   ctx.content.onclick = async event => {
     const button = event.target.closest('button');if(!button)return;
-    if('cancel' in button.dataset){if(activityOperation)await api('operations',{id:activityOperation.id,action:'cancel'}).catch(error=>say(error.message,true));return;}
+    if('cancel' in button.dataset){if(activityOperation?.id)await api('operations',{id:activityOperation.id,action:'cancel'}).catch(error=>say(error.message,true));return;}
     if(activityOperation)return;
     if(button.dataset.open){
       if(activeActivity()?.id===button.dataset.open){location.hash=routeHash('activity',button.dataset.open);return;}
@@ -1288,6 +1324,7 @@ if(typeof document!=='undefined'&&$('content')) {
   const recheck = () => {connection(null);boot();};
   $('connection').addEventListener('click',recheck);
   window.harmonyCheckConnection = recheck;  // the app's toolbar icon calls this
+  $('notice').addEventListener('click',dismissFloatingNotice);
   schedulePoll();scheduleActivityPoll();
   document.addEventListener('visibilitychange',()=>{clearTimeout(activityTimer);if(!document.hidden)pollActivity();});
   // Coming back to the app, or the phone's network returning, is the moment to look again.
