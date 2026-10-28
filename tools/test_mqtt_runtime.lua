@@ -150,7 +150,7 @@ os.rename, os.remove = function(from, to)
 end, function(path) files[path] = nil; return true end
 local root = "/tmp/harmony-operations/"
 local sequence = {id = "delayed", kind = "activity", state = "queued",
-  request = {id = "local-test", steps = {{kind = "delay", delayMs = 200}, {deviceId = "tv", command = "On"}}}}
+  request = {id = "local-test", steps = {{kind = "delay", delayMs = 200}, {deviceId = "tv", command = "On"}}, exitSteps = {{deviceId = "tv", command = "Off"}}}}
 files[root .. "activity-current"], files[root .. "delayed.json"] = sequence.id, sequence
 local activityWorker = coroutine.create(tasks["harmony-local-activities"])
 local resumed, wait = coroutine.resume(activityWorker)
@@ -166,6 +166,25 @@ assert(interrupted.state == "running")
 files[root .. "cancel-delay.cancel"] = "1"
 assert(coroutine.resume(activityWorker))
 assert(interrupted.state == "cancelled" and files[root .. "activity-state.json"].activityId == "")
+-- A cancelled start must not make the hub forget the activity that was running: Stop still powers it off.
+requested = {}
+local stopped = {id = "stop-after-cancel", kind = "activity", state = "queued", request = {id = "-1", stopAll = true, steps = {}}}
+files[root .. "activity-current"], files[root .. "stop-after-cancel.json"] = stopped.id, stopped
+for _ = 1, 20 do
+  assert(coroutine.resume(activityWorker))
+  if stopped.state ~= "queued" and stopped.state ~= "running" then break end
+end
+assert(stopped.state == "completed", "the stop finished, it was " .. tostring(stopped.state))
+assert(#requested == 1 and requested[1].command == "Off", "Stop after a cancelled start still sends the previous activity's power-off")
+-- And once Stop has run there is nothing left to power off.
+requested = {}
+local again = {id = "stop-twice", kind = "activity", state = "queued", request = {id = "-1", stopAll = true, steps = {}}}
+files[root .. "activity-current"], files[root .. "stop-twice.json"] = again.id, again
+for _ = 1, 20 do
+  assert(coroutine.resume(activityWorker))
+  if again.state ~= "queued" and again.state ~= "running" then break end
+end
+assert(again.state == "completed" and #requested == 0, "a second Stop sends nothing")
 io.open, os.rename, os.remove = oldOpen, oldRename, oldRemove
 package.loaded.json.decode, package.loaded.json.encode = rawDecode, rawEncode
 print("Local activity switching, estimated-state repair and cancellation passed")
