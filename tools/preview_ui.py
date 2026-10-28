@@ -2,6 +2,7 @@
 import argparse
 import json
 import sys
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -38,6 +39,10 @@ def network_devices():
 installed = {"version": "0.1.0", "result": ""}
 
 
+# With --slow N an activity start takes N seconds and can be cancelled, so its progress can be watched on a phone.
+slow = {"seconds": 0, "started": 0.0, "cancelled": False, "request": {}}
+
+
 class Preview(BaseHTTPRequestHandler):
     def reply(self, value, status=200):
         body = json.dumps(value).encode()
@@ -54,6 +59,10 @@ class Preview(BaseHTTPRequestHandler):
                      "/api/v1/configuration": configuration, "/api/v1/devices": {"devices": devices},
                      "/api/v1/bluetooth/devices": {"devices": []}, "/api/v1/network/devices": {"devices": network_devices()},
                      "/api/v1/operations": {"state": "completed", "result": {"ok": True, "reply": "Fixture Roku", "apps": FIXTURE_APPS}}}
+        if path == "/api/v1/operations" and slow["seconds"] and "fixture-activity" in self.path:
+            elapsed = time.time() - slow["started"]
+            state = "cancelled" if slow["cancelled"] else "completed" if elapsed >= slow["seconds"] else "running"
+            return self.reply({"state": state, "result": {"ok": state == "completed"}})
         if path in responses:
             return self.reply(responses[path])
         name = {"/": "index.html", "/go": "go.html", "/go/": "go.html"}.get(path) or (path[4:] if path.startswith("/go/") else path[1:])
@@ -84,8 +93,12 @@ class Preview(BaseHTTPRequestHandler):
             if self.path.endswith("/apply"):
                 installed.update(version=installed.get("next", installed["version"]), result="Release passed startup health checks (fixture)")
             return self.reply({"ok": True})
+        if self.path == "/api/v1/operations" and body.get("action") == "cancel":
+            slow["cancelled"] = True
+            return self.reply({"ok": True})
         if self.path == "/api/v1/activities/run":
-            return self.reply({"id": "fixture-activity", "state": "completed"}, 202)
+            slow.update(started=time.time(), cancelled=False, request=body)
+            return self.reply({"id": "fixture-activity", "state": "running" if slow["seconds"] else "completed"}, 202)
         if body.get("revision") != configuration["revision"]:
             return self.reply({"error": "Configuration changed in another browser. Reload before saving."}, 409)
         if self.path == "/api/v1/devices" and body.get("action") == "create-profile":
@@ -120,7 +133,10 @@ if __name__ == "__main__":
                          help="Required to use --host with anything other than 127.0.0.1/localhost. "
                               "Only pass this on a trusted LAN, for a real device/emulator to reach "
                               "this fixture, and stop it when you're done.")
+    parser.add_argument("--slow", type=float, default=0, metavar="SECONDS",
+                         help="Make an activity start take this long (and be cancellable) instead of finishing at once.")
     args = parser.parse_args()
+    slow["seconds"] = args.slow
     if args.host not in ("127.0.0.1", "localhost") and not args.allow_lan:
         parser.error(f"binding to {args.host} exposes this unauthenticated fixture to your "
                       f"network - pass --allow-lan to confirm that's intended.")

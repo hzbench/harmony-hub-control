@@ -186,16 +186,77 @@ assert.equal(calls[0].path,'session');assert.ok(calls.some(c=>c.path==='activiti
 state.online=true;store.set('harmony-activity','watch');context.location.hash='#/activities';draw();
 console.log('A press while disconnected re-checks the hub: refused if it is still down, sent if it is back');
 
-calls.length=0;let release;pending=new Promise(r=>release=r);context.location.hash='#/activities';draw();
-const first=click({open:"empty"});for(let i=0;i<10;i++)await Promise.resolve();
-await click({open:'watch'});await click({fix:'watch'});
-assert.equal(calls.filter(c=>c.path==='activities/run').length,1);
-assert.match(content.innerHTML,/data-cancel/);
-await click({cancel:''});
-assert.deepEqual(calls.at(-1),{path:'operations',id:'op1',action:'cancel'});
-release({state:'cancelled'});await first;pending=null;
-assert.doesNotMatch(content.innerHTML,/data-cancel/);
-console.log('A second tap during a start is ignored and the in-flight start can be cancelled');
+// A start shows its progress on the row that was tapped, and only after BUSY_SHOW_MS; nothing is added to the list.
+{
+  const timers=[];context.setTimeout=(fn,ms)=>{timers.push({fn,ms});return timers.length;};context.clearTimeout=id=>{if(timers[id-1])timers[id-1].fn=null;};
+  const fire=async()=>{for(const t of timers)if(t.fn){const fn=t.fn;t.fn=null;fn();}for(let i=0;i<10;i++)await Promise.resolve();};
+  const listOnly=html=>assert.ok(html.startsWith('<div class="list">'),'nothing is added before the list');
+  store.set('harmony-activity','watch');state.online=true;
+
+  // quick: finished before the indication was due, so it never appears
+  calls.length=0;pending=null;outcome='completed';timers.length=0;context.location.hash='#/activities';draw();
+  const before=content.innerHTML;
+  await click({open:'empty'});
+  assert.equal(timers.length>0&&timers[0].ms,400,'the indication waits 400 ms');
+  assert.equal(content.innerHTML.includes('spinner'),false,'a quick start shows nothing at all');
+  store.set('harmony-activity','watch');context.location.hash='#/activities';draw();
+
+  // slow: after 400 ms the tapped row shows a spinner and "Stop starting", the others dim, nothing else changes
+  calls.length=0;timers.length=0;let release;pending=new Promise(r=>release=r);draw();
+  const first=click({open:"empty"});for(let i=0;i<10;i++)await Promise.resolve();
+  await click({open:'watch'});await click({fix:'watch'});
+  assert.equal(calls.filter(c=>c.path==='activities/run').length,1,'a second tap during a start is ignored');
+  assert.equal(content.innerHTML.includes('spinner'),false,'not yet');
+  await fire();
+  const html=content.innerHTML;
+  listOnly(html);
+  const rows=html.split('<div class="row"').slice(1);
+  assert.equal(rows.length,2,'the same rows as before');
+  const [watchRow,emptyRow]=rows;
+  assert.match(emptyRow,/spinner/);assert.match(emptyRow,/data-cancel[^>]*>Stop starting</);assert.match(emptyRow,/Starting…/);
+  assert.match(emptyRow,/Devices already switched stay as they are\./,'the note is on the control');
+  assert.doesNotMatch(emptyRow,/data-fix/);assert.doesNotMatch(emptyRow,/data-dim/);
+  assert.match(watchRow,/data-dim="true"/);assert.doesNotMatch(watchRow,/spinner/);
+  assert.doesNotMatch(html,/class="busy"/);
+  assert.equal(el('sr-status').textContent,'Starting… Empty','screen readers hear it');
+  await click({cancel:''});
+  assert.deepEqual(calls.at(-1),{path:'operations',id:'op1',action:'cancel'});
+  outcome='cancelled';release({state:'cancelled'});await first;pending=null;outcome='completed';
+  assert.doesNotMatch(content.innerHTML,/data-cancel|spinner/);assert.equal(el('sr-status').textContent,'');
+  assert.match(content.innerHTML,/Device state is unknown/,'the cancelled row says so');
+  assert.equal(content.innerHTML.split('Device state is unknown').length,2,'and only that row');
+  assert.match(el('notice').textContent,/Cancelled\. Devices already switched stay as they are\. Device state is unknown\./);
+  listOnly(content.innerHTML);
+
+  // a later success clears the mark
+  calls.length=0;await click({fix:'empty'});
+  assert.doesNotMatch(content.innerHTML,/Device state is unknown/);
+
+  // stopping draws on the running row: its power button becomes the spinner
+  store.set('harmony-activity','watch');context.location.hash='#/activities';calls.length=0;timers.length=0;
+  pending=new Promise(r=>release=r);draw();
+  const stopping=click({stop:''});for(let i=0;i<10;i++)await Promise.resolve();await fire();
+  const stopHtml=content.innerHTML.split('<div class="row"').slice(1)[0];
+  assert.match(stopHtml,/<span class="row-icon row-power"><svg class="spinner"/);assert.doesNotMatch(stopHtml,/data-stop/);
+  assert.match(stopHtml,/Stop powering off/);assert.match(stopHtml,/Powering off…/);
+  release({state:'completed'});await stopping;pending=null;
+  context.setTimeout=()=>0;context.clearTimeout=()=>{};
+  store.set('harmony-activity','watch');context.location.hash='#/activities';draw();
+}
+console.log('A start shows progress on the tapped row after 400 ms, with Stop starting, dimmed rows and an unknown-state mark; nothing is added to the list');
+
+// The Activities and Devices tabs float their messages (they have no reserved space).
+{
+  const rule=selector=>(css.match(new RegExp(selector.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\s*\\{([^}]*)\\}'))||[])[1]||'';
+  const floating=rule('body[data-reserve-notice=false] #notice:not([hidden])');
+  assert.match(floating,/position:\s*fixed/);assert.match(floating,/bottom:/);
+  assert.equal(screens_reserve('activities'),false);assert.equal(screens_reserve('devices'),false);
+  assert.equal(screens_reserve('setup'),true,'the other screens keep their reserved strip');
+  assert.match(css,/prefers-reduced-motion:reduce\)\{\.spinner\{animation:none\}/);
+  assert.doesNotMatch(css,/\.busy\b/);assert.doesNotMatch(source,/class="busy"/);
+  function screens_reserve(name){return !!context.exports.screens[name].reserveNotice;}
+  console.log('Activities and Devices notices float above the tab bar; reduced motion stops the spinner; the old banner is gone');
+}
 
 context.location.hash='#/devices';calls.length=0;el('notice').textContent='';outcome='failed';
 context.operation=async()=>{throw Error('hub error');};
