@@ -116,8 +116,8 @@ const screens = {
   edit: {title:'Edit remote', parent:'setup', backTo:'/#activities', reserveNotice:true, render:renderEditor},
   device: {title:'Device', parent:'devices', reserveNotice:true, render:renderDeviceRemote},
 };
-// There is no hub-side "running" activity: like the original UI, the client
-// remembers the last one it started in localStorage.
+// The client remembers the last activity it started in localStorage, and checks it against the hub's
+// own estimate (activities/state) so a change made elsewhere (Home Assistant, another phone) shows too.
 const ACTIVITY_KEY = 'harmony-activity';
 const activeActivity = () => state.config?.activities?.find(a=>a.id===readLocal(ACTIVITY_KEY));
 // The Android app keeps Play / Mute / Volume − / Volume + buttons on the lock screen while an
@@ -133,7 +133,22 @@ function announceRunning() {
   try {window.HarmonyNative?.setRunningActivity?.(buttons.length ? JSON.stringify({id:activity.id, name:activity.name, buttons}) : '');} catch {/* no native bridge */}
 }
 // Remember which activity is running (or none, with '') and tell the app.
-function setRunningActivity(id) {writeLocal(ACTIVITY_KEY,id);announceRunning();}
+let lastLocalChange = 0;
+function setRunningActivity(id) {lastLocalChange=Date.now();writeLocal(ACTIVITY_KEY,id);announceRunning();}
+// Take the hub's estimate of what is running. Empty or "-1" (stopped), an unknown id and a restarted
+// hub all mean nothing is running. The hub writes its estimate a moment after a start or stop is
+// reported done, so for a few seconds after this phone changes it the hub's answer is not trusted yet.
+// Returns true when what the page shows changed.
+const ACTIVITY_SETTLE_MS = 3000, ACTIVITY_POLL_MS = 5000;
+async function syncHubActivity() {
+  if(activityOperation||!state.config||Date.now()-lastLocalChange<ACTIVITY_SETTLE_MS)return false;
+  const hub=await api('activities/state');
+  if(activityOperation||Date.now()-lastLocalChange<ACTIVITY_SETTLE_MS)return false;   // a start or stop finished while asking
+  const id=(state.config.activities||[]).some(a=>a.id===hub.activityId) ? hub.activityId : '';
+  if(id===readLocal(ACTIVITY_KEY))return false;
+  writeLocal(ACTIVITY_KEY,id);announceRunning();
+  return true;
+}
 const activityDevices = activity => [...new Set((activity.steps||[]).map(s=>s.deviceId).filter(Boolean))]
   .map(id=>state.devices.find(d=>d.id===id)?.name).filter(Boolean);
 let activityOperation = null;  // {id, activityId} while a start/stop is in flight
@@ -1237,6 +1252,7 @@ async function boot() {
     if(needsFullUi(session,state.config))return location.replace('/');
     announceHub();
     await loadDevices();
+    await syncHubActivity().catch(()=>{/* the list still shows the phone's own value */});
     if(!location.hash)history.replaceState(null,'',routeHash('activities'));
     show();
   } catch(error) {
@@ -1247,6 +1263,16 @@ async function boot() {
   }
 }
 // Check on the hub often while it is unreachable, so the icon recovers soon after it comes back.
+// While the page is in front, look at what the hub says is running every few seconds; a hidden page stops.
+let activityTimer;
+function scheduleActivityPoll() {clearTimeout(activityTimer);if(!document.hidden)activityTimer=setTimeout(pollActivity,ACTIVITY_POLL_MS);}
+async function pollActivity() {
+  try {
+    if(state.online!==false&&state.session&&await syncHubActivity()&&parseRoute(location.hash).name==='activities')
+      renderActivities({params:[],content:$('content'),actions:$('header-actions'),setTitle(){}});
+  } catch {/* api() has already flagged the connection state; pollSession() keeps retrying */}
+  finally {scheduleActivityPoll();}
+}
 function schedulePoll() {clearTimeout(sessionTimer);sessionTimer=setTimeout(pollSession,state.online===false?3000:15000);}
 async function pollSession() {
   try {
@@ -1262,7 +1288,8 @@ if(typeof document!=='undefined'&&$('content')) {
   const recheck = () => {connection(null);boot();};
   $('connection').addEventListener('click',recheck);
   window.harmonyCheckConnection = recheck;  // the app's toolbar icon calls this
-  schedulePoll();
+  schedulePoll();scheduleActivityPoll();
+  document.addEventListener('visibilitychange',()=>{clearTimeout(activityTimer);if(!document.hidden)pollActivity();});
   // Coming back to the app, or the phone's network returning, is the moment to look again.
   const wake = () => {if(state.online!==true&&!document.hidden){clearTimeout(sessionTimer);pollSession();}};
   window.addEventListener('online',wake);document.addEventListener('visibilitychange',wake);
