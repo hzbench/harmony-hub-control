@@ -117,7 +117,7 @@ jobs:
 
       - name: Cache the compiler
         id: cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/toolchain
           key: ${{ env.TOOLCHAIN_NAME }}-${{ env.TOOLCHAIN_SHA256 }}
