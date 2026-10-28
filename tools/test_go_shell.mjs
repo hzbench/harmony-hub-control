@@ -14,7 +14,7 @@ assert.match(html,/href="\/go\/go\.css"/);assert.match(html,/src="\/go\/go\.js"/
 console.log('Entry page and shell script use no inline styles or scripts (CSP-safe)');
 
 const elements={}, store=new Map();
-const el=id=>elements[id]||=({id,dataset:{},classList:{add(){},remove(){}},hidden:false,textContent:'',innerHTML:'',title:'',attrs:{},setAttribute(k,v){this.attrs[k]=v;},removeAttribute(k){delete this.attrs[k];},focus(){},addEventListener(){},querySelectorAll:()=>[]});
+const el=id=>elements[id]||=({id,dataset:{},classList:{add(){},remove(){}},hidden:false,textContent:'',innerHTML:'',title:'',attrs:{},setAttribute(k,v){this.attrs[k]=v;},removeAttribute(k){delete this.attrs[k];},focus(){},addEventListener(){},querySelectorAll:()=>[],querySelector(sel){return (this.found||={})[sel]||={dataset:{},hidden:false};}});
 const context=vm.createContext({document:{getElementById:el,title:'',body:{dataset:{}},addEventListener(){},hidden:false},window:{addEventListener(){},scrollTo(){}},location:{hash:'',replace(url){context.replaced=url;},assign(url){context.assigned=url;}},history:{replaceState(){},pushState(){context.pushed=(context.pushed||0)+1;},back(){context.backed=(context.backed||0)+1;}},
   confirm:message=>{(context.confirmed||(context.confirmed=[])).push(message);return context.confirmAnswer!==false;},navigator:{vibrate(){context.vibrated=(context.vibrated||0)+1;}},localStorage:{getItem:k=>store.get(k)??null,setItem:(k,v)=>store.set(k,v)},setTimeout:()=>0,clearTimeout(){},fetch:async()=>{throw new TypeError('offline');},AbortController,URL,structuredClone,atob});
 const inert=source.replace(/\n  boot\(\);\n\}\s*$/,'\n}');assert.notEqual(inert,source,'boot() auto-run not found');
@@ -1058,6 +1058,64 @@ console.log('Editing changes only a local draft in fixed slots; Save is one writ
   assert.match(content.innerHTML,/IR codes/);
 }
 console.log('Setup links into the original pages');
+// A controller (anyone paired who is not the owner) is shown only what they can use in Setup.
+{
+  const render=()=>{const content={innerHTML:''};X.screens.setup.render({content,actions:{},params:[],setTitle(){}});return content;};
+  const links=html=>[...html.matchAll(/<a class="row-main" href="([^"]+)"/g)].map(m=>m[1]);
+  const setupTab=()=>el('tabs').found['[data-tab=setup]'];
+  const seen=[];context.api=async(path,body)=>{seen.push(path);if(path==='session')return {role:'control',buttonPending:true,csrf:'c'};return {};};
+  state.config={hubName:'Den',activities:[]};
+
+  state.session={role:'control',csrf:'c'};delete context.window.HarmonyNative;
+  let content=render();
+  assert.deepEqual(links(content.innerHTML),[],'no owner-only links');
+  assert.doesNotMatch(content.innerHTML,/Software update|Activities|Settings|hub-name/);
+  assert.match(content.innerHTML,/data-full-access/);assert.match(content.innerHTML,/Get full access/);
+  assert.doesNotMatch(content.innerHTML,/data-hub-address/,'a browser has no hub address row');
+  context.location.hash='#/setup';X.show();assert.equal(setupTab().hidden,false,'there is something to use, so the tab stays');
+
+  // In the app the Hub address row stays for everyone, next to Get full access.
+  context.window.HarmonyNative={changeHubAddress(){context.addressAsked=true;}};
+  content=render();assert.match(content.innerHTML,/data-hub-address/);assert.match(content.innerHTML,/data-full-access/);
+  await content.onclick({target:{closest:sel=>sel==='[data-hub-address]'?{}:null}});assert.equal(context.addressAsked,true);
+
+  // Get full access asks the hub, then hands this browser to the original UI to wait for the Pair button.
+  seen.length=0;context.replaced=undefined;
+  await content.onclick({target:{closest:sel=>sel==='[data-full-access]'?{}:null}});
+  assert.equal(seen[0],'controllers/upgrade');assert.equal(context.replaced,'/');
+  context.api=async path=>{if(path==='controllers/upgrade')throw Error('Another browser is waiting for the Pair button.');return {};};
+  await content.onclick({target:{closest:sel=>sel==='[data-full-access]'?{}:null}});
+  assert.equal(el('notice').textContent,'Another browser is waiting for the Pair button.');assert.equal(el('notice').dataset.error,'true');
+
+  // A hub without a Pair button, in a browser: nothing is left, so the tab goes and the screen says so.
+  delete context.window.HarmonyNative;state.session={role:'control',csrf:'c',buttonAvailable:false};
+  content=render();assert.match(content.innerHTML,/nothing to set up/);assert.doesNotMatch(content.innerHTML,/data-full-access/);
+  X.show();assert.equal(setupTab().hidden,true);
+  // ...but in the app the Hub address row is still something.
+  context.window.HarmonyNative={changeHubAddress(){}};X.show();assert.equal(setupTab().hidden,false);delete context.window.HarmonyNative;
+
+  // The owner sees everything, and a role that changes while the page is open grows the owner rows without a reload.
+  state.session={role:'owner',csrf:'c'};content=render();
+  assert.deepEqual(links(content.innerHTML),['#/update','/#devices','/#activities','/#settings']);
+  assert.match(content.innerHTML,/hub-name/);assert.doesNotMatch(content.innerHTML,/data-full-access/,'the owner has full access already');
+  X.show();assert.equal(setupTab().hidden,false);
+  state.session={role:'control',csrf:'c',buttonAvailable:false};X.show();assert.equal(setupTab().hidden,true);
+  state.session={role:'owner',csrf:'c'};X.show();assert.equal(setupTab().hidden,false,'approved while open: the tab and rows come back');
+  // Owner-only screens still refuse someone who opens their address directly.
+  state.session={role:'control',csrf:'c'};
+  for(const route of ['#/update','#/roku']){context.location.hash=route;X.show();assert.match(el('content').innerHTML,/Only the hub owner/,route);}
+  // An empty list tells a controller who can fill it, and the owner where to.
+  const saved=state.devices;state.devices=[];state.config={activities:[]};
+  for(const [role,devices,activities] of [['control',/owner has not set any up/,/owner has not set any up/],['owner',/Add one in the full settings pages/,/Create one in the full settings pages/]]){
+    state.session={role};
+    const d={innerHTML:''},a={innerHTML:'',isConnected:true};X.renderDevices({content:d,params:[]});X.renderActivities({content:a,params:[]});
+    assert.match(d.innerHTML,devices,role);assert.match(a.innerHTML,activities,role);
+  }
+  state.devices=saved;
+  context.location.hash='#/setup';state.session={role:'owner'};
+  context.api=undefined;delete context.api;
+}
+console.log('A controller sees only Get full access (and Hub address in the app); the owner rows return when the role changes');
 // The owner can name the hub; the name is saved on the hub and announced to the app.
 {
   const announced=[];context.window.HarmonyNative={setHubName:n=>announced.push(n)};

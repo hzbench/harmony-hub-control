@@ -39,6 +39,7 @@ def network_devices():
 installed = {"version": "0.1.0", "result": ""}
 
 
+session_role = {"role": "owner"}   # --role control answers as a paired controller who is not the owner
 # With --slow N an activity start takes N seconds and can be cancelled, so its progress can be watched on a phone.
 slow = {"seconds": 0, "started": 0.0, "cancelled": False, "request": {}}
 
@@ -55,7 +56,7 @@ class Preview(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlsplit(self.path).path
         responses = {"/api/v1/updates/status": {"ok": True, "version": installed["version"], "pending": False, "result": installed["result"]},
-                     "/api/v1/session": {"role": "owner", "id": "fixture", "csrf": "fixture"},
+                     "/api/v1/session": {"role": session_role["role"], "id": "fixture", "csrf": "fixture", "buttonAvailable": True},
                      "/api/v1/configuration": configuration, "/api/v1/devices": {"devices": devices},
                      "/api/v1/bluetooth/devices": {"devices": []}, "/api/v1/network/devices": {"devices": network_devices()},
                      "/api/v1/operations": {"state": "completed", "result": {"ok": True, "reply": "Fixture Roku", "apps": FIXTURE_APPS}}}
@@ -92,6 +93,8 @@ class Preview(BaseHTTPRequestHandler):
                 installed["next"] = json.loads(body.get("manifest", "{}")).get("version", "")
             if self.path.endswith("/apply"):
                 installed.update(version=installed.get("next", installed["version"]), result="Release passed startup health checks (fixture)")
+            return self.reply({"ok": True})
+        if self.path == "/api/v1/controllers/upgrade":
             return self.reply({"ok": True})
         if self.path == "/api/v1/operations" and body.get("action") == "cancel":
             slow["cancelled"] = True
@@ -135,8 +138,11 @@ if __name__ == "__main__":
                               "this fixture, and stop it when you're done.")
     parser.add_argument("--slow", type=float, default=0, metavar="SECONDS",
                          help="Make an activity start take this long (and be cancellable) instead of finishing at once.")
+    parser.add_argument("--role", choices=["owner", "control"], default="owner",
+                         help="Answer as this kind of browser: 'control' is a paired controller who is not the owner.")
     args = parser.parse_args()
     slow["seconds"] = args.slow
+    session_role["role"] = args.role
     if args.host not in ("127.0.0.1", "localhost") and not args.allow_lan:
         parser.error(f"binding to {args.host} exposes this unauthenticated fixture to your "
                       f"network - pass --allow-lan to confirm that's intended.")

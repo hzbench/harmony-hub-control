@@ -187,12 +187,21 @@ function activityRow(activity) {
 }
 // Setup is a short list of links into the original pages, which keep device
 // setup, IR learning, Bluetooth pairing, activity steps, backups and the rest.
+// The fifth column says the hub only lets the owner use it, so a controller is never shown it (it would
+// only answer "Only the hub owner can..."). A new owner-only screen is hidden from controllers by
+// adding it here with `true`; the screens themselves keep their message for a direct address.
 const SETUP_LINKS = [
-  ['#/update','Archive','Software update','Install a new version of the hub’s software'],
-  ['/#devices','Radio','Devices','Add infrared, Bluetooth or Roku devices; learn IR codes'],
-  ['/#activities','SlidersHorizontal','Activities','Create activities; edit their steps and remote layouts'],
-  ['/#settings','Settings','Settings','Controllers, backups, Wi-Fi, MQTT and updates'],
+  ['#/update','Archive','Software update','Install a new version of the hub’s software',true],
+  ['/#devices','Radio','Devices','Add infrared, Bluetooth or Roku devices; learn IR codes',true],
+  ['/#activities','SlidersHorizontal','Activities','Create activities; edit their steps and remote layouts',true],
+  ['/#settings','Settings','Settings','Controllers, backups, Wi-Fi, MQTT and updates',true],
 ];
+// What this person can use in Setup. Pending and unpaired browsers never get here: they are handed to the original UI.
+const setupLinks = () => SETUP_LINKS.filter(link=>owner()||!link[4]);
+// A controller can ask to become the owner by pressing the hub's Pair button, unless the hub says it has none.
+const canGetFullAccess = () => !!state.session && !owner() && state.session.buttonAvailable!==false;
+const hasHubAddress = () => typeof window.HarmonyNative?.changeHubAddress==='function';
+const setupHasContent = () => owner() || canGetFullAccess() || hasHubAddress();
 const HUB_NAME_MAX = 40;
 // The Android app shows the hub's name in its toolbar; anywhere else this does nothing.
 function announceHub() {
@@ -211,9 +220,15 @@ async function saveHubName(name) {
   announceHub();
 }
 function renderSetup(ctx) {
-  const hubAddress = typeof window.HarmonyNative?.changeHubAddress==='function' ? `<div class="row"><button class="row-main" type="button" data-hub-address><span class="row-icon neutral">${icon('Wifi')}</span><span class="row-text"><strong>Hub address</strong><small>Change which hub this app connects to</small></span>${icon('ChevronRight')}</button></div>` : '';
-  ctx.content.onclick = event => {if(event.target.closest('[data-hub-address]')){try {window.HarmonyNative.changeHubAddress();} catch {/* no native bridge */}}};
-  ctx.content.innerHTML = (owner()?hubNameForm():'')+SETUP_LINKS.map(([href,glyph,name,hint])=>`<div class="row"><a class="row-main" href="${href}"><span class="row-icon neutral">${icon(glyph)}</span><span class="row-text"><strong>${name}</strong><small>${hint}</small></span>${icon('ChevronRight')}</a></div>`).join('')+hubAddress;
+  if(!setupHasContent())return placeholder(ctx,'There is nothing to set up here.');
+  const fullAccess = canGetFullAccess() ? `<div class="row"><button class="row-main" type="button" data-full-access><span class="row-icon neutral">${icon('LogIn')}</span><span class="row-text"><strong>Get full access</strong><small>Ask to become an owner; you will be asked to press the hub’s Pair button</small></span>${icon('ChevronRight')}</button></div>` : '';
+  const hubAddress = hasHubAddress() ? `<div class="row"><button class="row-main" type="button" data-hub-address><span class="row-icon neutral">${icon('Wifi')}</span><span class="row-text"><strong>Hub address</strong><small>Change which hub this app connects to</small></span>${icon('ChevronRight')}</button></div>` : '';
+  ctx.content.onclick = async event => {
+    if(event.target.closest('[data-hub-address]')){try {window.HarmonyNative.changeHubAddress();} catch {/* no native bridge */}}
+    // The hub starts a 90 s wait for its Pair button; boot() then hands this browser to the original UI, which shows it.
+    else if(event.target.closest('[data-full-access]')){try {await api('controllers/upgrade',{});await boot();} catch(error) {notice(error.message,true);}}
+  };
+  ctx.content.innerHTML = (owner()?hubNameForm():'')+setupLinks().map(([href,glyph,name,hint])=>`<div class="row"><a class="row-main" href="${href}"><span class="row-icon neutral">${icon(glyph)}</span><span class="row-text"><strong>${name}</strong><small>${hint}</small></span>${icon('ChevronRight')}</a></div>`).join('')+fullAccess+hubAddress;
   if(!owner())return;
   ctx.content.onsubmit = async event => {
     event.preventDefault();
@@ -483,9 +498,11 @@ function renderRoku(ctx) {
     } catch(error) {say(error.message,true);}
   };
 }
+// What an empty list says: the owner is pointed at the settings pages, a controller is told who can fill it.
+const emptyList = (what, verb) => `<div class="placeholder"><p>${owner()?`No ${what} yet. ${verb} in the full settings pages.`:`No ${what} yet. The owner has not set any up.`}</p></div>`;
 function renderActivities(ctx) {
   const activities = state.config.activities||[];
-  ctx.content.innerHTML = `<div class="list">${activities.map(activityRow).join('')||'<div class="placeholder"><p>No activities yet. Create one in the full settings pages.</p></div>'}</div>`;
+  ctx.content.innerHTML = `<div class="list">${activities.map(activityRow).join('')||emptyList('activities','Create one')}</div>`;
   // Starting an activity takes seconds and the user may have navigated away
   // by the time it finishes: only touch the screen while it is still showing.
   const onScreen = () => ctx.content.isConnected && parseRoute(location.hash).name==='activities';
@@ -539,7 +556,7 @@ function deviceRow(device) {
   return `<div class="row"><a class="row-main" href="${routeHash('device',device.id)}"><span class="row-icon neutral">${icon(Object.hasOwn(DEVICE_ICONS,device.type)?DEVICE_ICONS[device.type]:'Radio')}</span><span class="row-text"><strong>${escape(device.name)}</strong><small>${escape(type)} · ${count} ${count===1?'command':'commands'}</small></span>${icon('ChevronRight')}</a></div>`;
 }
 function renderDevices(ctx) {
-  ctx.content.innerHTML = `<div class="list">${state.devices.map(deviceRow).join('')||'<div class="placeholder"><p>No devices yet. Add one in the full settings pages.</p></div>'}</div>`;
+  ctx.content.innerHTML = `<div class="list">${state.devices.map(deviceRow).join('')||emptyList('devices','Add one')}</div>`;
 }
 // [slot, label, icon, command-name aliases]. Slot, label and aliases must match
 // app.js's `controls` (test_go_shell.mjs fails if they drift); only the icon
@@ -1268,6 +1285,7 @@ function show() {
   $('connection').hidden = name==='edit' || (remote ? false : (!!screen.parent || toolbarHasConnection()));
   try {window.HarmonyNative?.setToolbarVisible?.(!remote);window.HarmonyNative?.setConnection?.($('connection').dataset.state);} catch {/* no native bridge */}
   $('tabs').hidden = !!screen.parent;
+  $('tabs').querySelector('[data-tab=setup]').hidden = !setupHasContent();
   $('tabs').querySelectorAll('[data-tab]').forEach(a=>{if(a.dataset.tab===screen.tab)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current');});
   notice('');
   $('content').innerHTML='';
