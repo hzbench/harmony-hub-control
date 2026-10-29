@@ -989,6 +989,7 @@ static int local_dispatch(int fd, const struct request *r) {
         !strcmp(r->path, "/api/v1/commands/type") ||
         !strcmp(r->path, "/api/v1/activities/run") ||
         (get && !strcmp(r->path, "/api/v1/activities/state")) ||
+        (get && !strncmp(r->path, "/api/v1/roku/icon", 17)) ||
         (get && (!strcmp(r->path, "/api/v1/devices") || !strcmp(r->path, "/api/v1/bluetooth/devices") || !strcmp(r->path, "/api/v1/network/devices") || !strcmp(r->path, "/api/v1/configuration"))));
     if (!local_auth(fd, r, &ctl, owner)) return 1;
     if (!get) { body = lj_parse(r->body); if (!cJSON_IsObject(body)) { local_error(fd, "400 Bad Request", "Expected a valid JSON object without duplicate fields."); cJSON_Delete(body); return 1; } }
@@ -1001,6 +1002,7 @@ static int local_dispatch(int fd, const struct request *r) {
     } else if (!strcmp(r->path, "/api/v1/devices") && get) render_inventory_json(fd);
     else if (!strcmp(r->path, "/api/v1/bluetooth/devices") && get) send_bt_devices_download(fd);
     else if (!strcmp(r->path, "/api/v1/network/devices") && get) local_network_devices(fd);
+    else if (!strncmp(r->path, "/api/v1/roku/icon", 17) && get) local_roku_icon(fd, r);
     else if (!strcmp(r->path, "/api/v1/controllers")) local_controllers(fd, r, &ctl, body);
     else if (!strncmp(r->path, "/api/v1/operations", 18)) local_operations(fd, r, body, &ctl);
     else if (!strcmp(r->path, "/api/v1/activities/run") && !get) local_activity_run(fd, body, &ctl);

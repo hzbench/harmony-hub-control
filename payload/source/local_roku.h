@@ -113,10 +113,14 @@ static const cJSON *roku_find(const cJSON *config, const char *id) {
 
 /* One short HTTP exchange. Returns the status code, or -1 when the Roku could
    not be reached, with the reason in `err`. `reply` receives the body. */
-static int roku_http(const char *host, const char *method, const char *path, char *reply, size_t reply_size, char *err, size_t err_size) {
+/* One request to a Roku. The reply buffer gets the body only (headers removed), always NUL-terminated. With `body_len`
+   the body is kept byte for byte (an icon has NUL bytes in it) and its length is returned there; a reply that does not
+   fit the buffer is then an error rather than a quietly cut-off body. Returns the HTTP status, or -1 with `err` set. */
+static int roku_http_raw(const char *host, const char *method, const char *path, char *reply, size_t reply_size, char *err, size_t err_size, size_t *body_len) {
     struct sockaddr_in addr; char request[256]; size_t got = 0, sent = 0, length; int fd, status = -1; struct timeval tv;
-    long long deadline; struct timespec now;
+    long long deadline; struct timespec now; int truncated = 0;
     if (reply_size) reply[0] = 0;
+    if (body_len) *body_len = 0;
     memset(&addr, 0, sizeof(addr)); addr.sin_family = AF_INET; addr.sin_port = htons(LOCAL_ROKU_PORT);
     if (inet_pton(AF_INET, host, &addr.sin_addr) != 1) { snprintf(err, err_size, "The Roku's address is not valid."); return -1; }
     fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -148,14 +152,23 @@ static int roku_http(const char *host, const char *method, const char *path, cha
             if (n == 0) break;
             if (got + (size_t)n >= reply_size) n = (ssize_t)(reply_size - 1 - got);
             if (n > 0) { memcpy(reply + got, buf, (size_t)n); got += (size_t)n; reply[got] = 0; }
-            if (reply_size && got + 1 >= reply_size) break;
+            if (reply_size && got + 1 >= reply_size) { truncated = 1; break; }
         }
     }
     close(fd);
     if (got < 12 || strncmp(reply, "HTTP/", 5) != 0) { snprintf(err, err_size, "The Roku sent an unexpected reply."); return -1; }
+    if (body_len && truncated) { snprintf(err, err_size, "The Roku's reply was larger than expected."); return -1; }
     status = atoi(reply + 9);
-    { char *body = strstr(reply, "\r\n\r\n"); size_t keep = body ? strlen(body + 4) : 0; if (body) memmove(reply, body + 4, keep + 1); else reply[0] = 0; }
+    {   /* the body starts after the first blank line; search the bytes read, not a C string, so binary bodies survive */
+        size_t head = 0, keep = 0; int found = 0;
+        while (head + 4 <= got) { if (!memcmp(reply + head, "\r\n\r\n", 4)) { found = 1; break; } head++; }
+        if (found) { keep = got - (head + 4); memmove(reply, reply + head + 4, keep); }
+        reply[keep] = 0; if (body_len) *body_len = keep;
+    }
     return status;
+}
+static int roku_http(const char *host, const char *method, const char *path, char *reply, size_t reply_size, char *err, size_t err_size) {
+    return roku_http_raw(host, method, path, reply, reply_size, err, err_size, NULL);
 }
 
 /* The Roku's /query/apps answer: <app id="12" type="appl" ...>Netflix</app>. Only real channels
@@ -354,6 +367,68 @@ static cJSON *execute_roku_type(const cJSON *body) {
     cJSON_Delete(config); return result;
 }
 
+/* Channel icons. The Roku serves each channel's picture at /query/icon/<id>, but the page may not talk to the Roku
+   (its security policy only allows the hub's own address). So the hub fetches it once, keeps it, and serves it from
+   its own address: GET /api/v1/roku/icon?deviceId=..&id=.. for a saved favorite channel only. It works with the
+   Roku off once kept, is refreshed after a week, and keeps at most ROKU_ICON_FILES pictures (the oldest go first). */
+#define ROKU_ICON_MAX 98304
+#define ROKU_ICON_FILES 48
+#define ROKU_ICON_FRESH_SECONDS (7 * 24 * 3600)
+#ifndef ROKU_ICON_DIR
+#define ROKU_ICON_DIR LOCAL_ROOT "/roku-icons"
+#endif
+static const char *roku_icon_type(const unsigned char *d, size_t n) {
+    if (n >= 8 && !memcmp(d, "\x89PNG\r\n\x1a\n", 8)) return "image/png";
+    if (n >= 3 && d[0] == 0xff && d[1] == 0xd8 && d[2] == 0xff) return "image/jpeg";
+    return NULL;
+}
+static void roku_icon_prune(void) {
+    struct item { time_t t; char name[96]; } list[ROKU_ICON_FILES + 16]; DIR *dir = opendir(ROKU_ICON_DIR); struct dirent *e; int n = 0;
+    if (!dir) return;
+    while (n < ROKU_ICON_FILES + 16 && (e = readdir(dir))) {
+        struct stat st; char path[320];
+        if (e->d_name[0] == '.' || strlen(e->d_name) >= sizeof(list[0].name)) continue;
+        snprintf(path, sizeof(path), ROKU_ICON_DIR "/%s", e->d_name);
+        if (stat(path, &st) == 0 && S_ISREG(st.st_mode)) { list[n].t = st.st_mtime; snprintf(list[n].name, sizeof(list[n].name), "%s", e->d_name); n++; }
+    }
+    closedir(dir);
+    while (n > ROKU_ICON_FILES) {
+        int oldest = 0, i; char path[320];
+        for (i = 1; i < n; i++) if (list[i].t < list[oldest].t) oldest = i;
+        snprintf(path, sizeof(path), ROKU_ICON_DIR "/%s", list[oldest].name); unlink(path);
+        list[oldest] = list[--n];
+    }
+}
+static void local_roku_icon(int fd, const struct request *r) {
+    char device_id[80], channel[32], path[320], header[320]; cJSON *config; const cJSON *device, *c, *found = NULL;
+    unsigned char *data = NULL; size_t n = 0; struct stat st; int fresh;
+    query_value(r->path, "deviceId", device_id, sizeof(device_id)); query_value(r->path, "id", channel, sizeof(channel));
+    if (!safe_run_id(device_id) || !roku_channel_id_ok(channel)) { local_error(fd, "400 Bad Request", "Invalid icon request."); return; }
+    config = local_config(); device = roku_find(config, device_id);
+    if (device) cJSON_ArrayForEach(c, lj_get(device, "channels")) if (!strcmp(lj_str(c, "id"), channel)) found = c;
+    if (!found) { cJSON_Delete(config); local_error(fd, "404 Not Found", "That is not a favorite channel."); return; }
+    snprintf(path, sizeof(path), ROKU_ICON_DIR "/%s-%s.img", device_id, channel);
+    data = (unsigned char *)read_file_alloc(path, ROKU_ICON_MAX, &n);
+    if (data && !roku_icon_type(data, n)) { free(data); data = NULL; n = 0; }   /* a damaged copy is fetched again */
+    fresh = data && stat(path, &st) == 0 && time(NULL) - st.st_mtime < ROKU_ICON_FRESH_SECONDS;
+    if (!fresh) {
+        char url[64], err[160]; size_t cap = ROKU_ICON_MAX + 4096, got = 0; char *reply = malloc(cap);
+        snprintf(url, sizeof(url), "/query/icon/%s", channel);
+        if (reply && roku_http_raw(lj_str(device, "host"), "GET", url, reply, cap, err, sizeof(err), &got) == 200 && got > 0 && got <= ROKU_ICON_MAX &&
+            roku_icon_type((unsigned char *)reply, got)) {
+            free(data); data = (unsigned char *)reply; reply = NULL; n = got;
+            mkdir(ROKU_ICON_DIR, 0755);
+            if (local_space(n + 4096) && write_file_atomic(path, (const char *)data, n) == 0) roku_icon_prune();
+        }
+        free(reply);   /* an old copy, if any, is better than none when the Roku is off */
+    }
+    cJSON_Delete(config);
+    if (!data) { local_error(fd, "404 Not Found", "The icon is not available."); return; }
+    snprintf(header, sizeof(header), "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %lu\r\nCache-Control: private, max-age=86400\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n\r\n",
+        roku_icon_type(data, n), (unsigned long)n);
+    send_all(fd, header, strlen(header)); send_all(fd, (const char *)data, n); free(data);
+}
+
 /* GET /api/v1/network/devices: the same shape the remote screens already use for
    other devices, without the address. */
 static void local_network_devices(int fd) {
@@ -367,7 +442,9 @@ static void local_network_devices(int fd) {
             cJSON *c = cJSON_CreateObject(); cJSON_AddStringToObject(c, "name", roku_commands[i].name); cJSON_AddItemToArray(commands, c);
         }
         { const cJSON *channel; cJSON_ArrayForEach(channel, lj_get(d, "channels")) {
-            cJSON *c = cJSON_CreateObject(); cJSON_AddStringToObject(c, "name", lj_str(channel, "name")); cJSON_AddItemToArray(commands, c);
+            cJSON *c = cJSON_CreateObject(); cJSON_AddStringToObject(c, "name", lj_str(channel, "name"));
+            cJSON_AddStringToObject(c, "channel", lj_str(channel, "id"));   /* lets the page ask for the channel's icon */
+            cJSON_AddItemToArray(commands, c);
         } }
         cJSON_AddItemToObject(item, "commands", commands); cJSON_AddItemToArray(list, item);
     }
