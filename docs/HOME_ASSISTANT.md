@@ -43,6 +43,12 @@ reported as sent successfully. Holds renew a short lease; cancellation sends a
 release, and the hub releases independently if the connection disappears.
 Limits are 10 seconds per hold, 20 repeats, and 100 commands per call.
 
+Command names are matched the way the web UI matches them: an exact name first,
+then the same name ignoring case, spaces and punctuation, then a well-known alias
+(`VolumeUp` finds `Vol_up`, `Vol+` or `VolUp`; `VolumeDown` finds `Vol_dn`). If more
+than one command or device still matches, the call is refused rather than guessed.
+Devices are found by id or exact name only.
+
 The Activity selector contains local activities created in the hub UI. Remote
 turn-on requires an `activity`; turn-off runs the current activity's exit steps.
 It does not send power-off to every saved device. Power and input states remain

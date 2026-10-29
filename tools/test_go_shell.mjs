@@ -14,11 +14,11 @@ assert.match(html,/href="\/go\/go\.css"/);assert.match(html,/src="\/go\/go\.js"/
 console.log('Entry page and shell script use no inline styles or scripts (CSP-safe)');
 
 const elements={}, store=new Map();
-const el=id=>elements[id]||=({id,dataset:{},classList:{add(){},remove(){}},hidden:false,textContent:'',innerHTML:'',title:'',attrs:{},setAttribute(k,v){this.attrs[k]=v;},removeAttribute(k){delete this.attrs[k];},focus(){},addEventListener(){},querySelectorAll:()=>[]});
+const el=id=>elements[id]||=({id,dataset:{},classList:{add(){},remove(){}},hidden:false,textContent:'',innerHTML:'',title:'',attrs:{},setAttribute(k,v){this.attrs[k]=v;},removeAttribute(k){delete this.attrs[k];},focus(){},addEventListener(){},querySelectorAll:()=>[],querySelector(sel){return (this.found||={})[sel]||={dataset:{},hidden:false};}});
 const context=vm.createContext({document:{getElementById:el,title:'',body:{dataset:{}},addEventListener(){},hidden:false},window:{addEventListener(){},scrollTo(){}},location:{hash:'',replace(url){context.replaced=url;},assign(url){context.assigned=url;}},history:{replaceState(){},pushState(){context.pushed=(context.pushed||0)+1;},back(){context.backed=(context.backed||0)+1;}},
   confirm:message=>{(context.confirmed||(context.confirmed=[])).push(message);return context.confirmAnswer!==false;},navigator:{vibrate(){context.vibrated=(context.vibrated||0)+1;}},localStorage:{getItem:k=>store.get(k)??null,setItem:(k,v)=>store.set(k,v)},setTimeout:()=>0,clearTimeout(){},fetch:async()=>{throw new TypeError('offline');},AbortController,URL,structuredClone,atob});
 const inert=source.replace(/\n  boot\(\);\n\}\s*$/,'\n}');assert.notEqual(inert,source,'boot() auto-run not found');
-vm.runInContext(inert.replace('const state =','var state =')+'\nthis.exports={parseRoute,routeHash,connection,state,needsFullUi,api,show,screens,renderActivities,renderDevices,deviceRemoteHtml,renderDeviceRemote,remoteBlocks,remoteHtml,renderActivityRemote,CONTROLS,controlFor,volumeTarget,editorSlots,availableCommands,addButton,insertRow,moveRow,removeRow,gridRows,removeButton,editorHtml,renderEditor,screenOf,MAX_CELLS,layoutShape,startDraft,submitLayout,getLeaveGuard:()=>leaveGuard,cloneScreen,withSlots,announceHub,loadDevices,typingPlan,createTyper,openKeyboard,KEYBOARD_COMMAND,setRunningActivity,announceRunning,channelChoices,ROKU_BUILTIN_NAMES,channelRowHtml,parseRelease,installRelease,waitForHub,pauses};',context);
+vm.runInContext(inert.replace('const state =','var state =')+'\nthis.exports={parseRoute,routeHash,connection,state,needsFullUi,api,show,screens,renderActivities,renderDevices,deviceRemoteHtml,renderDeviceRemote,remoteBlocks,remoteHtml,renderActivityRemote,CONTROLS,controlFor,volumeTarget,editorSlots,availableCommands,addButton,insertRow,moveRow,removeRow,gridRows,removeButton,editorHtml,renderEditor,screenOf,MAX_CELLS,layoutShape,startDraft,submitLayout,getLeaveGuard:()=>leaveGuard,cloneScreen,withSlots,announceHub,loadDevices,typingPlan,createTyper,openKeyboard,KEYBOARD_COMMAND,setRunningActivity,syncHubActivity,announceRunning,channelChoices,ROKU_BUILTIN_NAMES,channelRowHtml,parseRelease,installRelease,waitForHub,pauses};',context);
 const {parseRoute,routeHash,connection,state,needsFullUi,api,show}=context.exports;
 
 assert.deepEqual(JSON.parse(JSON.stringify(parseRoute(''))),{name:'activities',params:[]});
@@ -76,8 +76,8 @@ console.log('Tab screens show tabs and the connectivity icon; drill-in screens s
 
 // ---- Activities home ----
 const calls=[];let outcome='completed',pending=null;
-let hubDown=false,sessionGate=null;
-context.api=async(path,body)=>{calls.push({path,...body});if(path==='session'){if(sessionGate)await sessionGate;if(hubDown){state.online=false;throw Error('down');}state.online=true;return {};}if(path==='activities/run')return {id:'op'+calls.length};return {};};
+let hubDown=false,sessionGate=null,hubState={activityId:'',estimated:true};
+context.api=async(path,body)=>{calls.push({path,...body});if(path==='activities/state')return hubState;if(path==='session'){if(sessionGate)await sessionGate;if(hubDown){state.online=false;throw Error('down');}state.online=true;return {};}if(path==='activities/run')return {id:'op'+calls.length};return {};};
 context.operation=async()=>pending?await pending:{state:outcome};
 state.online=true;
 state.devices=[{id:'1',name:'LG C5',transport:'ir',commands:['VolumeUp','VolumeDown','Play'].map(name=>({name}))},{id:'2',name:'Receiver'}];
@@ -125,6 +125,41 @@ assert.deepEqual(calls.map(c=>[c.activityId,c.fixState]),[['-1',false]]);
 assert.equal(store.get('harmony-activity'),'');assert.equal(announced.at(-1),'','stopping clears them');
 console.log('Stop sends the hub power-off request and clears the running activity');
 
+// ---- The hub's own estimate of what is running (a change made by Home Assistant or another phone) ----
+{
+  const {syncHubActivity,setRunningActivity}=context.exports;
+  let now=Date.now()+10000;context.Date=class extends Date{static now(){return now;}};
+  const sync=async hub=>{hubState=hub;calls.length=0;return syncHubActivity();};
+  now+=10000;   // clear of the settle window the earlier clicks started
+  store.set('harmony-activity','watch');
+  assert.equal(await sync({activityId:'watch',estimated:true}),false,'the hub agrees: nothing changes');
+  assert.deepEqual(calls.map(c=>c.path),['activities/state']);
+  assert.equal(await sync({activityId:'',estimated:true}),true,'the hub says nothing is running');
+  assert.equal(store.get('harmony-activity'),'');assert.equal(announced.at(-1),'','the lock-screen buttons go too');
+  assert.equal(await sync({activityId:'empty',estimated:true}),true,'another phone or Home Assistant started one');
+  assert.equal(store.get('harmony-activity'),'empty');
+  assert.equal(await sync({activityId:'-1',estimated:true}),true,'"-1" is the hub\'s power-off request');
+  assert.equal(store.get('harmony-activity'),'');
+  store.set('harmony-activity','watch');
+  assert.equal(await sync({activityId:'deleted',estimated:true}),true,'an id the hub no longer has is nothing running');
+  assert.equal(store.get('harmony-activity'),'');
+  // Just after this phone starts or stops one, the hub may not have written its estimate yet.
+  setRunningActivity('watch');
+  assert.equal(await sync({activityId:'',estimated:true}),false);assert.equal(calls.length,0,'it does not even ask inside the settle window');
+  assert.equal(store.get('harmony-activity'),'watch');
+  now+=3500;
+  assert.equal(await sync({activityId:'',estimated:true}),true,'then the hub is believed');
+  assert.equal(store.get('harmony-activity'),'');
+  // While a start is running the hub has not answered yet.
+  store.set('harmony-activity','watch');now+=10000;
+  let finish;pending=new Promise(resolve=>{finish=resolve;});outcome='completed';
+  const running=click({open:'empty'});for(let i=0;i<10;i++)await Promise.resolve();
+  assert.equal(await sync({activityId:'',estimated:true}),false,'no sync while an operation is in flight');
+  assert.equal(calls.length,0);
+  finish({state:'completed'});await running;pending=null;delete context.Date;
+  context.location.hash='#/activities';
+  console.log('The page takes the hub\'s estimate of what is running, but not mid-operation or just after its own change');
+}
 store.set('harmony-activity','watch');calls.length=0;outcome='cancelled';context.location.hash='#/activities';draw();
 const announcedBefore=announced.length;
 await click({open:'empty'});assert.equal(announced.length,announcedBefore,'a cancelled start announces nothing');
@@ -151,16 +186,77 @@ assert.equal(calls[0].path,'session');assert.ok(calls.some(c=>c.path==='activiti
 state.online=true;store.set('harmony-activity','watch');context.location.hash='#/activities';draw();
 console.log('A press while disconnected re-checks the hub: refused if it is still down, sent if it is back');
 
-calls.length=0;let release;pending=new Promise(r=>release=r);context.location.hash='#/activities';draw();
-const first=click({open:"empty"});for(let i=0;i<10;i++)await Promise.resolve();
-await click({open:'watch'});await click({fix:'watch'});
-assert.equal(calls.filter(c=>c.path==='activities/run').length,1);
-assert.match(content.innerHTML,/data-cancel/);
-await click({cancel:''});
-assert.deepEqual(calls.at(-1),{path:'operations',id:'op1',action:'cancel'});
-release({state:'cancelled'});await first;pending=null;
-assert.doesNotMatch(content.innerHTML,/data-cancel/);
-console.log('A second tap during a start is ignored and the in-flight start can be cancelled');
+// A start shows its progress on the row that was tapped, and only after BUSY_SHOW_MS; nothing is added to the list.
+{
+  const timers=[];context.setTimeout=(fn,ms)=>{timers.push({fn,ms});return timers.length;};context.clearTimeout=id=>{if(timers[id-1])timers[id-1].fn=null;};
+  const fire=async()=>{for(const t of timers)if(t.fn){const fn=t.fn;t.fn=null;fn();}for(let i=0;i<10;i++)await Promise.resolve();};
+  const listOnly=html=>assert.ok(html.startsWith('<div class="list">'),'nothing is added before the list');
+  store.set('harmony-activity','watch');state.online=true;
+
+  // quick: finished before the indication was due, so it never appears
+  calls.length=0;pending=null;outcome='completed';timers.length=0;context.location.hash='#/activities';draw();
+  const before=content.innerHTML;
+  await click({open:'empty'});
+  assert.equal(timers.length>0&&timers[0].ms,400,'the indication waits 400 ms');
+  assert.equal(content.innerHTML.includes('spinner'),false,'a quick start shows nothing at all');
+  store.set('harmony-activity','watch');context.location.hash='#/activities';draw();
+
+  // slow: after 400 ms the tapped row shows a spinner and "Stop starting", the others dim, nothing else changes
+  calls.length=0;timers.length=0;let release;pending=new Promise(r=>release=r);draw();
+  const first=click({open:"empty"});for(let i=0;i<10;i++)await Promise.resolve();
+  await click({open:'watch'});await click({fix:'watch'});
+  assert.equal(calls.filter(c=>c.path==='activities/run').length,1,'a second tap during a start is ignored');
+  assert.equal(content.innerHTML.includes('spinner'),false,'not yet');
+  await fire();
+  const html=content.innerHTML;
+  listOnly(html);
+  const rows=html.split('<div class="row"').slice(1);
+  assert.equal(rows.length,2,'the same rows as before');
+  const [watchRow,emptyRow]=rows;
+  assert.match(emptyRow,/spinner/);assert.match(emptyRow,/data-cancel[^>]*>Stop starting</);assert.match(emptyRow,/Starting…/);
+  assert.match(emptyRow,/Devices already switched stay as they are\./,'the note is on the control');
+  assert.doesNotMatch(emptyRow,/data-fix/);assert.doesNotMatch(emptyRow,/data-dim/);
+  assert.match(watchRow,/data-dim="true"/);assert.doesNotMatch(watchRow,/spinner/);
+  assert.doesNotMatch(html,/class="busy"/);
+  assert.equal(el('sr-status').textContent,'Starting… Empty','screen readers hear it');
+  await click({cancel:''});
+  assert.deepEqual(calls.at(-1),{path:'operations',id:'op1',action:'cancel'});
+  outcome='cancelled';release({state:'cancelled'});await first;pending=null;outcome='completed';
+  assert.doesNotMatch(content.innerHTML,/data-cancel|spinner/);assert.equal(el('sr-status').textContent,'');
+  assert.match(content.innerHTML,/Device state is unknown/,'the cancelled row says so');
+  assert.equal(content.innerHTML.split('Device state is unknown').length,2,'and only that row');
+  assert.match(el('notice').textContent,/Cancelled\. Devices already switched stay as they are\. Device state is unknown\./);
+  listOnly(content.innerHTML);
+
+  // a later success clears the mark
+  calls.length=0;await click({fix:'empty'});
+  assert.doesNotMatch(content.innerHTML,/Device state is unknown/);
+
+  // stopping draws on the running row: its power button becomes the spinner
+  store.set('harmony-activity','watch');context.location.hash='#/activities';calls.length=0;timers.length=0;
+  pending=new Promise(r=>release=r);draw();
+  const stopping=click({stop:''});for(let i=0;i<10;i++)await Promise.resolve();await fire();
+  const stopHtml=content.innerHTML.split('<div class="row"').slice(1)[0];
+  assert.match(stopHtml,/<span class="row-icon row-power"><svg class="spinner"/);assert.doesNotMatch(stopHtml,/data-stop/);
+  assert.match(stopHtml,/Stop powering off/);assert.match(stopHtml,/Powering off…/);
+  release({state:'completed'});await stopping;pending=null;
+  context.setTimeout=()=>0;context.clearTimeout=()=>{};
+  store.set('harmony-activity','watch');context.location.hash='#/activities';draw();
+}
+console.log('A start shows progress on the tapped row after 400 ms, with Stop starting, dimmed rows and an unknown-state mark; nothing is added to the list');
+
+// The Activities and Devices tabs float their messages (they have no reserved space).
+{
+  const rule=selector=>(css.match(new RegExp(selector.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\s*\\{([^}]*)\\}'))||[])[1]||'';
+  const floating=rule('body[data-reserve-notice=false] #notice:not([hidden])');
+  assert.match(floating,/position:\s*fixed/);assert.match(floating,/bottom:/);
+  assert.equal(screens_reserve('activities'),false);assert.equal(screens_reserve('devices'),false);
+  assert.equal(screens_reserve('setup'),true,'the other screens keep their reserved strip');
+  assert.match(css,/prefers-reduced-motion:reduce\)\{\.spinner\{animation:none\}/);
+  assert.doesNotMatch(css,/\.busy\b/);assert.doesNotMatch(source,/class="busy"/);
+  function screens_reserve(name){return !!context.exports.screens[name].reserveNotice;}
+  console.log('Activities and Devices notices float above the tab bar; reduced motion stops the spinner; the old banner is gone');
+}
 
 context.location.hash='#/devices';calls.length=0;el('notice').textContent='';outcome='failed';
 context.operation=async()=>{throw Error('hub error');};
@@ -1002,6 +1098,64 @@ console.log('Editing changes only a local draft in fixed slots; Save is one writ
   assert.match(content.innerHTML,/IR codes/);
 }
 console.log('Setup links into the original pages');
+// A controller (anyone paired who is not the owner) is shown only what they can use in Setup.
+{
+  const render=()=>{const content={innerHTML:''};X.screens.setup.render({content,actions:{},params:[],setTitle(){}});return content;};
+  const links=html=>[...html.matchAll(/<a class="row-main" href="([^"]+)"/g)].map(m=>m[1]);
+  const setupTab=()=>el('tabs').found['[data-tab=setup]'];
+  const seen=[];context.api=async(path,body)=>{seen.push(path);if(path==='session')return {role:'control',buttonPending:true,csrf:'c'};return {};};
+  state.config={hubName:'Den',activities:[]};
+
+  state.session={role:'control',csrf:'c'};delete context.window.HarmonyNative;
+  let content=render();
+  assert.deepEqual(links(content.innerHTML),[],'no owner-only links');
+  assert.doesNotMatch(content.innerHTML,/Software update|Activities|Settings|hub-name/);
+  assert.match(content.innerHTML,/data-full-access/);assert.match(content.innerHTML,/Get full access/);
+  assert.doesNotMatch(content.innerHTML,/data-hub-address/,'a browser has no hub address row');
+  context.location.hash='#/setup';X.show();assert.equal(setupTab().hidden,false,'there is something to use, so the tab stays');
+
+  // In the app the Hub address row stays for everyone, next to Get full access.
+  context.window.HarmonyNative={changeHubAddress(){context.addressAsked=true;}};
+  content=render();assert.match(content.innerHTML,/data-hub-address/);assert.match(content.innerHTML,/data-full-access/);
+  await content.onclick({target:{closest:sel=>sel==='[data-hub-address]'?{}:null}});assert.equal(context.addressAsked,true);
+
+  // Get full access asks the hub, then hands this browser to the original UI to wait for the Pair button.
+  seen.length=0;context.replaced=undefined;
+  await content.onclick({target:{closest:sel=>sel==='[data-full-access]'?{}:null}});
+  assert.equal(seen[0],'controllers/upgrade');assert.equal(context.replaced,'/');
+  context.api=async path=>{if(path==='controllers/upgrade')throw Error('Another browser is waiting for the Pair button.');return {};};
+  await content.onclick({target:{closest:sel=>sel==='[data-full-access]'?{}:null}});
+  assert.equal(el('notice').textContent,'Another browser is waiting for the Pair button.');assert.equal(el('notice').dataset.error,'true');
+
+  // A hub without a Pair button, in a browser: nothing is left, so the tab goes and the screen says so.
+  delete context.window.HarmonyNative;state.session={role:'control',csrf:'c',buttonAvailable:false};
+  content=render();assert.match(content.innerHTML,/nothing to set up/);assert.doesNotMatch(content.innerHTML,/data-full-access/);
+  X.show();assert.equal(setupTab().hidden,true);
+  // ...but in the app the Hub address row is still something.
+  context.window.HarmonyNative={changeHubAddress(){}};X.show();assert.equal(setupTab().hidden,false);delete context.window.HarmonyNative;
+
+  // The owner sees everything, and a role that changes while the page is open grows the owner rows without a reload.
+  state.session={role:'owner',csrf:'c'};content=render();
+  assert.deepEqual(links(content.innerHTML),['#/update','/#devices','/#activities','/#settings']);
+  assert.match(content.innerHTML,/hub-name/);assert.doesNotMatch(content.innerHTML,/data-full-access/,'the owner has full access already');
+  X.show();assert.equal(setupTab().hidden,false);
+  state.session={role:'control',csrf:'c',buttonAvailable:false};X.show();assert.equal(setupTab().hidden,true);
+  state.session={role:'owner',csrf:'c'};X.show();assert.equal(setupTab().hidden,false,'approved while open: the tab and rows come back');
+  // Owner-only screens still refuse someone who opens their address directly.
+  state.session={role:'control',csrf:'c'};
+  for(const route of ['#/update','#/roku']){context.location.hash=route;X.show();assert.match(el('content').innerHTML,/Only the hub owner/,route);}
+  // An empty list tells a controller who can fill it, and the owner where to.
+  const saved=state.devices;state.devices=[];state.config={activities:[]};
+  for(const [role,devices,activities] of [['control',/owner has not set any up/,/owner has not set any up/],['owner',/Add one in the full settings pages/,/Create one in the full settings pages/]]){
+    state.session={role};
+    const d={innerHTML:''},a={innerHTML:'',isConnected:true};X.renderDevices({content:d,params:[]});X.renderActivities({content:a,params:[]});
+    assert.match(d.innerHTML,devices,role);assert.match(a.innerHTML,activities,role);
+  }
+  state.devices=saved;
+  context.location.hash='#/setup';state.session={role:'owner'};
+  context.api=undefined;delete context.api;
+}
+console.log('A controller sees only Get full access (and Hub address in the app); the owner rows return when the role changes');
 // The owner can name the hub; the name is saved on the hub and announced to the app.
 {
   const announced=[];context.window.HarmonyNative={setHubName:n=>announced.push(n)};

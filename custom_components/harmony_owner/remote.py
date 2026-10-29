@@ -7,6 +7,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN, DEFAULT_NAME
+from .matching import match_commands
 
 
 def device_info(entry, api):
@@ -54,11 +55,18 @@ class HarmonyOwnerRemote(CoordinatorEntity, RemoteEntity):
     def resolve(self, command, device):
         if not device and ":" in command:
             device, command = command.split(":", 1)
-        matches = [(d["id"], command) for d in self.coordinator.data["inventory"].get("devices", [])
-                   if (not device or str(d["id"]) == str(device) or d["name"] == device)
-                   and any(c["name"] == command for c in d.get("commands", []))]
-        if len(matches) != 1:
-            raise HomeAssistantError("Choose a saved device and an unambiguous command from the hub")
+        matches = []
+        for d in self.coordinator.data["inventory"].get("devices", []):
+            if device and str(d["id"]) != str(device) and d["name"] != device:
+                continue
+            found = match_commands(command, [c["name"] for c in d.get("commands", [])])
+            if len(found) > 1:
+                raise HomeAssistantError(f"'{command}' matches more than one command on {d['name']}: {', '.join(found)}")
+            matches.extend((d["id"], name) for name in found)
+        if not matches:
+            raise HomeAssistantError(f"No device command matches '{command}'; choose a saved device and a command from the hub")
+        if len(matches) > 1:
+            raise HomeAssistantError(f"'{command}' matches commands on more than one device; name the device")
         return matches[0]
 
     async def async_send_command(self, command, **kwargs):
@@ -66,7 +74,7 @@ class HarmonyOwnerRemote(CoordinatorEntity, RemoteEntity):
         repeats = kwargs.get("num_repeats", 1)
         delay, hold = float(kwargs.get("delay_secs", 0.4)), float(kwargs.get("hold_secs", 0))
         if not isinstance(repeats, int) or not 1 <= repeats <= 20 or not 1 <= len(commands) * repeats <= 100:
-            raise HomeAssistantError("Send between 1 and 100 commands, with at most 20 repeats")
+            raise HomeAssistantError(f"Send between 1 and 100 commands, with at most 20 repeats (asked for {len(commands)} command(s) x {repeats!r} repeats)")
         if not math.isfinite(delay) or not math.isfinite(hold) or not 0 <= delay <= 10 or not 0 <= hold <= 10:
             raise HomeAssistantError("Hold and delay must be between 0 and 10 seconds")
         resolved = [self.resolve(str(c), kwargs.get("device") or kwargs.get("device_id")) for c in commands]

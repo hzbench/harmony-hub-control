@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v7
         with:
@@ -85,6 +85,9 @@ jobs:
 
       - name: Local hub API integration tests
         run: python3 tools/test_local_api.py
+
+      - name: Home Assistant integration command matching
+        run: python3 tools/test_owner_matching.py
 
       # Pulls eclipse-mosquitto:2 from Docker Hub and asserts on wall-clock
       # keepalive/reconnect timing, so it's more prone to transient

@@ -26,6 +26,8 @@ function parseRoute(hash) {
 const routeHash = (name, ...params) => '#/'+[name,...params.map(encodeURIComponent)].join('/');
 
 function notice(message, error=false) {$('notice').textContent=message;$('notice').hidden=!message;$('notice').dataset.error=String(error);}
+// On the Activities and Devices tabs the notice floats over the page (CSS); a tap puts it away.
+const dismissFloatingNotice = () => {if(document.body.dataset.reserveNotice==='false')notice('');};
 // The icons come from one sprite file. The hub serves it with `no-cache`, so a page drawn while the hub is
 // unreachable would lose every icon. The page puts the sprite in its own markup (and keeps a copy for next
 // time), so `<use href="#icon-X">` never needs the network.
@@ -116,8 +118,8 @@ const screens = {
   edit: {title:'Edit remote', parent:'setup', backTo:'/#activities', reserveNotice:true, render:renderEditor},
   device: {title:'Device', parent:'devices', reserveNotice:true, render:renderDeviceRemote},
 };
-// There is no hub-side "running" activity: like the original UI, the client
-// remembers the last one it started in localStorage.
+// The client remembers the last activity it started in localStorage, and checks it against the hub's
+// own estimate (activities/state) so a change made elsewhere (Home Assistant, another phone) shows too.
 const ACTIVITY_KEY = 'harmony-activity';
 const activeActivity = () => state.config?.activities?.find(a=>a.id===readLocal(ACTIVITY_KEY));
 // The Android app keeps Play / Mute / Volume − / Volume + buttons on the lock screen while an
@@ -133,28 +135,73 @@ function announceRunning() {
   try {window.HarmonyNative?.setRunningActivity?.(buttons.length ? JSON.stringify({id:activity.id, name:activity.name, buttons}) : '');} catch {/* no native bridge */}
 }
 // Remember which activity is running (or none, with '') and tell the app.
-function setRunningActivity(id) {writeLocal(ACTIVITY_KEY,id);announceRunning();}
+let lastLocalChange = 0;
+function setRunningActivity(id) {lastLocalChange=Date.now();writeLocal(ACTIVITY_KEY,id);announceRunning();}
+// Take the hub's estimate of what is running. Empty or "-1" (stopped), an unknown id and a restarted
+// hub all mean nothing is running. The hub writes its estimate a moment after a start or stop is
+// reported done, so for a few seconds after this phone changes it the hub's answer is not trusted yet.
+// Returns true when what the page shows changed.
+const ACTIVITY_SETTLE_MS = 3000, ACTIVITY_POLL_MS = 5000;
+async function syncHubActivity() {
+  if(activityOperation||!state.config||Date.now()-lastLocalChange<ACTIVITY_SETTLE_MS)return false;
+  const hub=await api('activities/state');
+  if(activityOperation||Date.now()-lastLocalChange<ACTIVITY_SETTLE_MS)return false;   // a start or stop finished while asking
+  const id=(state.config.activities||[]).some(a=>a.id===hub.activityId) ? hub.activityId : '';
+  if(id===readLocal(ACTIVITY_KEY))return false;
+  writeLocal(ACTIVITY_KEY,id);announceRunning();
+  return true;
+}
 const activityDevices = activity => [...new Set((activity.steps||[]).map(s=>s.deviceId).filter(Boolean))]
   .map(id=>state.devices.find(d=>d.id===id)?.name).filter(Boolean);
-let activityOperation = null;  // {id, activityId} while a start/stop is in flight
+// A start, stop or fix that is in flight: {id, activityId, kind, shown}. `id` is empty until the hub has accepted it.
+// Its progress is drawn on the row that was tapped, and only once it has run for BUSY_SHOW_MS, so a quick start
+// shows nothing at all. Nothing is added to the list, so nothing moves.
+let activityOperation = null;
+let unknownActivity = '';   // the activity whose last start, stop or fix was cancelled or failed: its devices may be half switched
+const BUSY_SHOW_MS = 400;
+const SPINNER = '<svg class="spinner" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 1-6.36 2.64"/></svg>';
+const BUSY_WORDS = {start:'Starting…', fix:'Fixing device state…', stop:'Powering off…'};
+const CANCEL_WORDS = {start:'Stop starting', fix:'Stop starting', stop:'Stop powering off'};
+const NOT_UNDONE = 'Devices already switched stay as they are.';
+// A stop is asked of the hub as "-1" and acts on whatever is running.
+const busyActivityId = () => activityOperation ? (activityOperation.activityId==='-1' ? activeActivity()?.id : activityOperation.activityId) : null;
+function announceStatus(text) {const live=$('sr-status');if(live)live.textContent=text;}
 
 function activityRow(activity) {
   const running = activeActivity()?.id===activity.id, id = escape(activity.id), name = escape(activity.name);
-  const subtitle = `<small>${escape(activityDevices(activity).join(' · ')||'No devices')}</small>`;
-  return `<div class="row" data-running="${running}">
-    ${running?`<button class="row-icon row-power" type="button" data-stop aria-label="Stop ${name}" title="Stop">${icon('Power')}</button>`:''}
-    <button class="row-main" type="button" data-open="${id}">${running?'':`<span class="row-icon">${icon('Play')}</span>`}<span class="row-text"><strong>${name}</strong>${subtitle}</span>${icon('ChevronRight')}</button>
-    <button class="row-action" type="button" data-fix="${id}" aria-label="Fix device state for ${name}" title="Fix device state">${icon('RefreshCw')}</button>
+  const drawn = !!activityOperation?.shown, mine = drawn && busyActivityId()===activity.id;
+  const unknown = !mine && unknownActivity===activity.id;
+  const text = mine ? BUSY_WORDS[activityOperation.kind] : unknown ? 'Device state is unknown' : activityDevices(activity).join(' · ')||'No devices';
+  const subtitle = `<small${unknown?' class="unknown"':''}>${escape(text)}</small>`;
+  const lead = mine ? SPINNER : icon(running?'Power':'Play');
+  const power = running ? (mine ? `<span class="row-icon row-power">${lead}</span>`
+    : `<button class="row-icon row-power" type="button" data-stop aria-label="Stop ${name}" title="Stop">${lead}</button>`) : '';
+  const action = mine
+    ? `<button class="row-cancel" type="button" data-cancel title="${NOT_UNDONE}"${activityOperation.id?'':' disabled'}>${CANCEL_WORDS[activityOperation.kind]}</button>`
+    : `<button class="row-action" type="button" data-fix="${id}" aria-label="Fix device state for ${name}" title="Fix device state">${icon('RefreshCw')}</button>`;
+  return `<div class="row" data-running="${running}"${drawn&&!mine?' data-dim="true"':''}>
+    ${power}
+    <button class="row-main" type="button" data-open="${id}">${running?'':`<span class="row-icon">${lead}</span>`}<span class="row-text"><strong>${name}</strong>${subtitle}</span>${icon('ChevronRight')}</button>
+    ${action}
   </div>`;
 }
 // Setup is a short list of links into the original pages, which keep device
 // setup, IR learning, Bluetooth pairing, activity steps, backups and the rest.
+// The fifth column says the hub only lets the owner use it, so a controller is never shown it (it would
+// only answer "Only the hub owner can..."). A new owner-only screen is hidden from controllers by
+// adding it here with `true`; the screens themselves keep their message for a direct address.
 const SETUP_LINKS = [
-  ['#/update','Archive','Software update','Install a new version of the hub’s software'],
-  ['/#devices','Radio','Devices','Add infrared, Bluetooth or Roku devices; learn IR codes'],
-  ['/#activities','SlidersHorizontal','Activities','Create activities; edit their steps and remote layouts'],
-  ['/#settings','Settings','Settings','Controllers, backups, Wi-Fi, MQTT and updates'],
+  ['#/update','Archive','Software update','Install a new version of the hub’s software',true],
+  ['/#devices','Radio','Devices','Add infrared, Bluetooth or Roku devices; learn IR codes',true],
+  ['/#activities','SlidersHorizontal','Activities','Create activities; edit their steps and remote layouts',true],
+  ['/#settings','Settings','Settings','Controllers, backups, Wi-Fi, MQTT and updates',true],
 ];
+// What this person can use in Setup. Pending and unpaired browsers never get here: they are handed to the original UI.
+const setupLinks = () => SETUP_LINKS.filter(link=>owner()||!link[4]);
+// A controller can ask to become the owner by pressing the hub's Pair button, unless the hub says it has none.
+const canGetFullAccess = () => !!state.session && !owner() && state.session.buttonAvailable!==false;
+const hasHubAddress = () => typeof window.HarmonyNative?.changeHubAddress==='function';
+const setupHasContent = () => owner() || canGetFullAccess() || hasHubAddress();
 const HUB_NAME_MAX = 40;
 // The Android app shows the hub's name in its toolbar; anywhere else this does nothing.
 function announceHub() {
@@ -173,9 +220,15 @@ async function saveHubName(name) {
   announceHub();
 }
 function renderSetup(ctx) {
-  const hubAddress = typeof window.HarmonyNative?.changeHubAddress==='function' ? `<div class="row"><button class="row-main" type="button" data-hub-address><span class="row-icon neutral">${icon('Wifi')}</span><span class="row-text"><strong>Hub address</strong><small>Change which hub this app connects to</small></span>${icon('ChevronRight')}</button></div>` : '';
-  ctx.content.onclick = event => {if(event.target.closest('[data-hub-address]')){try {window.HarmonyNative.changeHubAddress();} catch {/* no native bridge */}}};
-  ctx.content.innerHTML = (owner()?hubNameForm():'')+SETUP_LINKS.map(([href,glyph,name,hint])=>`<div class="row"><a class="row-main" href="${href}"><span class="row-icon neutral">${icon(glyph)}</span><span class="row-text"><strong>${name}</strong><small>${hint}</small></span>${icon('ChevronRight')}</a></div>`).join('')+hubAddress;
+  if(!setupHasContent())return placeholder(ctx,'There is nothing to set up here.');
+  const fullAccess = canGetFullAccess() ? `<div class="row"><button class="row-main" type="button" data-full-access><span class="row-icon neutral">${icon('LogIn')}</span><span class="row-text"><strong>Get full access</strong><small>Ask to become an owner; you will be asked to press the hub’s Pair button</small></span>${icon('ChevronRight')}</button></div>` : '';
+  const hubAddress = hasHubAddress() ? `<div class="row"><button class="row-main" type="button" data-hub-address><span class="row-icon neutral">${icon('Wifi')}</span><span class="row-text"><strong>Hub address</strong><small>Change which hub this app connects to</small></span>${icon('ChevronRight')}</button></div>` : '';
+  ctx.content.onclick = async event => {
+    if(event.target.closest('[data-hub-address]')){try {window.HarmonyNative.changeHubAddress();} catch {/* no native bridge */}}
+    // The hub starts a 90 s wait for its Pair button; boot() then hands this browser to the original UI, which shows it.
+    else if(event.target.closest('[data-full-access]')){try {await api('controllers/upgrade',{});await boot();} catch(error) {notice(error.message,true);}}
+  };
+  ctx.content.innerHTML = (owner()?hubNameForm():'')+setupLinks().map(([href,glyph,name,hint])=>`<div class="row"><a class="row-main" href="${href}"><span class="row-icon neutral">${icon(glyph)}</span><span class="row-text"><strong>${name}</strong><small>${hint}</small></span>${icon('ChevronRight')}</a></div>`).join('')+fullAccess+hubAddress;
   if(!owner())return;
   ctx.content.onsubmit = async event => {
     event.preventDefault();
@@ -445,10 +498,11 @@ function renderRoku(ctx) {
     } catch(error) {say(error.message,true);}
   };
 }
+// What an empty list says: the owner is pointed at the settings pages, a controller is told who can fill it.
+const emptyList = (what, verb) => `<div class="placeholder"><p>${owner()?`No ${what} yet. ${verb} in the full settings pages.`:`No ${what} yet. The owner has not set any up.`}</p></div>`;
 function renderActivities(ctx) {
   const activities = state.config.activities||[];
-  ctx.content.innerHTML = `${activityOperation?'<div class="busy" role="status"><span>Working…</span><button type="button" data-cancel>Cancel</button></div>':''}
-    <div class="list">${activities.map(activityRow).join('')||'<div class="placeholder"><p>No activities yet. Create one in the full settings pages.</p></div>'}</div>`;
+  ctx.content.innerHTML = `<div class="list">${activities.map(activityRow).join('')||emptyList('activities','Create one')}</div>`;
   // Starting an activity takes seconds and the user may have navigated away
   // by the time it finishes: only touch the screen while it is still showing.
   const onScreen = () => ctx.content.isConnected && parseRoute(location.hash).name==='activities';
@@ -457,17 +511,31 @@ function renderActivities(ctx) {
   async function run(activityId, {fixState=false}={}) {
     if(activityOperation)return;
     if(!await ensureOnline())return say(OFFLINE_NOTICE,true);
+    if(activityOperation)return;   // a second tap while the hub was being asked
+    const kind = activityId==='-1' ? 'stop' : fixState ? 'fix' : 'start', current = activityOperation = {id:'', activityId, kind, shown:false};
+    current.timer = setTimeout(()=>{
+      if(activityOperation!==current)return;
+      current.shown = true;redraw();
+      announceStatus(`${BUSY_WORDS[kind]} ${state.config.activities?.find(a=>a.id===busyActivityId())?.name||''}`.trim());
+    },BUSY_SHOW_MS);
+    const target = () => busyActivityId() || activityId;
+    let accepted = false;
     try {
-      const op=await api('activities/run',{activityId,fixState});activityOperation={id:op.id,activityId};redraw();say('');
+      const op=await api('activities/run',{activityId,fixState});current.id = op.id;accepted = true;
+      if(current.shown)redraw();say('');
       const result=await operation(op.id,180);
-      if(result.state==='completed')return true;
-      say('Cancelled. Device state is unknown.',true);
-    } catch(error) {say(error.message,true);}
-    finally {activityOperation=null;redraw();}
+      if(result.state==='completed'){unknownActivity = '';return true;}
+      unknownActivity = target();
+      say(`Cancelled. ${NOT_UNDONE} Device state is unknown.`,true);
+    } catch(error) {
+      if(accepted)unknownActivity = target();
+      say(error.message,true);
+    }
+    finally {clearTimeout(current.timer);activityOperation=null;announceStatus('');redraw();}
   }
   ctx.content.onclick = async event => {
     const button = event.target.closest('button');if(!button)return;
-    if('cancel' in button.dataset){if(activityOperation)await api('operations',{id:activityOperation.id,action:'cancel'}).catch(error=>say(error.message,true));return;}
+    if('cancel' in button.dataset){if(activityOperation?.id)await api('operations',{id:activityOperation.id,action:'cancel'}).catch(error=>say(error.message,true));return;}
     if(activityOperation)return;
     if(button.dataset.open){
       if(activeActivity()?.id===button.dataset.open){location.hash=routeHash('activity',button.dataset.open);return;}
@@ -488,7 +556,7 @@ function deviceRow(device) {
   return `<div class="row"><a class="row-main" href="${routeHash('device',device.id)}"><span class="row-icon neutral">${icon(Object.hasOwn(DEVICE_ICONS,device.type)?DEVICE_ICONS[device.type]:'Radio')}</span><span class="row-text"><strong>${escape(device.name)}</strong><small>${escape(type)} · ${count} ${count===1?'command':'commands'}</small></span>${icon('ChevronRight')}</a></div>`;
 }
 function renderDevices(ctx) {
-  ctx.content.innerHTML = `<div class="list">${state.devices.map(deviceRow).join('')||'<div class="placeholder"><p>No devices yet. Add one in the full settings pages.</p></div>'}</div>`;
+  ctx.content.innerHTML = `<div class="list">${state.devices.map(deviceRow).join('')||emptyList('devices','Add one')}</div>`;
 }
 // [slot, label, icon, command-name aliases]. Slot, label and aliases must match
 // app.js's `controls` (test_go_shell.mjs fails if they drift); only the icon
@@ -1276,6 +1344,7 @@ function show() {
   $('connection').hidden = name==='edit' || (remote ? false : (!!screen.parent || toolbarHasConnection()));
   try {window.HarmonyNative?.setToolbarVisible?.(!remote);window.HarmonyNative?.setConnection?.($('connection').dataset.state);} catch {/* no native bridge */}
   $('tabs').hidden = !!screen.parent;
+  $('tabs').querySelector('[data-tab=setup]').hidden = !setupHasContent();
   $('tabs').querySelectorAll('[data-tab]').forEach(a=>{if(a.dataset.tab===screen.tab)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current');});
   notice('');
   $('content').innerHTML='';
@@ -1296,6 +1365,7 @@ async function boot() {
     if(needsFullUi(session,state.config))return location.replace('/');
     announceHub();
     await loadDevices();
+    await syncHubActivity().catch(()=>{/* the list still shows the phone's own value */});
     if(!location.hash)history.replaceState(null,'',routeHash('activities'));
     show();
   } catch(error) {
@@ -1306,6 +1376,16 @@ async function boot() {
   }
 }
 // Check on the hub often while it is unreachable, so the icon recovers soon after it comes back.
+// While the page is in front, look at what the hub says is running every few seconds; a hidden page stops.
+let activityTimer;
+function scheduleActivityPoll() {clearTimeout(activityTimer);if(!document.hidden)activityTimer=setTimeout(pollActivity,ACTIVITY_POLL_MS);}
+async function pollActivity() {
+  try {
+    if(state.online!==false&&state.session&&await syncHubActivity()&&parseRoute(location.hash).name==='activities')
+      renderActivities({params:[],content:$('content'),actions:$('header-actions'),setTitle(){}});
+  } catch {/* api() has already flagged the connection state; pollSession() keeps retrying */}
+  finally {scheduleActivityPoll();}
+}
 function schedulePoll() {clearTimeout(sessionTimer);sessionTimer=setTimeout(pollSession,state.online===false?3000:15000);}
 async function pollSession() {
   try {
@@ -1321,7 +1401,9 @@ if(typeof document!=='undefined'&&$('content')) {
   const recheck = () => {connection(null);boot();};
   $('connection').addEventListener('click',recheck);
   window.harmonyCheckConnection = recheck;  // the app's toolbar icon calls this
-  schedulePoll();
+  $('notice').addEventListener('click',dismissFloatingNotice);
+  schedulePoll();scheduleActivityPoll();
+  document.addEventListener('visibilitychange',()=>{clearTimeout(activityTimer);if(!document.hidden)pollActivity();});
   // Coming back to the app, or the phone's network returning, is the moment to look again.
   const wake = () => {if(state.online!==true&&!document.hidden){clearTimeout(sessionTimer);pollSession();}};
   window.addEventListener('online',wake);document.addEventListener('visibilitychange',wake);
