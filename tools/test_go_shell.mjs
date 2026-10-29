@@ -15,10 +15,10 @@ console.log('Entry page and shell script use no inline styles or scripts (CSP-sa
 
 const elements={}, store=new Map();
 const el=id=>elements[id]||=({id,dataset:{},classList:{add(){},remove(){}},hidden:false,textContent:'',innerHTML:'',title:'',attrs:{},setAttribute(k,v){this.attrs[k]=v;},removeAttribute(k){delete this.attrs[k];},focus(){},addEventListener(){},querySelectorAll:()=>[],querySelector(sel){return (this.found||={})[sel]||={dataset:{},hidden:false};}});
-const context=vm.createContext({document:{getElementById:el,title:'',body:{dataset:{}},addEventListener(){},hidden:false},window:{addEventListener(){},scrollTo(){}},location:{hash:'',replace(url){context.replaced=url;},assign(url){context.assigned=url;}},history:{replaceState(){},pushState(){context.pushed=(context.pushed||0)+1;},back(){context.backed=(context.backed||0)+1;}},
+const context=vm.createContext({document:{getElementById:el,title:'',body:{dataset:{}},addEventListener(type,fn,capture){(context.listeners||(context.listeners=[])).push({type,fn,capture});},createElement:tag=>({tagName:tag.toUpperCase()}),hidden:false},window:{addEventListener(){},scrollTo(){}},location:{hash:'',replace(url){context.replaced=url;},assign(url){context.assigned=url;}},history:{replaceState(){},pushState(){context.pushed=(context.pushed||0)+1;},back(){context.backed=(context.backed||0)+1;}},
   confirm:message=>{(context.confirmed||(context.confirmed=[])).push(message);return context.confirmAnswer!==false;},navigator:{vibrate(){context.vibrated=(context.vibrated||0)+1;}},localStorage:{getItem:k=>store.get(k)??null,setItem:(k,v)=>store.set(k,v)},setTimeout:()=>0,clearTimeout(){},fetch:async()=>{throw new TypeError('offline');},AbortController,URL,structuredClone,atob});
 const inert=source.replace(/\n  boot\(\);\n\}\s*$/,'\n}');assert.notEqual(inert,source,'boot() auto-run not found');
-vm.runInContext(inert.replace('const state =','var state =')+'\nthis.exports={parseRoute,routeHash,connection,state,needsFullUi,api,show,screens,renderActivities,renderDevices,deviceRemoteHtml,renderDeviceRemote,remoteBlocks,remoteHtml,renderActivityRemote,CONTROLS,controlFor,volumeTarget,editorSlots,availableCommands,addButton,insertRow,moveRow,removeRow,gridRows,canAddRow,setRowCount,setPinnedCount,rowCountsOf,removeButton,editorHtml,renderEditor,screenOf,MAX_CELLS,layoutShape,startDraft,submitLayout,getLeaveGuard:()=>leaveGuard,cloneScreen,withSlots,announceHub,loadDevices,typingPlan,createTyper,openKeyboard,KEYBOARD_COMMAND,setRunningActivity,syncHubActivity,announceRunning,channelChoices,ROKU_BUILTIN_NAMES,channelRowHtml,parseRelease,installRelease,waitForHub,pauses};',context);
+vm.runInContext(inert.replace('const state =','var state =')+'\nthis.exports={parseRoute,routeHash,connection,state,needsFullUi,api,show,screens,renderActivities,renderDevices,deviceRemoteHtml,renderDeviceRemote,remoteBlocks,remoteHtml,renderActivityRemote,CONTROLS,controlFor,volumeTarget,editorSlots,availableCommands,addButton,insertRow,moveRow,removeRow,gridRows,canAddRow,setRowCount,setPinnedCount,rowCountsOf,removeButton,editorHtml,renderEditor,screenOf,MAX_CELLS,layoutShape,startDraft,submitLayout,getLeaveGuard:()=>leaveGuard,cloneScreen,withSlots,announceHub,loadDevices,typingPlan,createTyper,openKeyboard,KEYBOARD_COMMAND,setRunningActivity,syncHubActivity,announceRunning,channelChoices,ROKU_BUILTIN_NAMES,channelRowHtml,channelFace,parseRelease,installRelease,waitForHub,pauses};',context);
 const {parseRoute,routeHash,connection,state,needsFullUi,api,show}=context.exports;
 
 assert.deepEqual(JSON.parse(JSON.stringify(parseRoute(''))),{name:'activities',params:[]});
@@ -608,6 +608,33 @@ console.log('Hardware volume drives the open device remote, else the running act
   assert.deepEqual(pair(act({volumeDeviceId:'box'}),'mute'),['tv','Mute']);
   state.devices=[tv,bar];
 }
+// Roku favorite channels show their picture, which the hub serves; the name is the label and the fallback.
+{
+  const roku={id:'roku_tv',name:'TV Roku',transport:'roku',commands:[{name:'Home'},{name:'Netflix',channel:'12'},{name:'Hulu & More',channel:'2285'}]};
+  state.devices=[roku];
+  const cellOf=(command,deviceId='roku_tv')=>({deviceId,command,slot:0});
+  const netflix=context.exports.remoteHtml({columns:4,cells:[cellOf('Netflix')],pinned:[]}).body;
+  assert.match(netflix,/<img class="cell-icon" src="\/api\/v1\/roku\/icon\?deviceId=roku_tv&amp;id=12" alt="" draggable="false" data-name="Netflix">/);
+  assert.match(netflix,/aria-label="Netflix" title="Netflix"/,'the name is still the button\'s label');assert.doesNotMatch(netflix,/cell-text/);
+  assert.match(context.exports.remoteHtml({columns:4,cells:[cellOf('Hulu & More')],pinned:[]}).body,/data-name="Hulu &amp; More"/,'the name is escaped');
+  assert.doesNotMatch(context.exports.remoteHtml({columns:4,cells:[cellOf('Home')],pinned:[]}).body,/<img/,'a built-in command keeps its own icon');
+  assert.match(context.exports.remoteHtml({columns:4,cells:[cellOf('Netflix','gone')],pinned:[]}).body,/^$/,'a channel whose device is gone is not drawn');
+  assert.match(context.exports.remoteHtml({columns:4,cells:[],pinned:[cellOf('Netflix')]}).pinned,/cell-icon/,'the fixed row shows it too');
+  const square=context.exports.editorHtml({id:'x',steps:[],screen:context.exports.cloneScreen({columns:4,cells:[cellOf('Netflix')],pinned:[]})},{extraRows:0});
+  assert.match(square,/<img class="cell-icon" src="\/api\/v1\/roku\/icon\?deviceId=roku_tv&amp;id=12"/,'the layout editor shows it');
+  assert.match(context.exports.channelRowHtml({id:'12',name:'Netflix',checked:true},'roku_tv'),/<img class="channel-icon" src="\/api\/v1\/roku\/icon\?deviceId=roku_tv&amp;id=12"/);
+  assert.doesNotMatch(context.exports.channelRowHtml({id:'12',name:'Netflix',checked:false},'roku_tv'),/<img/,'only picked channels have a picture in the picker');
+  assert.doesNotMatch(context.exports.channelRowHtml({id:'12',name:'Netflix',checked:true}),/<img/);
+  // A picture that fails to load is replaced by the channel's name (or removed from the picker).
+  const onError=context.listeners.find(l=>l.type==='error'&&l.capture===true).fn;
+  let replaced=null;
+  onError({target:{tagName:'IMG',classList:{contains:c=>c==='cell-icon'},dataset:{name:'Netflix'},replaceWith:x=>{replaced=x;}}});
+  assert.deepEqual([replaced.tagName,replaced.className,replaced.textContent],['SPAN','cell-text','Netflix']);
+  let removed=false;onError({target:{tagName:'IMG',classList:{contains:c=>c==='channel-icon'},remove(){removed=true;}}});assert.equal(removed,true);
+  replaced=null;onError({target:{tagName:'IMG',classList:{contains:()=>false},replaceWith:x=>{replaced=x;}}});onError({target:{tagName:'DIV'}});assert.equal(replaced,null,'other images and elements are left alone');
+  state.devices=[tv,bar];
+}
+console.log('Roku channel pictures: shown on the remote, fixed row, editor and picker; the name is the label and the fallback');
 console.log('The volume keys and Mute follow the device chosen for the activity, and fall back to Automatic when it is gone');
 
 // ---- Edit remote layout ----

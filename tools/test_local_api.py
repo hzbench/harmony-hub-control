@@ -425,6 +425,7 @@ def run():
                         b'<app id="tvinput.hdmi1" type="tvin" version="1.0.0">HDMI 1</app><app id="bad id" type="appl" version="1">Spaced</app>'
                         b'<app id="13" type="appl" version="1">Quote "x"</app><app id="12" type="appl" version="9">Netflix again</app>'
                         b'<app id="20" type="appl" version="1"/><app id="21" type="appl" version="1">Caf&#233; &#x26; Bar</app></apps>']
+            icons = {}   # channel id -> (status, body) for /query/icon/<id>
             class FakeRoku(http.server.BaseHTTPRequestHandler):
                 def log_message(self, *args): pass
                 def reply(self, status, body=b""):
@@ -432,6 +433,7 @@ def run():
                 def do_GET(self):
                     seen.append(("GET", self.path))
                     if self.path == "/query/apps": return self.reply(200, apps_xml[0])
+                    if self.path.startswith("/query/icon/"): return self.reply(*icons.get(self.path.rsplit("/", 1)[1], (404, b"")))
                     self.reply(200, b"<device-info><friendly-device-name>Fake Roku</friendly-device-name></device-info>" if self.path == "/query/device-info" else b"")
                 def do_POST(self):
                     seen.append(("POST", self.path))
@@ -580,6 +582,52 @@ def run():
             assert request("configuration", {"revision": current["revision"], "configuration": current}, cookie, csrf)[0] == 400
             current = request("configuration", cookie=cookie)[1]; current["activities"] = []
             assert request("configuration", {"revision": current["revision"], "configuration": current}, cookie, csrf)[0] == 200
+            # Channel icons: fetched from the Roku once, kept on the hub, served from the hub's own address.
+            def raw_get(path, cookie=""):
+                conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+                conn.request("GET", path, headers={"Host": f"127.0.0.1:{port}", "Cookie": cookie})
+                response = conn.getresponse(); body = response.read(); headers = dict(response.getheaders()); status = response.status; conn.close()
+                return status, headers, body
+            png = b"\x89PNG\r\n\x1a\n" + bytes(range(256)) + b"\x00\x00end"
+            jpg = b"\xff\xd8\xff\xe0" + bytes(range(256)) + b"\x00tail"
+            icons.update({"12": (200, png), "2285": (200, jpg), "13": (200, b"<html>not a picture</html>"), "14": (200, png + b"x" * 200000)})
+            favorites = [{"id": i, "name": n} for i, n in (("12", "Netflix"), ("2285", "Hulu"), ("13", "Fake"), ("14", "Huge"), ("15", "Offline"))]
+            assert roku_config([dict(tv, channels=favorites), box]) == 200
+            commands = {c["name"]: c for c in request("network/devices", cookie=cookie)[1]["devices"][0]["commands"]}
+            assert commands["Netflix"]["channel"] == "12" and "channel" not in commands["Home"], "channel commands carry the id the page asks for"
+            icon_dir = local / "roku-icons"; before = len([x for x in seen if x[1].startswith("/query/icon/")])
+            assert raw_get("/api/v1/roku/icon?deviceId=roku_tv&id=12")[0] == 401, "a paired controller is needed"
+            status, headers, body = raw_get("/api/v1/roku/icon?deviceId=roku_tv&id=12", cookie)
+            assert status == 200 and body == png and headers["Content-Type"] == "image/png" and headers["Content-Length"] == str(len(png)), (status, headers)
+            assert headers["X-Content-Type-Options"] == "nosniff" and "max-age" in headers["Cache-Control"]
+            status, headers, body = raw_get("/api/v1/roku/icon?deviceId=roku_tv&id=2285", cookie)
+            assert status == 200 and body == jpg and headers["Content-Type"] == "image/jpeg"
+            icons["12"] = (404, b"")   # the Roku is now off or has changed its mind: the kept copy answers
+            assert raw_get("/api/v1/roku/icon?deviceId=roku_tv&id=12", cookie)[2] == png
+            assert len([x for x in seen if x[1].startswith("/query/icon/")]) - before == 2, "one fetch per channel, the second request came from the hub"
+            for query, expect in (("deviceId=roku_tv&id=99", 404), ("deviceId=nobody&id=12", 404), ("deviceId=roku_box&id=12", 404), ("deviceId=roku_tv&id=..%2Fx", 400),
+                                  ("deviceId=roku_tv", 400), ("id=12", 400), ("deviceId=bad%2Fid&id=12", 400)):
+                assert raw_get("/api/v1/roku/icon?" + query, cookie)[0] == expect, query
+            assert raw_get("/api/v1/roku/icon?deviceId=roku_tv&id=13", cookie)[0] == 404, "a reply that is not a picture is not kept or served"
+            assert raw_get("/api/v1/roku/icon?deviceId=roku_tv&id=14", cookie)[0] == 404, "a picture over the size limit is refused"
+            assert raw_get("/api/v1/roku/icon?deviceId=roku_tv&id=15", cookie)[0] == 404, "a Roku with no such icon and no kept copy"
+            assert sorted(x.name for x in icon_dir.iterdir()) == ["roku_tv-12.img", "roku_tv-2285.img"], "only good pictures are kept"
+            # A copy older than a week is fetched again, but a stale one still answers when the Roku does not.
+            old = time.time() - 8 * 24 * 3600
+            os.utime(icon_dir / "roku_tv-12.img", (old, old))
+            assert raw_get("/api/v1/roku/icon?deviceId=roku_tv&id=12", cookie)[2] == png, "stale copy served while the Roku says no"
+            png2 = b"\x89PNG\r\n\x1a\n" + b"\x00new picture"
+            icons["12"] = (200, png2)
+            assert raw_get("/api/v1/roku/icon?deviceId=roku_tv&id=12", cookie)[2] == png2 and (icon_dir / "roku_tv-12.img").read_bytes() == png2, "refreshed"
+            # The kept pictures never grow without bound: the oldest go first.
+            for i in range(60):
+                path = icon_dir / f"filler-{i}.img"; path.write_bytes(png); os.utime(path, (old - i, old - i))
+            icons["2285"] = (200, jpg); os.utime(icon_dir / "roku_tv-2285.img", (old, old))
+            assert raw_get("/api/v1/roku/icon?deviceId=roku_tv&id=2285", cookie)[2] == jpg
+            kept = sorted(x.name for x in icon_dir.iterdir())
+            assert len(kept) == 48 and "roku_tv-12.img" in kept and "roku_tv-2285.img" in kept, len(kept)
+            assert "filler-0.img" in kept and "filler-59.img" not in kept and sum(n.startswith("filler-") for n in kept) == 46, "the oldest pictures were the ones removed"
+            print("Roku icons: fetched once and kept, served as the right type, refused when not a picture or too big, refreshed after a week, bounded in number, and only for saved favorites passed")
             assert roku_config([]) == 200 and request("network/devices", cookie=cookie)[1]["devices"] == []
             fake.shutdown()
             print("Roku: validation, private-address rule, command catalog, key sends, test query, refusals and activity steps passed")

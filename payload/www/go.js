@@ -281,7 +281,7 @@ function channelChoices(favorites, installed) {
     return {...c, checked, blocked};
   });
 }
-const channelRowHtml = c => `<li><label class="channel-row${c.blocked?' blocked':''}"><input type="checkbox" data-channel="${escape(c.id)}" data-name="${escape(c.name)}"${c.checked?' checked':''}${c.blocked?' disabled':''}><span>${escape(c.name)}${c.gone?' <small>(not installed)</small>':''}${c.blocked?` <small>${escape(c.blocked)}</small>`:''}</span></label></li>`;
+const channelRowHtml = (c, deviceId) => `<li><label class="channel-row${c.blocked?' blocked':''}"><input type="checkbox" data-channel="${escape(c.id)}" data-name="${escape(c.name)}"${c.checked?' checked':''}${c.blocked?' disabled':''}>${deviceId&&c.checked?`<img class="channel-icon" src="${escape(rokuIconUrl(deviceId,c.id))}" alt="" draggable="false">`:''}<span>${escape(c.name)}${c.gone?' <small>(not installed)</small>':''}${c.blocked?` <small>${escape(c.blocked)}</small>`:''}</span></label></li>`;
 const channelsSheetHtml = name => `<div class="sheet-handle" aria-hidden="true"></div><h2 id="sheet-title">Favorite channels</h2>
   <p class="sheet-note" data-channel-status>Choose up to ${ROKU_CHANNELS_MAX} channels to show as buttons for ${escape(name)}.</p>
   <button class="add-row" type="button" data-find-channels>${icon('RefreshCw')}Find channels on the Roku</button>
@@ -433,7 +433,7 @@ function renderRoku(ctx) {
     let installed = null, busy = false;
     // An answer can arrive after the sheet was closed (or reused for something else): then there is nothing to update.
     const status = text => {const node = sheet.open && sheet.querySelector('[data-channel-status]');if(node)node.textContent = text;};
-    const redraw = () => {const node = sheet.open && sheet.querySelector('[data-channel-list]');if(node)node.innerHTML = channelChoices(favorites,installed).map(channelRowHtml).join('') || '<li class="sheet-note">None chosen yet.</li>';};
+    const redraw = () => {const node = sheet.open && sheet.querySelector('[data-channel-list]');if(node)node.innerHTML = channelChoices(favorites,installed).map(c=>channelRowHtml(c,device.id)).join('') || '<li class="sheet-note">None chosen yet.</li>';};
     presentSheet(sheet, channelsSheetHtml(device.name), async event => {
       if(busy)return;
       if(event.target.closest('[data-find-channels]')) {
@@ -682,6 +682,13 @@ function remoteBlocks(cells, crossRow=0, columns=4) {
   return crossed ? [...grid(rest.filter(e=>rowOf(e)<crossRow),0,crossRow-1), {kind:'cross',pick,corner}, ...grid(rest.filter(e=>rowOf(e)>=crossRow),crossRow,last)]
     : grid(rest,0,last);
 }
+// A Roku favorite channel shows its picture, which the hub fetches from the Roku and serves from its own address (the
+// page may not talk to the Roku). The name stays as the button's label, and is shown instead if the picture cannot load.
+const rokuIconUrl = (deviceId, channelId) => `/api/v1/roku/icon?deviceId=${encodeURIComponent(deviceId)}&id=${encodeURIComponent(channelId)}`;
+function channelFace(cell) {
+  const live = resolveCell(cell);
+  return live?.command.channel ? `<img class="cell-icon" src="${escape(rokuIconUrl(live.device.id,live.command.channel))}" alt="" draggable="false" data-name="${escape(cell.command)}">` : '';
+}
 function cellButton({cell,control}, extra='', customFace='') {
   if(isKeyboardCell(cell)) {
     const device = state.devices.find(d=>d.id===cell.deviceId), label = `Type on ${device?.name||'the device'}`;
@@ -689,7 +696,7 @@ function cellButton({cell,control}, extra='', customFace='') {
   }
   const label = control?.[1] || cell.command;
   // A command with no known icon shows its own name instead of a generic glyph.
-  const face = customFace || (control?.[2] ? icon(control[2]) : `<span class="cell-text">${escape(cell.command)}</span>`);
+  const face = customFace || (control?.[2] ? icon(control[2]) : channelFace(cell) || `<span class="cell-text">${escape(cell.command)}</span>`);
   return `<button class="cell ${extra}" type="button" data-command="${escape(cell.command)}" data-device="${escape(cell.deviceId)}" aria-label="${escape(label)}" title="${escape(label)}">${face}</button>`;
 }
 const crossHtml = (pick, corner={}) => `<div class="dpad">${CROSS_SQUARES.map(key=>{const e=pick[key]||corner[key];return e?cellButton(e,key):'<span></span>';}).join('')}</div>`;
@@ -792,6 +799,15 @@ function bindCommands(root) {
 }
 ['blur','pagehide'].forEach(name=>window.addEventListener(name,()=>stopHold(false)));
 document.addEventListener('visibilitychange',()=>{if(document.hidden)stopHold(false);});
+// A channel picture that cannot be loaded (the Roku is off and the hub has none kept) falls back to the channel's name.
+// An image's error event does not bubble, hence the capture; the page's security policy rules out an inline handler.
+document.addEventListener('error',event=>{
+  const image = event.target;
+  if(image?.tagName!=='IMG')return;
+  if(image.classList.contains('cell-icon')) {
+    const text = document.createElement('span');text.className = 'cell-text';text.textContent = image.dataset.name||'';image.replaceWith(text);
+  } else if(image.classList.contains('channel-icon'))image.remove();
+},true);
 // --- end command sending ---
 
 // Android wrapper hook (MainActivity.onKeyDown): the volume keys act on the
@@ -1173,7 +1189,7 @@ function editCellHtml(entry, zone, slot, extra='') {
   if(!entry)return `<button class="cell empty${extra?' '+extra:''}" type="button" data-zone="${zone}" data-slot="${slot}"${CORNERS.includes(extra)?` data-corner="${extra}"`:''} aria-label="Empty slot. Tap to add a button."><svg aria-hidden="true"><use href="#icon-Plus"></use></svg></button>`;
   const control = controlFor(entry.command), live = resolveCell(entry);
   const label = control?.[1] || entry.command;
-  const face = control?.[2] ? icon(control[2]) : `<span class="cell-text">${escape(entry.command)}</span>`;
+  const face = control?.[2] ? icon(control[2]) : channelFace(entry) || `<span class="cell-text">${escape(entry.command)}</span>`;
   const note = live ? '' : ' (its device or command no longer exists)';
   return `<button class="cell${extra?' '+extra:''}${live?'':' missing'}" type="button" data-zone="${zone}" data-slot="${slot}" aria-label="${escape(label)}${note}. Press and hold to remove." title="${escape(label)}${note}">${face}</button>`;
 }
