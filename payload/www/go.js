@@ -1050,8 +1050,14 @@ function addArrowPad(activity) {
 function editorSlots(zone, extent, columns, extraRows=0, capacity=MAX_CELLS) {
   if(zone==='pinned')return columns;
   const total = Math.ceil((extent+1)/columns)*columns + extraRows*columns;
-  return Math.min(total, capacity);
+  // Only whole rows are offered: the squares an arrow pad holds can leave room for a short last row, which would
+  // look like a mistake. A button already out there is still drawn, with the squares of its row.
+  const whole = Math.floor(capacity/columns)*columns, used = Math.min(Math.ceil(extent/columns)*columns, capacity);
+  return Math.min(total, Math.max(whole, used));
 }
+// Whether Add row can still make a row of squares (the grid is out of room at the hub's 32 positions, less what
+// the arrow pad holds).
+const canAddRow = (activity, extraRows=0) => gridRows(activity,extraRows+1).rowCount>gridRows(activity,extraRows).rowCount;
 
 // ---- Draft and save ----
 // Compared as strings to tell whether a layout changed.
@@ -1170,13 +1176,13 @@ function editorHelpHtml() {
     <button type="button" class="sheet-cancel sheet-done" data-sheet-cancel>Done</button>`;
 }
 function editorHtml(model, ui) {
-  const full = zoneList(model,'cells').length>=MAX_CELLS, pad = arrowPadPlan(model);
+  const full = zoneList(model,'cells').length>=MAX_CELLS, pad = arrowPadPlan(model), room = canAddRow(model,ui.extraRows||0);
   return `${ui.placing?`<p class="edit-hint">${ui.placing==='row'?'Tap where the new row should go.':'Tap where the arrow pad should go.'}</p>`:ui.editRows?'<p class="edit-hint">Move a row with the arrows, add a row above it with +, or remove a blank row with −. Rows stay on their side of the arrow pad.</p>':''}
     ${editGridHtml(model,ui)}
     ${ui.editRows?'<button class="add-row" type="button" data-rows-done>Done</button>':ui.placing?'<button class="add-row" type="button" data-place-cancel>Cancel</button>'
       :pad.crossed?`<button class="add-row" type="button" data-move-pad>${icon('Plus')}Move arrow pad</button>`
       :`<button class="add-row" type="button" data-add-pad ${pad.add.length?'':'disabled'}>${icon('Plus')}Add arrow pad</button>${pad.reason?`<p class="edit-hint">${pad.reason}</p>`:''}`}
-    ${ui.placing||ui.editRows?'':(full?'<p class="edit-hint">The remote has reached its button limit.</p>':'<button class="add-row" type="button" data-add-row>'+icon('Plus')+'Add row</button>')+'<button class="add-row" type="button" data-edit-rows>'+icon('List')+'Edit rows</button>'}
+    ${ui.placing||ui.editRows?'':(full?'<p class="edit-hint">The remote has reached its button limit.</p>':!room?`<p class="edit-hint">There is no room for another row${pad.crossed?`: the arrow pad uses ${MAX_CELLS-gridRows(model).free.length} of the ${MAX_CELLS} positions`:''}.</p>`:'<button class="add-row" type="button" data-add-row>'+icon('Plus')+'Add row</button>')+'<button class="add-row" type="button" data-edit-rows>'+icon('List')+'Edit rows</button>'}
     <div class="pinned"><p class="pinned-caption">Fixed bottom row</p>${editPinnedHtml(model)}</div>`;
 }
 

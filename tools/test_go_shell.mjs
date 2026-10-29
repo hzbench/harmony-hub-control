@@ -18,7 +18,7 @@ const el=id=>elements[id]||=({id,dataset:{},classList:{add(){},remove(){}},hidde
 const context=vm.createContext({document:{getElementById:el,title:'',body:{dataset:{}},addEventListener(){},hidden:false},window:{addEventListener(){},scrollTo(){}},location:{hash:'',replace(url){context.replaced=url;},assign(url){context.assigned=url;}},history:{replaceState(){},pushState(){context.pushed=(context.pushed||0)+1;},back(){context.backed=(context.backed||0)+1;}},
   confirm:message=>{(context.confirmed||(context.confirmed=[])).push(message);return context.confirmAnswer!==false;},navigator:{vibrate(){context.vibrated=(context.vibrated||0)+1;}},localStorage:{getItem:k=>store.get(k)??null,setItem:(k,v)=>store.set(k,v)},setTimeout:()=>0,clearTimeout(){},fetch:async()=>{throw new TypeError('offline');},AbortController,URL,structuredClone,atob});
 const inert=source.replace(/\n  boot\(\);\n\}\s*$/,'\n}');assert.notEqual(inert,source,'boot() auto-run not found');
-vm.runInContext(inert.replace('const state =','var state =')+'\nthis.exports={parseRoute,routeHash,connection,state,needsFullUi,api,show,screens,renderActivities,renderDevices,deviceRemoteHtml,renderDeviceRemote,remoteBlocks,remoteHtml,renderActivityRemote,CONTROLS,controlFor,volumeTarget,editorSlots,availableCommands,addButton,insertRow,moveRow,removeRow,gridRows,removeButton,editorHtml,renderEditor,screenOf,MAX_CELLS,layoutShape,startDraft,submitLayout,getLeaveGuard:()=>leaveGuard,cloneScreen,withSlots,announceHub,loadDevices,typingPlan,createTyper,openKeyboard,KEYBOARD_COMMAND,setRunningActivity,syncHubActivity,announceRunning,channelChoices,ROKU_BUILTIN_NAMES,channelRowHtml,parseRelease,installRelease,waitForHub,pauses};',context);
+vm.runInContext(inert.replace('const state =','var state =')+'\nthis.exports={parseRoute,routeHash,connection,state,needsFullUi,api,show,screens,renderActivities,renderDevices,deviceRemoteHtml,renderDeviceRemote,remoteBlocks,remoteHtml,renderActivityRemote,CONTROLS,controlFor,volumeTarget,editorSlots,availableCommands,addButton,insertRow,moveRow,removeRow,gridRows,canAddRow,removeButton,editorHtml,renderEditor,screenOf,MAX_CELLS,layoutShape,startDraft,submitLayout,getLeaveGuard:()=>leaveGuard,cloneScreen,withSlots,announceHub,loadDevices,typingPlan,createTyper,openKeyboard,KEYBOARD_COMMAND,setRunningActivity,syncHubActivity,announceRunning,channelChoices,ROKU_BUILTIN_NAMES,channelRowHtml,parseRelease,installRelease,waitForHub,pauses};',context);
 const {parseRoute,routeHash,connection,state,needsFullUi,api,show}=context.exports;
 
 assert.deepEqual(JSON.parse(JSON.stringify(parseRoute(''))),{name:'activities',params:[]});
@@ -588,6 +588,34 @@ assert.deepEqual([0,7,8,31,32].map(n=>X.editorSlots('cells',n,4)),[4,8,12,32,32]
 assert.equal(X.editorSlots('cells',8,4,1),16);assert.equal(X.editorSlots('cells',30,4,5),32);
 assert.equal(X.editorSlots('cells',3,2),4);assert.equal(X.editorSlots('pinned',1,4),4);assert.equal(X.editorSlots('pinned',0,2),2);
 console.log('Editor always offers an empty row beyond the last used slot, honours Add row, and stops at 32 slots');
+// The arrow pad holds 9 of the 32 positions, leaving 23: only whole rows are drawn, never a row of 3.
+assert.deepEqual([0,1,2,3,4,5,6].map(k=>X.editorSlots('cells',0,4,k,23)),[4,8,12,16,20,20,20],'rows of 4 until the room runs out, then no more');
+assert.equal(X.editorSlots('cells',22,4,0,23),23,'a button already in the short tail is still shown with its row');
+assert.equal(X.editorSlots('cells',0,3,20,23),21);assert.equal(X.editorSlots('cells',0,2,20,23),22);
+{
+  const emptied=(html,zone)=>[...html.matchAll(new RegExp(`class="cell empty(?: (?:ok|tl|tr|bl|br))?" type="button" data-zone="${zone}" data-slot="(\\d+)"`,'g'))].map(m=>+m[1]);
+  const filled=(html,zone)=>[...html.matchAll(new RegExp(`class="cell(?: (?!empty)[a-z]+)?(?: missing)?" type="button" data-zone="${zone}" data-slot="(\\d+)" aria-label`,'g'))].map(m=>+m[1]);
+  const pad=(cells=[])=>({id:'p',steps:[{deviceId:'tv'}],screen:X.cloneScreen({columns:4,cells:[sc('Up',28),sc('Down',29),sc('Left',30),sc('Right',31),...cells],pinned:[]})});
+  const withPad=pad();
+  assert.equal(X.gridRows(withPad).crossed,true);assert.equal(X.gridRows(withPad).free.length,23);
+  const counts=[];for(let k=0;k<8;k++){counts.push(X.gridRows(withPad,k).rowCount*4);}
+  assert.deepEqual(counts,[4,8,12,16,20,20,20,20],'no row of 3 at the end');
+  assert.equal(X.canAddRow(withPad,3),true);assert.equal(X.canAddRow(withPad,4),false);
+  const html=X.editorHtml(withPad,{extraRows:4});
+  const plainSquares=h=>(h.match(/class="cell empty" type="button" data-zone="cells"/g)||[]).length;   // the arrow pad's own five squares are not counted
+  assert.equal(plainSquares(html),20,'the last row has all four squares');
+  assert.doesNotMatch(html,/data-add-row/);assert.match(html,/no room for another row: the arrow pad uses 9 of the 32 positions\./);
+  assert.match(X.editorHtml(withPad,{extraRows:3}),/data-add-row/,'Add row is offered while a whole row still fits');
+  // Without the arrow pad all 32 positions are usable and the note is not shown.
+  const plain={id:'q',steps:[],screen:X.cloneScreen({columns:4,cells:[],pinned:[]})};
+  assert.equal(X.gridRows(plain,7).rowCount,8);assert.equal(X.canAddRow(plain,7),false);
+  assert.match(X.editorHtml(plain,{extraRows:7}),/There is no room for another row\./);
+  // Buttons already out in the short tail (placed before this change) are not lost.
+  const tail=pad([sc('Mute',21)]);
+  const tailHtml=X.editorHtml(tail,{extraRows:0});
+  assert.equal(plainSquares(tailHtml),22,'the whole short tail is drawn: 23 squares, one of them the button');assert.ok(filled(tailHtml,'cells').includes(21));
+}
+console.log('With the arrow pad, only whole rows of squares are offered, and Add row says when none fits');
 
 // Available commands: start-step devices, minus placed (grid or footer) and volume.
 state.devices=[tv,bar];
