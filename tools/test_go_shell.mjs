@@ -581,6 +581,35 @@ assert.deepEqual(J(await press('up')),[['bar2','VolUp']]);
 store.set('harmony-activity','');assert.deepEqual(J(await press('up')),[]);
 console.log('Hardware volume drives the open device remote, else the running activity');
 
+// An activity with two devices that have volume: the owner can say which one the volume keys, and Mute, drive.
+{
+  const J2=v=>JSON.parse(JSON.stringify(v));
+  const soundOnly={id:'amp',name:'Amp',transport:'ir',commands:[{name:'VolumeUp'},{name:'VolumeDown'}]};
+  const silent={id:'box',name:'Box',transport:'ir',commands:[{name:'Play'}]};
+  state.devices=[tv,bar,soundOnly,silent];
+  const act=extra=>({id:'a',steps:[{deviceId:'tv'},{deviceId:'bar'}],...extra});
+  const at=(a,slot)=>J2(context.exports.volumeTarget(a,slot));
+  const pair=(a,slot)=>{const r=at(a,slot);return r&&[r.device.id,r.command];};
+  assert.deepEqual(pair(act(),'volumeup'),['tv','VolumeUp'],'Automatic: the first device in the start steps');
+  assert.deepEqual(pair(act({volumeDeviceId:'bar'}),'volumeup'),['bar','VolUp'],'the chosen device takes the volume keys');
+  assert.deepEqual(pair(act({volumeDeviceId:'bar'}),'volumedown'),['bar','VolDn']);
+  assert.deepEqual(pair(act({volumeDeviceId:'bar'}),'mute'),['bar','Mute'],'and Mute');
+  assert.deepEqual(pair(act({volumeDeviceId:'bar'}),'play'),pair(act(),'play'),'Play is not part of volume');
+  assert.deepEqual(pair(act({volumeDeviceId:'tv'}),'volumeup'),['tv','VolumeUp']);
+  // The choice wins over a volume button placed on the remote.
+  const placed=act({screen:{columns:4,cells:[{deviceId:'tv',command:'VolumeUp',slot:0}],pinned:[]}});
+  assert.deepEqual(pair(placed,'volumeup'),['tv','VolumeUp']);assert.deepEqual(pair({...placed,volumeDeviceId:'bar'},'volumeup'),['bar','VolUp']);
+  // A chosen device with no Mute gives no Mute rather than another device's.
+  assert.equal(at(act({steps:[{deviceId:'tv'},{deviceId:'amp'}],volumeDeviceId:'amp'}),'mute'),null);
+  assert.deepEqual(pair(act({steps:[{deviceId:'tv'},{deviceId:'amp'}],volumeDeviceId:'amp'}),'volumeup'),['amp','VolumeUp']);
+  // A choice that no longer works is ignored: the device is gone, or has no volume commands.
+  assert.deepEqual(pair(act({volumeDeviceId:'gone'}),'volumeup'),['tv','VolumeUp']);
+  assert.deepEqual(pair(act({volumeDeviceId:'box'}),'volumeup'),['tv','VolumeUp']);
+  assert.deepEqual(pair(act({volumeDeviceId:'box'}),'mute'),['tv','Mute']);
+  state.devices=[tv,bar];
+}
+console.log('The volume keys and Mute follow the device chosen for the activity, and fall back to Automatic when it is gone');
+
 // ---- Edit remote layout ----
 const X=context.exports;
 const sc=(command,slot,deviceId='tv')=>({deviceId,command,slot});

@@ -799,8 +799,20 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden)stopHold(fa
 // and command still exist, as in app.js); the new editor can't place volume,
 // so otherwise fall back to the first start-step device with a volume command.
 let hardwareVolumeBusy = false;
+// A device the owner chose for the activity (Setup > Activities) owns the volume keys and Mute, ahead of everything
+// below. If it was deleted or has lost its volume commands, the choice is ignored and the order below applies.
+const VOLUME_SLOTS = ['volumeup','volumedown','mute'];
+function chosenVolumeDevice(activity) {
+  const device = activity.volumeDeviceId && state.devices.find(d=>d.id===activity.volumeDeviceId);
+  return device && ['volumeup','volumedown'].some(slot=>matchCommand(device.commands||[],CONTROLS.find(c=>c[0]===slot)[3])) ? device : null;
+}
 function volumeTarget(activity, slot) {
   const aliases = CONTROLS.find(c=>c[0]===slot)[3];
+  const chosen = VOLUME_SLOTS.includes(slot) && chosenVolumeDevice(activity);
+  if(chosen) {   // no Mute on the chosen device means no Mute button, not a different device's
+    const command = matchCommand(chosen.commands||[],aliases);
+    return command ? {device:chosen, command:command.name} : null;
+  }
   // What the person sees on the remote comes first: the grid, then the fixed row. Only then the devices'
   // own commands, so the lock screen's Play is the Roku's Play when that is what the remote shows,
   // not a sound bar's Play_Pause that happens to come first in the start steps.
