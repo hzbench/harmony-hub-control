@@ -664,6 +664,15 @@ function crossSplit(entries, occupied) {
   return {crossed, pick, corner, spare, vacated, rest};
 }
 // `crossRow` is how many grid rows sit above the cross (0: at the top).
+// Buttons per row. `screen.rowCounts` maps a grid row (as drawn, the arrow pad's squares closed up) to 1..columns
+// buttons; a row not listed has `columns`. In a row of n, only the first n columns are used and the buttons share
+// the width. `screen.pinnedCount` is the same for the fixed bottom row. Slots stay numbered on the `columns`-wide
+// canvas, so a short row still uses `columns` slot numbers and every saved layout stays valid.
+const rowCountsOf = (screen, columns=screen?.columns||4) => Object.fromEntries(Object.entries(screen?.rowCounts||{})
+  .filter(([row,n])=>/^\d+$/.test(row)&&Number.isInteger(n)&&n>=1&&n<columns).map(([row,n])=>[+row,n]));
+const pinnedCountOf = (screen, columns=screen?.columns||4) => Number.isInteger(screen?.pinnedCount)&&screen.pinnedCount>=1&&screen.pinnedCount<columns ? screen.pinnedCount : columns;
+// How many squares a row is drawn with: its count, or more if buttons already sit further along (never hide one).
+const rowSize = (counts, columns, row, entries) => Math.max(counts[row]??columns, ...entries.filter(e=>Math.floor(e.slot/columns)===row).map(e=>e.slot%columns+1));
 const crossRowOf = screen => Number.isInteger(screen?.crossRow)&&screen.crossRow>0 ? Math.min(screen.crossRow,GRID_SLOTS) : 0;
 function remoteBlocks(cells, crossRow=0, columns=4) {
   const {crossed, pick, corner, rest} = crossSplit(visibleEntries(cells, GRID_SLOTS), new Set(withSlots(cells,GRID_SLOTS).map(c=>c.slot)));
@@ -685,12 +694,25 @@ function cellButton({cell,control}, extra='', customFace='') {
 }
 const crossHtml = (pick, corner={}) => `<div class="dpad">${CROSS_SQUARES.map(key=>{const e=pick[key]||corner[key];return e?cellButton(e,key):'<span></span>';}).join('')}</div>`;
 // Rows `from` to `to` of `columns` slots. A row with no buttons stays as a blank row, like a gap inside one.
-function gridHtml(entries, columns, from=0, to=-1) {
+function gridHtml(entries, columns, from=0, to=-1, counts={}) {
+  if(Object.keys(counts).length)return spanGridHtml(entries, columns, from, to, counts);
   const rows = new Map();
   for(const e of entries){const row=Math.floor(e.slot/columns);if(!rows.has(row))rows.set(row,[]);rows.get(row).push(e);}
   const cells = Array.from({length:Math.max(0,to-from+1)},(_,i)=>from+i).flatMap(row=>Array.from({length:columns},(_,col)=>{
     const e = rows.get(row)?.find(x=>x.slot===row*columns+col);return e?cellButton(e):'<span></span>';}));
   return `<div class="cells" data-columns="${escape(String(columns))}">${cells.join('')}</div>`;
+}
+// Rows with their own button counts: a 12-column grid, so a row of 1, 2, 3 or 4 divides it evenly.
+function spanGridHtml(entries, columns, from, to, counts) {
+  const cells = [];
+  for(let row=from;row<=to;row++){
+    const size = rowSize(counts,columns,row,entries), width = `w${12/size}`;
+    for(let col=0;col<size;col++){
+      const e = entries.find(x=>x.slot===row*columns+col);
+      cells.push(e?cellButton(e,width):`<span class="${width}"></span>`);
+    }
+  }
+  return `<div class="cells spans" data-columns="12">${cells.join('')}</div>`;
 }
 // The fixed row: its buttons share the whole width, whether there are four or one.
 function pinnedRowHtml(entries) {
@@ -698,7 +720,7 @@ function pinnedRowHtml(entries) {
 }
 function remoteHtml(screen) {
   const columns = screen?.columns || 4;
-  const body = remoteBlocks(screen?.cells,crossRowOf(screen),columns).map(block=>block.kind==='cross'?crossHtml(block.pick,block.corner):gridHtml(block.entries,columns,block.from,block.to)).join('');
+  const body = remoteBlocks(screen?.cells,crossRowOf(screen),columns).map(block=>block.kind==='cross'?crossHtml(block.pick,block.corner):gridHtml(block.entries,columns,block.from,block.to,rowCountsOf(screen,columns))).join('');
   // The pinned footer is one row in the order set (no cross), the buttons filling its width.
   const pinned = visibleEntries(screen?.pinned, columns);
   return {body, pinned: pinned.length ? pinnedRowHtml(pinned) : ''};
@@ -907,7 +929,9 @@ const screenOf = activity => {
   return activity.screen;
 };
 const zoneList = (activity, zone) => screenOf(activity)[zone];
-const zoneCapacity = (activity, zone) => zone==='pinned' ? (screenOf(activity).columns||4) : MAX_CELLS;
+const zoneCapacity = (activity, zone) => zone==='pinned' ? pinnedSize(screenOf(activity)) : MAX_CELLS;
+// The fixed row offers its count of squares, or more if it already holds more.
+const pinnedSize = screen => Math.max(pinnedCountOf(screen), (screen.pinned||[]).length);
 const isPlaced = (activity, deviceId, command) => ['cells','pinned'].some(zone=>zoneList(activity,zone).some(c=>c.deviceId===deviceId&&c.command===command));
 // Commands of the devices this activity starts, minus ones already on the remote
 // and the volume pair (the hardware keys handle those).
@@ -976,6 +1000,12 @@ function arrowPadPlan(activity) {
 // move one row later. `side` only matters at the arrow pad's own place: above it, or below it. Rows are counted
 // the way the editor shows them (the squares the arrow pad holds are closed up), so the new slots are worked out
 // there and mapped back. Returns {moved: how many buttons moved}, or false when one would be pushed past the end.
+// Rows are renumbered by an edit; their button counts follow. `to(row)` gives the new row, or -1 to drop its count.
+function remapRowCounts(screen, to) {
+  const next = {};
+  for(const [row,n] of Object.entries(rowCountsOf(screen))){const at=to(+row);if(at>=0)next[at]=n;}
+  if(Object.keys(next).length)screen.rowCounts = next;else delete screen.rowCounts;
+}
 function insertRow(activity, row, side, extraRows=0) {
   const screen = screenOf(activity), columns = screen.columns||4;
   const all = withSlots(screen.cells,MAX_CELLS).map(cell=>({cell,control:controlFor(cell.command),slot:cell.slot}));
@@ -985,12 +1015,76 @@ function insertRow(activity, row, side, extraRows=0) {
   if(moving.some(e=>e.slot+columns>=free.length))return false;
   const to = new Map(moving.map(e=>[e.cell,free[e.slot+columns]]));
   screen.cells = all.map(e=>to.has(e.cell)?{...e.cell,slot:to.get(e.cell)}:e.cell).sort((a,b)=>a.slot-b.slot);
+  remapRowCounts(screen,r=>r>=row?r+1:r);
   if(crossed) {
     const extent = rest.reduce((most,e)=>Math.max(most,e.slot+1),0);
     const at = Math.min(crossRowOf(screen), Math.ceil(editorSlots('cells',extent,columns,extraRows,free.length)/columns));
     if(row<at||(row===at&&side==='above'))screen.crossRow = at+1;
   }
   return {moved:moving.length};
+}
+// The scrolling grid as the editor draws it: the squares the arrow pad holds are closed up, `free[n]` is the real
+// slot behind drawn position n, `rowCount` the rows drawn (including `extraRows` of room) and `at` the drawn row the
+// arrow pad sits before. The row edits below renumber slots in that drawn space and map back.
+function gridRows(activity, extraRows=0) {
+  const screen = screenOf(activity), columns = screen.columns||4;
+  const all = withSlots(screen.cells,MAX_CELLS).map(cell=>({cell,control:controlFor(cell.command),slot:cell.slot}));
+  const {crossed, vacated, rest} = crossSplit(all, new Set(all.map(e=>e.slot)));
+  const free = Array.from({length:MAX_CELLS},(_,slot)=>slot).filter(slot=>!vacated.includes(slot));
+  const extent = rest.reduce((most,e)=>Math.max(most,e.slot+1),0);
+  const rowCount = Math.ceil(editorSlots('cells',extent,columns,extraRows,free.length)/columns);
+  const rowOf = e => Math.floor(e.slot/columns);
+  return {screen, columns, all, crossed, rest, free, rowCount, rowOf, at:crossed?Math.min(crossRowOf(screen),rowCount):rowCount,
+    last:rest.reduce((most,e)=>Math.max(most,rowOf(e)),-1)};
+}
+// Moves every button to the drawn position mapSlot() gives it; false (and nothing changed) if one would fall off the grid.
+function applyRowMap(g, mapSlot) {
+  const to = new Map();
+  for(const e of g.rest){const n=mapSlot(e.slot);if(n<0||n>=g.free.length)return false;if(n!==e.slot)to.set(e.cell,g.free[n]);}
+  g.screen.cells = g.all.map(e=>to.has(e.cell)?{...e.cell,slot:to.get(e.cell)}:e.cell).sort((a,b)=>a.slot-b.slot);
+  return true;
+}
+// Swaps drawn row `row` with the one above (dir -1) or below (dir 1), buttons and gaps together. A row never moves
+// across the arrow pad (move the pad to change which side a row is on).
+function moveRow(activity, row, dir, extraRows=0) {
+  const g = gridRows(activity,extraRows), other = row+dir;
+  if(!(dir===1||dir===-1)||row<0||other<0||row>=g.rowCount||other>=g.rowCount)return false;
+  if(g.crossed&&(row<g.at)!==(other<g.at))return false;
+  if(!applyRowMap(g,s=>{const r=Math.floor(s/g.columns);return r===row?s+dir*g.columns:r===other?s-dir*g.columns:s;}))return false;
+  remapRowCounts(g.screen,r=>r===row?other:r===other?row:r);
+  return true;
+}
+// Closes up a blank row: the rows below move up one (and the arrow pad with them if the row was above it).
+function removeRow(activity, row, extraRows=0) {
+  const g = gridRows(activity,extraRows);
+  if(row<0||row>=g.rowCount||g.rest.some(e=>g.rowOf(e)===row))return false;
+  if(!applyRowMap(g,s=>Math.floor(s/g.columns)>row?s-g.columns:s))return false;
+  remapRowCounts(g.screen,r=>r===row?-1:r>row?r-1:r);
+  if(g.crossed&&row<g.at)g.screen.crossRow = g.at-1;
+  return true;
+}
+// Sets how many buttons a row holds (1 to `columns`). Buttons that no longer fit the row's new squares are packed
+// into its first ones in order; if there are more buttons than squares nothing changes and it returns false.
+function setRowCount(activity, row, n, extraRows=0) {
+  const g = gridRows(activity,extraRows), {columns, screen} = g;
+  if(!Number.isInteger(n)||n<1||n>columns||row<0||row>=g.rowCount)return false;
+  const here = g.rest.filter(e=>g.rowOf(e)===row).sort((a,b)=>a.slot-b.slot);
+  if(here.length>n)return false;
+  if(here.some(e=>e.slot%columns>=n)) {
+    const packed = new Map(here.map((e,i)=>[e.slot,row*columns+i]));
+    if(!applyRowMap(g,s=>packed.get(s)??s))return false;
+  }
+  const counts = rowCountsOf(screen,columns);
+  if(n<columns)counts[row]=n;else delete counts[row];
+  if(Object.keys(counts).length)screen.rowCounts = counts;else delete screen.rowCounts;
+  return true;
+}
+// The same for the fixed bottom row: false (nothing changed) when it holds more buttons than the new count.
+function setPinnedCount(activity, n) {
+  const screen = screenOf(activity), columns = screen.columns||4;
+  if(!Number.isInteger(n)||n<1||n>columns||screen.pinned.length>n)return false;
+  if(n<columns)screen.pinnedCount = n;else delete screen.pinnedCount;
+  return true;
 }
 function addArrowPad(activity) {
   const {add} = arrowPadPlan(activity), list = zoneList(activity,'cells');
@@ -1013,15 +1107,25 @@ function addArrowPad(activity) {
 function editorSlots(zone, extent, columns, extraRows=0, capacity=MAX_CELLS) {
   if(zone==='pinned')return columns;
   const total = Math.ceil((extent+1)/columns)*columns + extraRows*columns;
-  return Math.min(total, capacity);
+  // Only whole rows are offered: the squares an arrow pad holds can leave room for a short last row, which would
+  // look like a mistake. A button already out there is still drawn, with the squares of its row.
+  const whole = Math.floor(capacity/columns)*columns, used = Math.min(Math.ceil(extent/columns)*columns, capacity);
+  return Math.min(total, Math.max(whole, used));
 }
+// Whether Add row can still make a row of squares (the grid is out of room at the hub's 32 positions, less what
+// the arrow pad holds).
+const canAddRow = (activity, extraRows=0) => gridRows(activity,extraRows+1).rowCount>gridRows(activity,extraRows).rowCount;
 
 // ---- Draft and save ----
 // Compared as strings to tell whether a layout changed.
-const layoutShape = screen => {const s=cloneScreen(screen);return JSON.stringify([s.columns,s.crossRow,s.cells,s.pinned]);};
+const layoutShape = screen => {const s=cloneScreen(screen);return JSON.stringify([s.columns,s.crossRow,s.cells,s.pinned,s.rowCounts||null,s.pinnedCount||null]);};
 // What the editor compares: the layout as the editor would start from it.
 const editedShape = activity => layoutShape(startDraft(activity).draft);
-const cloneScreen = screen => {const columns=screen?.columns||4;return {columns, crossRow:crossRowOf(screen), cells:withSlots(screen?.cells,MAX_CELLS), pinned:packSlots(withSlots(screen?.pinned,columns))};};
+const cloneScreen = screen => {
+  const columns = screen?.columns||4, counts = rowCountsOf(screen,columns), pinnedCount = pinnedCountOf(screen,columns);
+  return {columns, crossRow:crossRowOf(screen), cells:withSlots(screen?.cells,MAX_CELLS), pinned:packSlots(withSlots(screen?.pinned,columns)),
+    ...(Object.keys(counts).length?{rowCounts:counts}:{}), ...(pinnedCount<columns?{pinnedCount}:{})};
+};
 // The editor always starts from the hub's current layout. `base` is that
 // layout: Save later compares the hub against it, not against whatever it is
 // by then, to notice someone else's change.
@@ -1046,6 +1150,7 @@ async function submitLayout(id, draft, base, confirmReplace) {
   if(!activity)throw Error('This activity no longer exists on the hub.');
   if(editedShape(activity)!==base&&!confirmReplace())return false;
   activity.screen = {...(activity.screen||{}), columns:draft.columns, crossRow:draft.crossRow, cells:draft.cells, pinned:draft.pinned};
+  for(const key of ['rowCounts','pinnedCount'])if(draft[key]!==undefined)activity.screen[key] = draft[key];else delete activity.screen[key];
   if(draft.movedKeyboard)delete activity.keyboard;
   await api('configuration',{revision:fresh.revision, configuration:fresh});
   state.config = await api('configuration');
@@ -1070,8 +1175,12 @@ function editGridHtml(activity, ui) {
   const free = Array.from({length:MAX_CELLS},(_,slot)=>slot).filter(slot=>!vacated.includes(slot));
   const extent = rest.reduce((most,e)=>Math.max(most,e.slot+1),0);
   const slots = editorSlots('cells', extent, columns, ui.extraRows, free.length);
-  const squares = Array.from({length:slots},(_,at)=>{const e=rest.find(x=>x.slot===at);return e?editCellHtml(e.cell,'cells',e.cell.slot):editCellHtml(null,'cells',free[at]);});
-  const rows = Array.from({length:Math.ceil(squares.length/columns)},(_,row)=>squares.slice(row*columns,(row+1)*columns));
+  const counts = rowCountsOf(activity.screen,columns), spans = Object.keys(counts).length>0;
+  const rows = Array.from({length:Math.ceil(slots/columns)},(_,row)=>{
+    const size = rowSize(counts,columns,row,rest), width = spans?`w${12/size}`:'';
+    return Array.from({length:size},(_,col)=>row*columns+col).filter(at=>at<slots).map(at=>{
+      const e = rest.find(x=>x.slot===at);return e?editCellHtml(e.cell,'cells',e.cell.slot,width):editCellHtml(null,'cells',free[at],width);});
+  });
   const crossCell = key => {const e=pick[key]||corner[key];return e?editCellHtml(e.cell,'cells',e.cell.slot,key):spare[key]!==undefined?editCellHtml(null,'cells',spare[key],key):'<span></span>';};
   const at = Math.min(crossRowOf(activity.screen),rows.length);
   // Items top to bottom: grid rows, the cross at its row, and (while choosing a
@@ -1086,12 +1195,24 @@ function editGridHtml(activity, ui) {
       if(ui.placing&&!(crossed&&row===at))items.push({bar:row});
       if(crossed&&row===at)items.push({cross:true});
     }
-    if(row<rows.length)items.push({row:rows[row]});
+    if(row<rows.length){if(ui.editRows)items.push({tools:row});items.push({row:rows[row]});}
   }
   const out = [];let run = [];
-  const flush = () => {if(run.length)out.push(`<div class="cells edit-grid" data-columns="${escape(String(columns))}">${run.join('')}</div>`);run=[];};
+  const flush = () => {if(run.length)out.push(`<div class="cells edit-grid${spans?' spans':''}" data-columns="${spans?12:escape(String(columns))}">${run.join('')}</div>`);run=[];};
+  // Row-editing mode: a strip above each row. Up and down stay on their side of the arrow pad; only a blank row
+  // with something after it can be removed (the room after the last button is not a row to remove).
+  const g = ui.editRows ? gridRows(activity,ui.extraRows) : null;
+  const toolsHtml = row => {
+    const blank = !g.rest.some(e=>g.rowOf(e)===row);
+    const up = row>0&&!(g.crossed&&row===g.at), down = row+1<g.rowCount&&!(g.crossed&&row+1===g.at), remove = blank&&(row<g.last||(g.crossed&&row<g.at));
+    const tool = (attr,glyph,label,on) => `<button type="button" class="row-tool" data-row-${attr}="${row}" aria-label="${label} row ${row+1}"${on?'':' disabled'}>${icon(glyph)}</button>`;
+    const size = rowSize(counts,columns,row,g.rest), held = g.rest.filter(e=>g.rowOf(e)===row).length;
+    const perRow = Array.from({length:columns},(_,i)=>i+1).map(n=>`<button type="button" class="row-count" data-row-count="${row}" data-n="${n}" aria-label="${n} per row, row ${row+1}" aria-pressed="${n===size}"${held>n?' disabled':''}>${n}</button>`).join('');
+    return `<div class="row-tools"><span class="row-tools-label">Row ${row+1}${blank?' (blank)':''}</span><span class="row-counts" role="group" aria-label="Buttons in row ${row+1}">${perRow}</span>${tool('up','ChevronUp','Move up',up)}${tool('down','ChevronDown','Move down',down)}${tool('insert','Plus','Add a row above',true)}${tool('remove','Minus','Remove blank',remove)}</div>`;
+  };
   for(const item of items){
     if(item.row){run.push(...item.row);continue;}
+    if(item.tools!==undefined){flush();out.push(toolsHtml(item.tools));continue;}
     flush();
     out.push(item.cross?`<div class="dpad">${CROSS_SQUARES.map(crossCell).join('')}</div>`:`<button class="place-bar" type="button" data-place-row="${item.bar}"${item.side?` data-place-side="${item.side}"`:''}>${ui.placing==='row'?'Add a row here':'Place arrow pad here'}</button>`);
   }
@@ -1101,9 +1222,9 @@ function editGridHtml(activity, ui) {
 // The editor's fixed row matches the remote: the buttons share the width, plus one
 // "+" square for the next free slot while there is room.
 function editPinnedHtml(activity) {
-  const list = zoneList(activity,'pinned'), columns = screenOf(activity).columns||4;
+  const list = zoneList(activity,'pinned'), size = pinnedSize(screenOf(activity));
   const cells = [...list].sort((a,b)=>a.slot-b.slot).map(c=>editCellHtml(c,'pinned',c.slot));
-  if(list.length<columns)cells.push(editCellHtml(null,'pinned',list.length));
+  if(list.length<size)cells.push(editCellHtml(null,'pinned',list.length));
   return `<div class="cells pinned-row edit-grid">${cells.join('')}</div>`;
 }
 // The devices that can type (a Roku, say), which the Keyboard button can be for.
@@ -1116,20 +1237,25 @@ function editorHelpHtml() {
       <li>Press and hold a button to remove it.</li>
       <li>Add arrow pad puts the arrow keys in a cross; Move arrow pad changes where it sits.</li>
       <li>Add row puts an empty row where you tap: above, between or below your buttons.</li>
+      <li>Edit rows moves a row up or down, adds a row above it, removes a blank one, or sets how many buttons a row holds (they share its width). The fixed bottom row has its own count.</li>
       <li>The bottom row stays on screen while you use the remote.</li>
       <li>Nothing changes until you tap Save.</li>
     </ul>
     <button type="button" class="sheet-cancel sheet-done" data-sheet-cancel>Done</button>`;
 }
+function pinnedCountHtml(model) {
+  const screen = screenOf(model), columns = screen.columns||4, size = pinnedSize(screen);
+  return `<div class="row-tools"><span class="row-tools-label">Buttons in this row</span><span class="row-counts" role="group" aria-label="Buttons in the fixed row">${Array.from({length:columns},(_,i)=>i+1).map(n=>`<button type="button" class="row-count" data-pinned-count="${n}" aria-label="${n} in the fixed row" aria-pressed="${n===size}"${screen.pinned.length>n?' disabled':''}>${n}</button>`).join('')}</span></div>`;
+}
 function editorHtml(model, ui) {
-  const full = zoneList(model,'cells').length>=MAX_CELLS, pad = arrowPadPlan(model);
-  return `${ui.placing?`<p class="edit-hint">${ui.placing==='row'?'Tap where the new row should go.':'Tap where the arrow pad should go.'}</p>`:''}
+  const full = zoneList(model,'cells').length>=MAX_CELLS, pad = arrowPadPlan(model), room = canAddRow(model,ui.extraRows||0);
+  return `${ui.placing?`<p class="edit-hint">${ui.placing==='row'?'Tap where the new row should go.':'Tap where the arrow pad should go.'}</p>`:ui.editRows?'<p class="edit-hint">Move a row with the arrows, add a row above it with +, remove a blank row with −, or pick how many buttons it holds. Rows stay on their side of the arrow pad.</p>':''}
     ${editGridHtml(model,ui)}
-    ${ui.placing?'<button class="add-row" type="button" data-place-cancel>Cancel</button>'
+    ${ui.editRows?'<button class="add-row" type="button" data-rows-done>Done</button>':ui.placing?'<button class="add-row" type="button" data-place-cancel>Cancel</button>'
       :pad.crossed?`<button class="add-row" type="button" data-move-pad>${icon('Plus')}Move arrow pad</button>`
       :`<button class="add-row" type="button" data-add-pad ${pad.add.length?'':'disabled'}>${icon('Plus')}Add arrow pad</button>${pad.reason?`<p class="edit-hint">${pad.reason}</p>`:''}`}
-    ${ui.placing?'':full?'<p class="edit-hint">The remote has reached its button limit.</p>':'<button class="add-row" type="button" data-add-row>'+icon('Plus')+'Add row</button>'}
-    <div class="pinned"><p class="pinned-caption">Fixed bottom row</p>${editPinnedHtml(model)}</div>`;
+    ${ui.placing||ui.editRows?'':(full?'<p class="edit-hint">The remote has reached its button limit.</p>':!room?`<p class="edit-hint">There is no room for another row${pad.crossed?`: the arrow pad uses ${MAX_CELLS-gridRows(model).free.length} of the ${MAX_CELLS} positions`:''}.</p>`:'<button class="add-row" type="button" data-add-row>'+icon('Plus')+'Add row</button>')+'<button class="add-row" type="button" data-edit-rows>'+icon('List')+'Edit rows</button>'}
+    <div class="pinned"><p class="pinned-caption">Fixed bottom row</p>${ui.editRows?pinnedCountHtml(model):''}${editPinnedHtml(model)}</div>`;
 }
 
 const LONG_PRESS_MS = 350, MOVE_SLOP = 10;
@@ -1259,6 +1385,26 @@ function renderEditor(ctx) {
       draft.crossRow = row;ui.placing = false;changed();
     }
     else if(event.target.closest('[data-add-row]')){ui.placing='row';draw();}
+    else if(event.target.closest('[data-edit-rows]')){ui.editRows=true;draw();}
+    else if(event.target.closest('[data-rows-done]')){ui.editRows=false;draw();}
+    else if(event.target.closest('[data-row-count]')){
+      const button = event.target.closest('[data-row-count]');
+      if(!setRowCount(model(),+button.dataset.rowCount,+button.dataset.n,ui.extraRows)){notice('Move or remove a button first: this row holds more than that.',true);draw();}
+      else changed();
+    }
+    else if(event.target.closest('[data-pinned-count]')){
+      if(!setPinnedCount(model(),+event.target.closest('[data-pinned-count]').dataset.pinnedCount)){notice('Remove a button from the fixed row first: it holds more than that.',true);draw();}
+      else changed();
+    }
+    else if(event.target.closest('[data-row-up],[data-row-down],[data-row-insert],[data-row-remove]')){
+      const tool = event.target.closest('[data-row-up],[data-row-down],[data-row-insert],[data-row-remove]');
+      const row = +(tool.dataset.rowUp??tool.dataset.rowDown??tool.dataset.rowInsert??tool.dataset.rowRemove);
+      const done = tool.dataset.rowUp!==undefined?moveRow(model(),row,-1,ui.extraRows):tool.dataset.rowDown!==undefined?moveRow(model(),row,1,ui.extraRows)
+        :tool.dataset.rowInsert!==undefined?insertRow(model(),row,'below',ui.extraRows):removeRow(model(),row,ui.extraRows);
+      if(!done)notice(tool.dataset.rowInsert!==undefined?`There is no room for another row: the remote holds ${MAX_CELLS} positions.`:'That row cannot move there.',true);
+      else changed();
+      if(!done)draw();
+    }
   };
   ctx.actions.onclick = event => {if(event.target.closest('[data-save]'))save();else if(event.target.closest('[data-cancel]'))cancel();else if(event.target.closest('[data-help]'))openHelp();};
   draw();
