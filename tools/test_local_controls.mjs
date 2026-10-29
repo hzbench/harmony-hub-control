@@ -395,6 +395,27 @@ console.log('Profile search by brand, model and type, path-derived details, rank
   for(let i=1;i<=5;i++){routes[`repos/o/r${i}`]=[200,{default_branch:'main'}];routes[`repos/o/r${i}/git/trees/main?recursive=1`]=[200,{tree:[{type:'blob',path:'A/B.ir'}]}];await submit('o/r'+i);}
   assert.doesNotMatch(body.innerHTML,/id="source-form"/);assert.match(body.innerHTML,/You can have 5 sources of your own/);
 }
+// The activity editor offers the volume-device choice only when there is something to choose.
+{
+  const code=source.slice(source.indexOf('function volumeChoiceHtml('),source.indexOf('function renderActivityEditor('));
+  const dev=(id,names)=>({id,name:id.toUpperCase(),commands:names.map(name=>({name}))});
+  const context=vm.createContext({escape:String,state:{devices:[dev('tv',['VolumeUp','VolumeDown','Mute']),dev('bar',['VolUp','VolDn']),dev('box',['Play']),dev('lamp',['VOL+'])]},matchCommand:(commands,aliases)=>aliases.map(a=>commands.find(c=>vm.runInContext('norm',context)(c.name)===a)).find(Boolean),
+    norm:name=>String(name).toLowerCase().replace(/\+/g,'up').replace(/-\s*$/,'down').replace(/[^a-z0-9]/g,'')});
+  vm.runInContext(code,context);
+  const html=value=>vm.runInContext(`volumeChoiceHtml(${JSON.stringify(value)})`,context);
+  const step=id=>({deviceId:id});
+  const two={steps:[step('tv'),step('bar'),step('tv')],exitSteps:[]};
+  assert.match(html(two),/<option value="">Automatic/);assert.match(html(two),/<option value="tv" >TV<\/option><option value="bar" >BAR<\/option>/,'each device with volume once, in step order');
+  assert.match(html({...two,volumeDeviceId:'bar'}),/<option value="bar" selected>BAR<\/option>/,'the saved choice is selected');
+  assert.equal(html({steps:[step('tv'),step('box')]}),'','one device with volume: nothing to choose');
+  assert.equal(html({steps:[step('box')]}),'');
+  assert.doesNotMatch(html({steps:[step('tv'),step('box'),step('lamp')]}),/value="box"/,'a device with no volume is not offered');
+  assert.match(html({steps:[step('tv'),step('box'),step('lamp')]}),/value="lamp"/);
+  // A choice that no longer fits is dropped and the editor says so.
+  const stale={steps:[step('tv'),step('box')],volumeDeviceId:'bar'};
+  context.value=stale;const out=vm.runInContext('volumeChoiceHtml(value)',context);
+  assert.match(out,/no longer in this activity/);assert.equal(vm.runInContext('value.volumeDeviceId',context),undefined);
+}
 console.log('Search sources: spec checks, folder and format filtering, layouts, merging, duplicates, per-source failures and phone storage passed');
 
 // A Roku is a kind of device: Add device offers it next to Infrared and Bluetooth and hands over to the Roku screen.
