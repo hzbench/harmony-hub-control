@@ -380,7 +380,7 @@ function renderImport() {
   $('profile-file').onchange=async event=>{const input=event.target;try{const file=input.files[0];if(!file)return;if(file.size>2*1024*1024)throw Error('Profile exceeds the 2 MB import limit.');const text=await file.text();if(input.isConnected)await chooseProfile(text,file.name,'custom',renderImport);}catch(error){if(input.isConnected)notice(error.message,true);}};
 }
 const profileNorm=value=>String(value).toLowerCase().replace(/[^a-z0-9]/g,'');
-function profileTitle(path) {return path.split('/').pop().replace(/\.ir$/i,'').replace(/_/g,' ');}
+function profileTitle(path) {return path.split('/').pop().replace(/\.(ir|csv|json|lircd?|conf|girr)$/i,'').replace(/_/g,' ');}
 // The community index (Flipper-IRDB) is a git tree. Hand-curated profiles are Category/Brand/Model.ir (a few have
 // an extra level). _Converted_/Format/Letter/Brand[/Kind]/File.ir holds ~7,000 converted ones with no category;
 // the CSV ones name a kind of device in the folder before the file.
@@ -390,7 +390,20 @@ const TYPE_BY_CATEGORY={TVs:'Television',Projectors:'Television',Monitors:'Telev
   'Blu-Ray':'Media Player',DVD_Players:'Media Player',Streaming_Devices:'Media Player',Cable_Boxes:'Media Player',VCR:'Media Player',Laserdisc:'Media Player',Consoles:'Media Player',TV_Tuner:'Media Player','DVB-T':'Media Player'};
 const KIND_WORDS=[['Media Player',['dvd','vcr','bluray','blu','cable','catv','satellite','sat','stb','dvr','tivo','player','streaming','console','settop']],
   ['Television',['tv','tvs','hdtv','television','projector','monitor','display']],['Audio',['audio','receiver','amplifier','amp','stereo','tuner','cd','speaker','soundbar']]];
-function profileMeta(path) {
+// What a device-kind word in a folder or file name says it is ('' when it says nothing).
+const typeOfWords = text => {const words=text.toLowerCase().split(/[^a-z0-9]+/);return KIND_WORDS.find(([,list])=>list.some(w=>words.includes(w)||words.includes(w+'s')))?.[0]||'';};
+// A repository the user added is read by folder depth: 'brand' is Brand/Model.ext, 'category' is Category/Brand/Model.ext
+// (paths are counted from the source's folder). Anything shallower has no brand, and the path is shown instead.
+function genericProfileMeta(path,layout) {
+  const folders=path.split('/').slice(0,-1),category=layout==='category'?folders[0]||'':'',brand=((layout==='category'?folders[1]:folders[0])||'').replace(/_/g,' ');
+  const title=profileTitle(path),bn=profileNorm(brand);
+  let model=title;
+  if(bn&&profileNorm(title).startsWith(bn)){let seen='',n=0;while(n<title.length&&seen.length<bn.length){seen+=profileNorm(title[n]);n++;}model=title.slice(n).replace(/^[\s_:-]+/,'')||title;}
+  if(bn&&profileNorm(model)===bn)model='';
+  return {brand,model,deviceType:TYPE_BY_CATEGORY[category]||typeOfWords(category)||typeOfWords(`${folders.join(' ')} ${title}`),curated:true};
+}
+function profileMeta(path,layout='flipper') {
+  if(layout!=='flipper')return genericProfileMeta(path,layout);
   const p=path.split('/'),converted=p[0]==='_Converted_';
   let brand='',kind='';
   if(converted){brand=p[3]||'';kind=p.length>5?p[4]:'';}
@@ -403,14 +416,55 @@ function profileMeta(path) {
   if(kind&&!/^unknown/i.test(kind))model=`${kind.replace(/_/g,' ')} ${model}`;
   if(bn&&profileNorm(model)===bn)model='';   // the brand's generic profile has no model of its own
   // A converted profile has no category. Its device-kind folder (CSV ones) or else its file name may say what it is.
-  const typeOfWords = text => {const words=text.toLowerCase().split(/[^a-z0-9]+/);return KIND_WORDS.find(([,list])=>list.some(w=>words.includes(w)))?.[0]||'';};
   const deviceType=converted?(typeOfWords(kind)||typeOfWords(title)):TYPE_BY_CATEGORY[p[0]]||'Other';
   return {brand,model,deviceType,curated:!converted};
 }
+// ---- Search sources: the built-in Flipper-IRDB plus up to MAX_CUSTOM_SOURCES repositories the user adds ----
+const MAX_CUSTOM_SOURCES=5;
+const SOURCE_LAYOUTS=[['brand','Brand/Model'],['category','Category/Brand/Model'],['flipper','Flipper-IRDB style']];
+const BUILTIN_SOURCE={id:'builtin',name:'Flipper-IRDB',repo:'Lucaslhm/Flipper-IRDB',branch:'main',folder:'',layout:'flipper',builtin:true};
+// Only formats the page can already read. Other files in a repository are ignored, as are the usual tooling files.
+const PROFILE_FILE=/\.(ir|csv|json|lircd?|conf|girr)$/i;
+const NOT_PROFILES=/(^|\/)(\.[^/]*|package(-lock)?\.json|tsconfig[^/]*\.json|composer\.json|manifest\.json|renovate\.json|node_modules)(\/|$)/i;
+function parseSourceSpec(input) {
+  const repo=String(input.repo||'').trim().replace(/^https?:\/\/(www\.)?github\.com\//i,'').replace(/\/+$/,'').replace(/\.git$/i,'');
+  const m=/^([A-Za-z0-9][A-Za-z0-9-]{0,38})\/([A-Za-z0-9._-]{1,100})$/.exec(repo);
+  if(!m||m[2]==='.'||m[2]==='..')return {ok:false,error:'Enter the repository as owner/name, for example Lucaslhm/Flipper-IRDB.'};
+  const branch=String(input.branch||'').trim();
+  if(branch&&(!/^[A-Za-z0-9._/-]{1,100}$/.test(branch)||branch.includes('..')||branch.startsWith('/')||branch.endsWith('/')))return {ok:false,error:'That branch name is not valid. Leave it empty to use the default branch.'};
+  const folder=String(input.folder||'').trim().replace(/^\/+|\/+$/g,'');
+  if(folder&&(!/^[A-Za-z0-9 ._()+&,'-]+(\/[A-Za-z0-9 ._()+&,'-]+)*$/.test(folder)||folder.split('/').some(part=>part==='.'||part==='..')))return {ok:false,error:'That folder is not valid. Use a path such as Remotes/TVs, or leave it empty.'};
+  const layout=SOURCE_LAYOUTS.some(([key])=>key===input.layout)?input.layout:'brand';
+  return {ok:true,source:{id:`${m[1]}/${m[2]}|${branch}|${folder}`.toLowerCase(),name:`${m[1]}/${m[2]}${folder?` / ${folder}`:''}`,repo:`${m[1]}/${m[2]}`,branch,folder,layout}};
+}
+// The profile files of one source out of its git tree. Each entry remembers where it came from, so it can be fetched,
+// labelled and read by that source's rule. `key` is what "already tried" remembers: unchanged for the built-in source.
+function profileEntries(source,tree) {
+  const prefix=source.folder?source.folder+'/':'';
+  const wanted=source.builtin?(path=>/\.ir$/.test(path)):(path=>PROFILE_FILE.test(path)&&!NOT_PROFILES.test(path));
+  return tree.filter(f=>f.type==='blob'&&f.path.startsWith(prefix)&&wanted(f.path.slice(prefix.length))).map(f=>({type:'blob',path:f.path,rel:f.path.slice(prefix.length),
+    source:source.id,sourceName:source.name,repo:source.repo,branch:source.branch,layout:source.layout,key:source.builtin?f.path:`${source.repo}/${f.path}`}));
+}
+const isProfileEntry=f=>f.type==='blob'&&(f.layout?true:f.path.endsWith('.ir'));
+const entryMeta=f=>profileMeta(f.rel??f.path,f.layout||'flipper');
+const profileFileName=f=>(f.rel??f.path).split('/').pop().replace(PROFILE_FILE,'');
+// The same profile in two sources (same brand, model and file name) is listed once, from the source that comes first.
+function mergeProfiles(lists) {
+  if(lists.length<2)return lists[0]||[];
+  const seen=new Set(),out=[];
+  for(const list of lists)for(const f of list){
+    const {brand,model}=entryMeta(f),key=[brand,model,profileFileName(f)].map(profileNorm).join('|');
+    if(seen.has(key))continue;seen.add(key);out.push(f);
+  }
+  return out;
+}
+const rawUrl=f=>`https://raw.githubusercontent.com/${f.repo||BUILTIN_SOURCE.repo}/${encodeURIComponent(f.branch||BUILTIN_SOURCE.branch)}/${f.path.split('/').map(encodeURIComponent).join('/')}`;
+// How the parser should read a file that a search found, from its name (the page detects the rest from the text).
+const profileHint=path=>/\.ir$/i.test(path)?'flipper':/\.csv$/i.test(path)?'irdb':/\.(lircd?|conf)$/i.test(path)?'lirc':/\.json$/i.test(path)?'smartir':'';
 function findProfiles(tree,{type='',brand='',model=''}) {
   const b=profileNorm(brand),m=profileNorm(model),tokens=model.split(/\s+/).map(profileNorm).filter(Boolean);
   if(!type&&!b&&!tokens.length)return [];
-  return tree.filter(f=>f.type==='blob'&&f.path.endsWith('.ir')).map(f=>({...f,...profileMeta(f.path)}))
+  return tree.filter(isProfileEntry).map(f=>({...f,...entryMeta(f)}))
     // A chosen type keeps profiles of that type, and also those that do not say (listed after the ones that do).
     .filter(f=>(!type||f.deviceType===type||!f.deviceType)&&(!b||profileNorm(f.brand).includes(b))&&tokens.every(t=>profileNorm(f.path).includes(t)))
     .map(f=>({...f,brandExact:!!b&&profileNorm(f.brand)===b,exact:!!m&&profileNorm(f.model)===m,typed:!type||f.deviceType===type}))
@@ -429,27 +483,100 @@ function similarProfiles(tree,filters) {
   return files.sort((a,c)=>c.score-a.score||a.path.localeCompare(c.path));
 }
 const profileLabel=f=>`${`${f.brand} ${f.model||'generic profile'}`.trim()}${f.deviceType?` (${f.deviceType})`:''}`;
-let profileIndex,profileSearch={};
+let profileIndex,profileIndexKey='',profileProblems=[],profileSearch={};
+const sourceEntries=new Map();   // each source's profile files, kept for this visit (the browser's own cache answers repeats cheaply)
+// The list lives on this phone: the built-in source can be turned off, and up to MAX_CUSTOM_SOURCES others added.
+function profileSources() {
+  let saved={};try{saved=JSON.parse(readLocal('harmony-sources','{}'))||{};}catch{}
+  const custom=(Array.isArray(saved.custom)?saved.custom:[]).map(c=>({parsed:parseSourceSpec(c||{}),enabled:c?.enabled!==false}))
+    .filter(c=>c.parsed.ok).map(c=>({...c.parsed.source,enabled:c.enabled})).slice(0,MAX_CUSTOM_SOURCES);
+  return [{...BUILTIN_SOURCE,enabled:saved.builtinOff!==true},...custom];
+}
+function saveProfileSources(list) {
+  writeLocal('harmony-sources',JSON.stringify({builtinOff:list.find(x=>x.builtin)?.enabled===false,
+    custom:list.filter(x=>!x.builtin).map(x=>({repo:x.repo,branch:x.branch,folder:x.folder,layout:x.layout,enabled:x.enabled}))}));
+}
+async function githubJson(path,missing) {
+  let response;
+  try {response=await fetch('https://api.github.com/'+path,{signal:AbortSignal.timeout(15000)});}
+  catch {throw Error('GitHub could not be reached. Check the connection and try again.');}
+  if(response.status===404)throw Error(missing);
+  if(response.status===403||response.status===429)throw Error('GitHub is limiting requests from this connection. Try again in a while.');
+  if(!response.ok)throw Error(`GitHub answered with an error (${response.status}).`);
+  return response.json();
+}
+// Reads one source's file list. Fills in the default branch of a repository added without one.
+async function fetchSource(source) {
+  if(!source.branch)source={...source,branch:(await githubJson(`repos/${source.repo}`,'That repository was not found, or it is private. Only public repositories can be used.')).default_branch};
+  const index=await githubJson(`repos/${source.repo}/git/trees/${encodeURIComponent(source.branch)}?recursive=1`,source.builtin?'Community search is unavailable. Go back to import a profile file.':'That branch was not found in the repository.');
+  if(index.truncated)throw Error(source.builtin?'Community index is incomplete. Import a profile file instead.':'That repository is too large to read completely, so it cannot be used as a source.');
+  return {source,entries:profileEntries(source,index.tree||[])};
+}
+async function sourceFiles(source) {
+  if(sourceEntries.has(source.id))return sourceEntries.get(source.id);
+  const {entries}=await fetchSource(source);
+  sourceEntries.set(source.id,entries);return entries;
+}
+// Every turned-on source, merged. A source that cannot be read is listed in profileProblems and the others still work.
 async function loadProfileIndex() {
-  if(profileIndex)return profileIndex;
-  const response=await fetch('https://api.github.com/repos/Lucaslhm/Flipper-IRDB/git/trees/main?recursive=1',{signal:AbortSignal.timeout(15000)});
-  if(!response.ok)throw Error('Community search is unavailable. Go back to import a profile file.');
-  const index=await response.json();if(index.truncated)throw Error('Community index is incomplete. Import a profile file instead.');
-  return profileIndex=index.tree||[];
+  const sources=profileSources().filter(x=>x.enabled),key=sources.map(x=>x.id).join('\n');
+  if(profileIndex&&profileIndexKey===key)return profileIndex;
+  if(!sources.length)throw Error('Every search source is turned off. Turn one on under Search sources, or import a profile file.');
+  const lists=[],problems=[];
+  for(const source of sources){try{lists.push(await sourceFiles(source));}catch(error){problems.push({name:source.name,message:error.message});}}
+  if(!lists.length)throw Error(sources.length===1?problems[0].message:`No search source could be read. ${problems.map(x=>`${x.name}: ${x.message}`).join(' ')}`);
+  profileProblems=problems;profileIndexKey=key;
+  return profileIndex=mergeProfiles(lists);
 }
 function renderSearch(again=false) {
   const device=state.draft?null:state.editor;
   // Changing an existing device's commands starts from that device; a new one starts from what was last searched.
   if(device&&!Object.keys(profileSearch).length)profileSearch={type:device.type||'',brand:device.manufacturer||'',model:device.model||''};
   const filters=profileSearch;
-  mount(`<div class="editor">${state.draft?setupProgress('Profile'):''}<h2>Find a profile</h2><form id="search-form"><label for="profile-type">Device type</label><select id="profile-type"><option value="">Any type</option>${PROFILE_TYPES.map(t=>`<option ${t===filters.type?'selected':''}>${t}</option>`).join('')}</select><div class="suggest">${field('Brand','profile-brand',filters.brand||'','search','autocomplete="off"')}<div id="brand-suggestions" class="suggestions" role="listbox" aria-label="Matching brands" hidden></div></div>${field('Model or keywords','profile-model',filters.model||'','search')}<small>Fill in any of these. Many community profiles do not say what type of device they are. With a type chosen, those are listed after the ones that match.</small><div class="toolbar"><button class="primary">Search</button><button type="button" id="search-back">Back</button></div></form><div id="profile-results" class="list"></div></div>`);
+  mount(`<div class="editor">${state.draft?setupProgress('Profile'):''}<h2>Find a profile</h2><form id="search-form"><label for="profile-type">Device type</label><select id="profile-type"><option value="">Any type</option>${PROFILE_TYPES.map(t=>`<option ${t===filters.type?'selected':''}>${t}</option>`).join('')}</select><div class="suggest">${field('Brand','profile-brand',filters.brand||'','search','autocomplete="off"')}<div id="brand-suggestions" class="suggestions" role="listbox" aria-label="Matching brands" hidden></div></div>${field('Model or keywords','profile-model',filters.model||'','search')}<small>Fill in any of these. Many community profiles do not say what type of device they are. With a type chosen, those are listed after the ones that match.</small><div class="toolbar"><button class="primary">Search</button><button type="button" id="search-back">Back</button></div></form><div id="profile-results" class="list"></div><details id="sources" class="sources"><summary>Search sources</summary><div id="sources-body"></div></details></div>`);
   $('search-back').onclick=returnToDevice;
   const results=$('profile-results'),form=$('search-form');
   // Brand suggestions come from the index; fetching it early is a convenience, and a failure shows up on Search.
   // (A native <datalist> is drawn by the browser and loses its background in the app's dark theme, so this is a plain list.)
   let brands=[];
-  loadProfileIndex().then(tree=>{const seen=new Map();for(const f of tree)if(f.type==='blob'&&f.path.endsWith('.ir')){const {brand}=profileMeta(f.path);if(brand&&!seen.has(profileNorm(brand)))seen.set(profileNorm(brand),brand);}
-    brands=[...seen.values()].sort((a,b)=>a.localeCompare(b));suggest();}).catch(()=>{});
+  const loadBrands=()=>loadProfileIndex().then(tree=>{const seen=new Map();for(const f of tree)if(isProfileEntry(f)){const {brand}=entryMeta(f);if(brand&&!seen.has(profileNorm(brand)))seen.set(profileNorm(brand),brand);}
+    brands=[...seen.values()].sort((a,b)=>a.localeCompare(b));suggest();}).catch(()=>{brands=[];});
+  loadBrands();
+  // The sources this search reads: turn them on or off, add a repository, remove one. The list is kept on this phone.
+  const sourcesBody=$('sources-body');
+  const sourcesChanged=()=>{profileIndex=null;results.textContent='';drawSources();loadBrands();};
+  const drawSources=()=>{
+    const list=profileSources(),open=list.length-1<MAX_CUSTOM_SOURCES;
+    sourcesBody.innerHTML=`<small>Profiles are fetched live from public GitHub repositories and belong to their owners. The hub keeps none of this.</small>
+      ${list.map((x,i)=>`<div class="list-row"><div class="text"><label class="check"><input type="checkbox" data-source-on="${i}" ${x.enabled?'checked':''}> <strong>${escape(x.name)}</strong></label><small>${x.builtin?'Built in':escape(SOURCE_LAYOUTS.find(l=>l[0]===x.layout)[1]+(x.branch?' · branch '+x.branch:''))}</small></div>${x.builtin?'':`<button type="button" data-source-remove="${i}" aria-label="Remove ${escape(x.name)}">Remove</button>`}</div>`).join('')}
+      ${open?`<form id="source-form"><h3>Add a source</h3>${field('Repository','source-repo','','text','placeholder="owner/name" autocomplete="off" autocapitalize="off" required')}${field('Branch (optional)','source-branch','','text','autocomplete="off" autocapitalize="off"')}${field('Folder (optional)','source-folder','','text','autocomplete="off" autocapitalize="off"')}<label for="source-layout">How the folders are arranged</label><select id="source-layout">${SOURCE_LAYOUTS.map(([key,label])=>`<option value="${key}">${label}</option>`).join('')}</select><small>Brand and model are read from the folder names. Only files this page can read are listed (.ir, .csv, .json, .lircd, .conf, .girr).</small><div class="toolbar"><button class="primary">Add source</button></div></form>`:`<small>You can have ${MAX_CUSTOM_SOURCES} sources of your own. Remove one to add another.</small>`}`;
+  };
+  drawSources();
+  sourcesBody.onchange=event=>{
+    const box=event.target.closest('[data-source-on]');if(!box)return;
+    const list=profileSources();list[+box.dataset.sourceOn].enabled=box.checked;saveProfileSources(list);sourcesChanged();
+  };
+  sourcesBody.onclick=event=>{
+    const button=event.target.closest('[data-source-remove]');if(!button)return;
+    const list=profileSources(),[gone]=list.splice(+button.dataset.sourceRemove,1);
+    sourceEntries.delete(gone.id);saveProfileSources(list);sourcesChanged();
+  };
+  sourcesBody.onsubmit=async event=>{
+    event.preventDefault();
+    const parsed=parseSourceSpec({repo:$('source-repo').value,branch:$('source-branch').value,folder:$('source-folder').value,layout:$('source-layout').value});
+    if(!parsed.ok)return notice(parsed.error,true);
+    const list=profileSources();
+    if(list.some(x=>x.id===parsed.source.id))return notice('That source is already in the list.',true);
+    if(list.length-1>=MAX_CUSTOM_SOURCES)return notice(`You can have ${MAX_CUSTOM_SOURCES} sources of your own.`,true);
+    await busy(event.submitter,'Checking...',async()=>{
+      const {entries}=await fetchSource(parsed.source);
+      if(!sourcesBody.isConnected)return;
+      if(!entries.length)throw Error(`No profile files were found${parsed.source.folder?' in that folder':' in that repository'}. Check the folder, or the branch.`);
+      sourceEntries.set(parsed.source.id,entries);
+      list.push({...parsed.source,enabled:true});saveProfileSources(list);
+      notice(`Added ${parsed.source.name}: ${entries.length} profile ${entries.length===1?'file':'files'}.`);sourcesChanged();
+    });
+  };
   const box=$('brand-suggestions'),brandInput=$('profile-brand');
   const suggest=()=>{
     const typed=profileNorm(brandInput.value),matches=!typed?[]:[...brands.filter(b=>profileNorm(b).startsWith(typed)),...brands.filter(b=>!profileNorm(b).startsWith(typed)&&profileNorm(b).includes(typed))].filter(b=>profileNorm(b)!==typed).slice(0,8);
@@ -470,18 +597,18 @@ function renderSearch(again=false) {
     if(!files.length&&profileSearch.model&&(profileSearch.brand||profileSearch.type)){files=similarProfiles(tree,profileSearch);closest=files.length>0;}
     // Profiles already tried on this device that did not respond go to the end, marked.
     const tried=new Set(state.retry?.tried||[]);
-    files=[...files.filter(f=>!tried.has(f.path)),...files.filter(f=>tried.has(f.path))];
+    files=[...files.filter(f=>!tried.has(f.key||f.path)),...files.filter(f=>tried.has(f.key||f.path))];
     let limit=20;
     const draw=()=>{
-      const why=f=>tried.has(f.path)?'Already tried: no response':closest?(f.generic?'Generic profile for this brand':f.sameGeneration?'Same generation as '+escape(profileSearch.model):'Other model from this brand'):f.exact?'Model name matches':'Other model / generic profile';
-      results.innerHTML=`<p>${closest?`No profile for ${escape(profileSearch.model)}. These are the closest ${escape(profileSearch.brand||'')} profiles, best guess first. Try one and test it.`:files.length?`${files.length} ${files.length===1?'profile':'profiles'}. Compatibility needs a device test.`:profileSearch.model&&!profileSearch.brand&&!profileSearch.type?'No matching profile. Add the brand to see that brand’s profiles.':'No matching profile.'}</p>${files.slice(0,limit).map((f,i)=>`<div class="list-row"><div class="text"><strong>${escape(profileLabel(f))}</strong><small>${why(f)}</small><small>${escape(f.path.split('/').slice(0,-1).join(' / ').replace(/_/g,' '))}</small></div><button data-profile="${i}" aria-label="Choose ${escape(profileLabel(f))}">Choose</button></div>`).join('')}${files.length>limit?`<div class="toolbar"><button id="more-profiles">Show more (${files.length-limit} remaining)</button></div>`:''}`;
+      const several=profileSources().filter(x=>x.enabled).length>1,why=f=>tried.has(f.key||f.path)?'Already tried: no response':closest?(f.generic?'Generic profile for this brand':f.sameGeneration?'Same generation as '+escape(profileSearch.model):'Other model from this brand'):f.exact?'Model name matches':'Other model / generic profile';
+      results.innerHTML=`${profileProblems.map(x=>`<p class="source-problem">${escape(x.name)}: ${escape(x.message)}</p>`).join('')}<p>${closest?`No profile for ${escape(profileSearch.model)}. These are the closest ${escape(profileSearch.brand||'')} profiles, best guess first. Try one and test it.`:files.length?`${files.length} ${files.length===1?'profile':'profiles'}. Compatibility needs a device test.`:profileSearch.model&&!profileSearch.brand&&!profileSearch.type?'No matching profile. Add the brand to see that brand’s profiles.':'No matching profile.'}</p>${files.slice(0,limit).map((f,i)=>`<div class="list-row"><div class="text"><strong>${escape(profileLabel(f))}</strong><small>${why(f)}</small><small>${escape((several&&f.sourceName?f.sourceName+': ':'')+(f.rel??f.path).split('/').slice(0,-1).join(' / ').replace(/_/g,' '))}</small></div><button data-profile="${i}" aria-label="Choose ${escape(profileLabel(f))}">Choose</button></div>`).join('')}${files.length>limit?`<div class="toolbar"><button id="more-profiles">Show more (${files.length-limit} remaining)</button></div>`:''}`;
       if($('more-profiles'))$('more-profiles').onclick=()=>{limit+=20;draw();};
       results.querySelectorAll('[data-profile]').forEach(button=>button.onclick=()=>busy(button,'Loading...',async()=>{
-        const file=files[+button.dataset.profile],path=file.path;
-        const response=await fetch('https://raw.githubusercontent.com/Lucaslhm/Flipper-IRDB/main/'+path.split('/').map(encodeURIComponent).join('/'),{signal:AbortSignal.timeout(15000)});
+        const file=files[+button.dataset.profile],path=file.key||file.path;
+        const response=await fetch(rawUrl(file),{signal:AbortSignal.timeout(15000)});
         if(!response.ok)throw Error('Profile download failed. Choose another profile or import a file.');
         const text=await response.text();// A stand-in for a model that isn't indexed: the details are the user's TV, not the profile's.
-        if(results.isConnected)await chooseProfile(text,path,'flipper',()=>renderSearch(true),closest?{...file,model:profileSearch.model}:file);
+        if(results.isConnected)await chooseProfile(text,path,profileHint(file.path)||'flipper',()=>renderSearch(true),closest?{...file,model:profileSearch.model}:file);
       }));
     };draw();
   });};
