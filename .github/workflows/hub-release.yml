@@ -80,10 +80,11 @@ jobs:
           # Only tested code is signed with the real key. Test runs on the same push, so it may not
           # be listed yet, or may still be going: wait for it (a few minutes to appear, 15 to finish).
           for attempt in $(seq 1 30); do
-            passed=$(gh run list --workflow Test --commit "$GITHUB_SHA" --status success --json databaseId --jq length)
+            # One look at the runs gives all three numbers, so a run that finishes while we ask cannot count as still
+            # going in one question and as not passed in the next (that once failed a release whose tests had passed).
+            read -r passed listed running <<<"$(gh run list --workflow Test --commit "$GITHUB_SHA" --json status,conclusion \
+              --jq '[([.[] | select(.conclusion == "success")] | length), length, ([.[] | select(.status != "completed")] | length)] | @tsv')"
             [[ "$passed" -gt 0 ]] && break
-            listed=$(gh run list --workflow Test --commit "$GITHUB_SHA" --json databaseId --jq length)
-            running=$(gh run list --workflow Test --commit "$GITHUB_SHA" --json status --jq '[.[] | select(.status != "completed")] | length')
             if [[ "$listed" -gt 0 && "$running" -eq 0 ]]; then
               echo "::error::The Test workflow ran on this commit and did not pass."; exit 1
             fi
