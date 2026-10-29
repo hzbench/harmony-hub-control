@@ -71,6 +71,8 @@ body[data-reserve-notice=false] #notice:not([hidden]){position:fixed;z-index:5;l
 .cells[data-columns="1"]{grid-template-columns:1fr}
 .cells[data-columns="2"]{grid-template-columns:repeat(2,1fr)}
 .cells[data-columns="3"]{grid-template-columns:repeat(3,1fr)}
+.cells.spans{grid-template-columns:repeat(12,1fr)}   /* rows with their own button counts: 1, 2, 3 or 4 divide 12 evenly */
+.cells.spans>.w3{grid-column:span 3}.cells.spans>.w4{grid-column:span 4}.cells.spans>.w6{grid-column:span 6}.cells.spans>.w12{grid-column:span 12}
 .dpad{display:grid;grid-template-columns:repeat(3,76px);grid-template-rows:repeat(3,50px);gap:8px;justify-content:center}
 .dpad .up{grid-column:2;grid-row:1}.dpad .left{grid-column:1;grid-row:2}.dpad .ok{grid-column:2;grid-row:2}
 .dpad .right{grid-column:3;grid-row:2}.dpad .down{grid-column:2;grid-row:3}
@@ -150,3 +152,7 @@ dialog.sheet .add-row{width:100%}
 .row-tools-label{flex:1;font-size:13px;font-weight:600;color:var(--muted)}
 .row-tool{min-width:44px;min-height:40px;padding:0;display:grid;place-items:center}
 .row-tool svg{height:18px;width:18px}
+
+.row-counts{display:flex;gap:4px}
+.row-count{min-width:36px;min-height:40px;padding:0}
+.row-count[aria-pressed="true"]{background:var(--accent);color:var(--surface)}

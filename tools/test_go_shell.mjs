@@ -18,7 +18,7 @@ const el=id=>elements[id]||=({id,dataset:{},classList:{add(){},remove(){}},hidde
 const context=vm.createContext({document:{getElementById:el,title:'',body:{dataset:{}},addEventListener(){},hidden:false},window:{addEventListener(){},scrollTo(){}},location:{hash:'',replace(url){context.replaced=url;},assign(url){context.assigned=url;}},history:{replaceState(){},pushState(){context.pushed=(context.pushed||0)+1;},back(){context.backed=(context.backed||0)+1;}},
   confirm:message=>{(context.confirmed||(context.confirmed=[])).push(message);return context.confirmAnswer!==false;},navigator:{vibrate(){context.vibrated=(context.vibrated||0)+1;}},localStorage:{getItem:k=>store.get(k)??null,setItem:(k,v)=>store.set(k,v)},setTimeout:()=>0,clearTimeout(){},fetch:async()=>{throw new TypeError('offline');},AbortController,URL,structuredClone,atob});
 const inert=source.replace(/\n  boot\(\);\n\}\s*$/,'\n}');assert.notEqual(inert,source,'boot() auto-run not found');
-vm.runInContext(inert.replace('const state =','var state =')+'\nthis.exports={parseRoute,routeHash,connection,state,needsFullUi,api,show,screens,renderActivities,renderDevices,deviceRemoteHtml,renderDeviceRemote,remoteBlocks,remoteHtml,renderActivityRemote,CONTROLS,controlFor,volumeTarget,editorSlots,availableCommands,addButton,insertRow,moveRow,removeRow,gridRows,canAddRow,removeButton,editorHtml,renderEditor,screenOf,MAX_CELLS,layoutShape,startDraft,submitLayout,getLeaveGuard:()=>leaveGuard,cloneScreen,withSlots,announceHub,loadDevices,typingPlan,createTyper,openKeyboard,KEYBOARD_COMMAND,setRunningActivity,syncHubActivity,announceRunning,channelChoices,ROKU_BUILTIN_NAMES,channelRowHtml,parseRelease,installRelease,waitForHub,pauses};',context);
+vm.runInContext(inert.replace('const state =','var state =')+'\nthis.exports={parseRoute,routeHash,connection,state,needsFullUi,api,show,screens,renderActivities,renderDevices,deviceRemoteHtml,renderDeviceRemote,remoteBlocks,remoteHtml,renderActivityRemote,CONTROLS,controlFor,volumeTarget,editorSlots,availableCommands,addButton,insertRow,moveRow,removeRow,gridRows,canAddRow,setRowCount,setPinnedCount,rowCountsOf,removeButton,editorHtml,renderEditor,screenOf,MAX_CELLS,layoutShape,startDraft,submitLayout,getLeaveGuard:()=>leaveGuard,cloneScreen,withSlots,announceHub,loadDevices,typingPlan,createTyper,openKeyboard,KEYBOARD_COMMAND,setRunningActivity,syncHubActivity,announceRunning,channelChoices,ROKU_BUILTIN_NAMES,channelRowHtml,parseRelease,installRelease,waitForHub,pauses};',context);
 const {parseRoute,routeHash,connection,state,needsFullUi,api,show}=context.exports;
 
 assert.deepEqual(JSON.parse(JSON.stringify(parseRoute(''))),{name:'activities',params:[]});
@@ -617,6 +617,72 @@ assert.equal(X.editorSlots('cells',0,3,20,23),21);assert.equal(X.editorSlots('ce
 }
 console.log('With the arrow pad, only whole rows of squares are offered, and Add row says when none fits');
 
+// ---- Buttons per row ----
+{
+  state.devices=[tv,bar];
+  const plainSquares=h=>(h.match(/class="cell empty(?: w\d+)?" type="button" data-zone="cells"/g)||[]).length;
+  const widths=h=>[...h.matchAll(/class="cell(?: empty)?(?: (w\d+))?(?: missing)?" type="button" data-zone="cells"/g)].map(m=>m[1]||'-');
+  const mkAct=(cells,extra={})=>({id:'r',steps:[{deviceId:'tv'}],screen:X.cloneScreen({columns:4,cells,pinned:[],...extra})});
+  // Saved counts are cleaned up: only 1..3 on a 4-wide screen mean anything.
+  assert.deepEqual(J(X.cloneScreen({columns:4,cells:[],pinned:[],rowCounts:{0:2,1:4,2:0,x:1,3:2.5,4:9},pinnedCount:2}).rowCounts),{0:2});
+  assert.equal(X.cloneScreen({columns:4,cells:[],pinned:[],rowCounts:{1:4},pinnedCount:4}).rowCounts,undefined);assert.equal(X.cloneScreen({columns:4,cells:[],pinned:[],pinnedCount:4}).pinnedCount,undefined);
+  assert.equal(X.cloneScreen({columns:4,cells:[],pinned:[],pinnedCount:2}).pinnedCount,2);
+  assert.notEqual(X.layoutShape({columns:4,cells:[],pinned:[],rowCounts:{0:2}}),X.layoutShape({columns:4,cells:[],pinned:[]}),'a count change is a change to save');
+
+  // The remote: a row of 2 is two halves, a row of 1 fills the row, other rows are unchanged quarters.
+  const remote=remoteHtml({columns:4,rowCounts:{1:2,2:1},cells:[cell('Mute','tv',{slot:0}),cell('Back','tv',{slot:4}),cell('Input','tv',{slot:5}),cell('HDMI 1','tv',{slot:8})],pinned:[]}).body;
+  assert.match(remote,/class="cells spans" data-columns="12"/);
+  assert.deepEqual(J([...remote.matchAll(/class="(?:cell )?(w\d+)"/g)].map(m=>m[1])),['w3','w3','w3','w3','w6','w6','w12'],'4 + 2 + 1 squares, each sharing its row');
+  assert.doesNotMatch(remoteHtml({columns:4,cells:[cell('Mute')],pinned:[]}).body,/spans/,'a remote with no counts is drawn as before');
+  // A button sitting past a row's count is never hidden: the row is drawn wide enough for it.
+  assert.deepEqual(J([...remoteHtml({columns:4,rowCounts:{0:2},cells:[cell('Mute','tv',{slot:3})],pinned:[]}).body.matchAll(/class="(?:cell )?(w\d+)"/g)].map(m=>m[1])),['w3','w3','w3','w3']);
+  // An empty square in a short row keeps its share of the width.
+  assert.match(remoteHtml({columns:4,rowCounts:{0:3},cells:[cell('Mute','tv',{slot:2})],pinned:[]}).body,/<span class="w4"><\/span><span class="w4"><\/span><button class="cell w4"/);
+
+  // Changing a count.
+  const a=mkAct([sc('Mute',0),sc('Back',2),sc('Input',3)]);
+  assert.equal(X.setRowCount(a,0,2),false,'three buttons do not fit two squares: nothing changes');assert.equal(a.screen.rowCounts,undefined);assert.deepEqual(J(a.screen.cells.map(c=>c.slot)),[0,2,3]);
+  assert.equal(X.setRowCount(a,0,3),true);assert.deepEqual(J(a.screen.cells.map(c=>c.slot)),[0,1,2],'buttons past the new count are packed in order');assert.deepEqual(J(a.screen.rowCounts),{0:3});
+  assert.equal(X.setRowCount(a,0,4),true);assert.equal(a.screen.rowCounts,undefined,'the default count is not stored');assert.deepEqual(J(a.screen.cells.map(c=>c.slot)),[0,1,2]);
+  const b=mkAct([sc('Mute',1),sc('Back',3)]);
+  assert.equal(X.setRowCount(b,0,2),true);assert.deepEqual(J(b.screen.cells.map(c=>[c.command,c.slot])),[['Mute',0],['Back',1]]);
+  assert.equal(X.setRowCount(b,0,4),true);assert.deepEqual(J(b.screen.cells.map(c=>c.slot)),[0,1],'raising the count moves nothing');
+  assert.equal(X.setRowCount(b,0,0),false);assert.equal(X.setRowCount(b,0,5),false);assert.equal(X.setRowCount(b,9,2),false);
+
+  // Row edits carry the counts with their rows.
+  const c=()=>mkAct([sc('Mute',0),sc('Back',4),sc('Input',8)],{rowCounts:{0:2,2:3}});
+  let m=c();assert.ok(X.insertRow(m,1,'above'));assert.deepEqual(J(m.screen.rowCounts),{0:2,3:3},'a new row starts at the default and later rows keep theirs');assert.deepEqual(J(m.screen.cells.map(x=>x.slot)),[0,8,12]);
+  m=c();assert.ok(X.moveRow(m,1,1));assert.deepEqual(J(m.screen.rowCounts),{0:2,1:3});
+  m=mkAct([sc('Mute',0),sc('Input',8)],{rowCounts:{1:2,2:3}});assert.ok(X.removeRow(m,1));assert.deepEqual(J(m.screen.rowCounts),{1:3},'removing a blank row drops its count');
+  m=mkAct([sc('Mute',0),sc('Input',8)],{rowCounts:{1:2}});assert.ok(X.removeRow(m,1));assert.equal(m.screen.rowCounts,undefined);
+
+  // The editor offers as many squares as the count, and the controls show it.
+  const e=mkAct([sc('Mute',0)],{rowCounts:{0:2,1:1}});
+  const eh=X.editorHtml(e,{extraRows:1});
+  assert.deepEqual(J(widths(eh)),['w6','w6','w12'],'row 1: Mute and one empty half; row 2: one square the whole width');
+  assert.match(eh,/class="cells edit-grid spans" data-columns="12"/);
+  assert.doesNotMatch(eh,/data-row-count/,'the count controls belong to the row-editing mode');
+  const er=X.editorHtml(e,{extraRows:1,editRows:true});
+  assert.match(er,/data-row-count="0" data-n="2" aria-label="2 per row, row 1" aria-pressed="true"/);
+  assert.match(er,/data-row-count="1" data-n="1" aria-label="1 per row, row 2" aria-pressed="true"/);
+  assert.match(er,/data-row-count="0" data-n="1" aria-label="1 per row, row 1" aria-pressed="false"/,'one button fits one square');
+  const full=X.editorHtml(mkAct([sc('Mute',0),sc('Back',1)]),{extraRows:0,editRows:true});
+  assert.match(full,/data-row-count="0" data-n="1"[^>]* disabled/,'a count below the number of buttons is not offered');assert.doesNotMatch(full,/data-row-count="0" data-n="2"[^>]* disabled/);
+  assert.equal(plainSquares(eh),2);
+
+  // The fixed bottom row.
+  const p=mkAct([],{pinnedCount:2});p.screen.pinned=[sc('Mute',0)];
+  assert.equal(X.editorHtml(p,{extraRows:0}).split('class="pinned"')[1].match(/data-zone="pinned"/g).length,2,'one button and one add square: the row holds 2');
+  assert.equal(X.addButton(p,'pinned',1,'tv','Back'),true);assert.equal(X.addButton(p,'pinned',2,'tv','Input'),false,'a third does not fit a row of 2');
+  assert.equal(X.setPinnedCount(p,1),false,'two buttons do not fit 1');assert.equal(p.screen.pinnedCount,2);
+  assert.equal(X.setPinnedCount(p,3),true);assert.equal(p.screen.pinnedCount,3);assert.equal(X.setPinnedCount(p,4),true);assert.equal(p.screen.pinnedCount,undefined);
+  assert.match(X.editorHtml(p,{extraRows:0,editRows:true}),/data-pinned-count="1"[^>]* disabled/);
+  assert.doesNotMatch(X.editorHtml(p,{extraRows:0}),/data-pinned-count/);
+  // The remote's fixed row already shares its width among however many buttons it has.
+  assert.match(remoteHtml(p.screen).pinned,/pinned-row/);
+}
+console.log('Buttons per row: counts are kept clean, drawn as shared widths, follow their rows, and never hide a button');
+
 // Available commands: start-step devices, minus placed (grid or footer) and volume.
 state.devices=[tv,bar];
 const act0={id:'w',name:'W',steps:[{deviceId:'tv'},{delayMs:5},{deviceId:'tv'},{deviceId:'gone'},{deviceId:'bar'}],screen:{columns:4,cells:[sc('Up',0),sc('Mute',1)],pinned:[sc('Back',0)]}};
@@ -688,6 +754,14 @@ console.log('Drafts start from the hub layout (giving old lists slots) and are c
   assert.equal(sent.activities[0].screen.extra,'kept','other screen fields survive');
   assert.deepEqual(J(sent.activities[1]),J({id:'o',name:'Other',steps:[],screen:mk([cell('Mute')])}),'other activities are untouched');
   assert.equal(state.config.revision,10,'local config is refreshed from the hub after saving');
+  assert.equal(sent.activities[0].screen.rowCounts,undefined,'no counts are written when the draft has none');
+  reset();hub.activities[0].screen.rowCounts={1:2};hub.activities[0].screen.pinnedCount=2;
+  await X.submitLayout('w',{...draft,rowCounts:{0:3},pinnedCount:1},base,()=>true);
+  assert.deepEqual(posts[0].configuration.activities[0].screen.rowCounts,{0:3});assert.equal(posts[0].configuration.activities[0].screen.pinnedCount,1);
+  reset();hub.activities[0].screen.rowCounts={1:2};hub.activities[0].screen.pinnedCount=2;
+  await X.submitLayout('w',draft,base,()=>true);
+  assert.equal('rowCounts' in posts[0].configuration.activities[0].screen,false,'counts the draft cleared are removed from the hub copy');assert.equal('pinnedCount' in posts[0].configuration.activities[0].screen,false);
+  reset();await X.submitLayout('w',draft,base,()=>true);
   reset();hub.activities[0].screen.cells.push(cell('Left'));
   assert.equal(await X.submitLayout('w',draft,base,()=>{confirms++;return false;}),false);assert.equal(confirms,1);assert.equal(posts.length,0);
   assert.equal(await X.submitLayout('w',draft,base,()=>true),true);assert.equal(posts.length,1);
@@ -1093,6 +1167,18 @@ console.log('Editor draws gaps as empty squares, lists every cell (including sta
   ({content,ctx}=setup({...base0,screen:{columns:4,crossRow:1,cells:[sc('Back',0),sc('Up',20),sc('Left',21),sc('OK',22),sc('Right',23),sc('Down',24),sc('Mute',5)],pinned:[]}}));
   click(content,'[data-edit-rows]');
   assert.match(content.innerHTML,/data-row-down="0"[^>]*disabled/,'the last row above the pad cannot go down');assert.match(content.innerHTML,/data-row-up="1"[^>]*disabled/,'the first row below it cannot go up');
+  // Buttons per row: set from the row-editing mode, saved with the layout, refused when the buttons would not fit.
+  ({content,ctx}=setup({...base0,screen:{columns:4,cells:[sc('Up',0),sc('Down',1),sc('Left',8)],pinned:[sc('Mute',0),sc('Back',1)]}}));
+  click(content,'[data-edit-rows]');
+  const countTool=(row,n)=>content.onclick({target:{closest:sel=>sel==='[data-row-count]'?{dataset:{rowCount:String(row),n:String(n)}}:null}});
+  const pinnedTool=n=>content.onclick({target:{closest:sel=>sel==='[data-pinned-count]'?{dataset:{pinnedCount:String(n)}}:null}});
+  countTool(0,1);assert.match(el('notice').textContent,/Move or remove a button first/);assert.equal(saveEnabled(ctx),false,'nothing changed');
+  countTool(2,2);assert.equal(saveEnabled(ctx),true);assert.match(content.innerHTML,/edit-grid spans/);assert.match(content.innerHTML,/data-row-count="2" data-n="2"[^>]*aria-pressed="true"/);
+  pinnedTool(1);assert.match(el('notice').textContent,/Remove a button from the fixed row first/);
+  pinnedTool(3);assert.match(content.innerHTML,/data-pinned-count="3"[^>]*aria-pressed="true"/);
+  await pressSave(ctx);assert.deepEqual(J(hub.activities[0].screen.rowCounts),{2:2});assert.equal(hub.activities[0].screen.pinnedCount,3);assert.equal(saveEnabled(ctx),false,'saved');
+  countTool(2,4);pinnedTool(4);await pressSave(ctx);
+  assert.equal('rowCounts' in hub.activities[0].screen,false);assert.equal('pinnedCount' in hub.activities[0].screen,false,'back to the defaults leaves nothing stored');
   // With no room, it says so and changes nothing.
   ({content,ctx}=setup({...base0,screen:{columns:4,cells:[sc('Up',0),sc('Down',31)],pinned:[]}}));
   click(content,'[data-add-row]');placeAt(0);
