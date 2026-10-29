@@ -164,7 +164,7 @@ def run():
                 "MQTT_CONFIG": base / "mqtt.json", "WPA_CONFIG": base / "wifi.conf", "HUB_ID_FILE": base / "hub_id",
                 "RESOURCE_RELOAD_FLAG": base / "reload", "CODEX_BIN_DIR": base / "absent-helpers",
                 "IR_SEND_LOCK": base / "ir.lock",
-                "LOCAL_UPDATE_STAGE": base / "update", "LOCAL_UPDATE_BACKUP": base / "rollback", "LOCAL_UPDATE_VOLUME": base,
+                "LOCAL_WPA_STATUS_CMD": f"cat {base}/wpa-status.txt 2>/dev/null", "LOCAL_UPDATE_STAGE": base / "update", "LOCAL_UPDATE_BACKUP": base / "rollback", "LOCAL_UPDATE_VOLUME": base,
                 "LOCAL_CORE_FILE": base / "localcore.lua", "LOCAL_MQTT_FILE": base / "codexmqtt.lua",
                 "LOCAL_INIT_FILE": base / "init.sh", "LOCAL_MAINTENANCE_FILE": base / "maintenance.sh"}
         source = ROOT / "payload/source"
@@ -583,6 +583,19 @@ def run():
             assert roku_config([]) == 200 and request("network/devices", cookie=cookie)[1]["devices"] == []
             fake.shutdown()
             print("Roku: validation, private-address rule, command catalog, key sends, test query, refusals and activity steps passed")
+            # Wi-Fi status: the network the hub is on, read from wpa_supplicant's own output; owner only.
+            assert request("network/status")[0] == 401
+            status, net, _ = request("network/status", cookie=cookie)
+            assert status == 200 and net["available"] is False and (net["ssid"], net["state"], net["ip"]) == ("", "", ""), net
+            (base / "wpa-status.txt").write_text("bssid=aa:bb:cc:dd:ee:ff\nssid=Home WiFi\nid=0\nwpa_state=COMPLETED\nip_address=192.168.1.50\n")
+            net = request("network/status", cookie=cookie)[1]
+            assert (net["available"], net["ssid"], net["state"], net["ip"]) == (True, "Home WiFi", "COMPLETED", "192.168.1.50"), net
+            (base / "wpa-status.txt").write_bytes(b"ssid=Caf\xc3\xa9\x01\"x\nwpa_state=ASSOCIATING\n")
+            net = request("network/status", cookie=cookie)[1]
+            assert (net["available"], net["state"], net["ip"]) == (True, "ASSOCIATING", "") and net["ssid"] == 'Caf???"x', net
+            (base / "wpa-status.txt").write_text("")
+            assert request("network/status", cookie=cookie)[1]["available"] is False
+            print("Wi-Fi status: owner only, the connected network and address, odd bytes made safe, nothing reported when wpa_cli says nothing passed")
             # Valid signature accepted; changed signature/platform/manifest rejected before staging.
             from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
             from cryptography.hazmat.primitives import serialization

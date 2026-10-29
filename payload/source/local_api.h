@@ -914,11 +914,37 @@ static void local_mqtt(int fd, const struct request *r, const cJSON *body) {
 done:
     if (lock >= 0) close(lock); cJSON_Delete(config);
 }
+#ifndef LOCAL_WPA_STATUS_CMD
+#define LOCAL_WPA_STATUS_CMD "wpa_cli -i ath0 status 2>/dev/null"
+#endif
+/* One "key=value" line of wpa_cli's status output. Only lines that start with the key count (so "ssid" is not "bssid"),
+   and only printable ASCII is kept (wpa_supplicant writes other bytes as \xNN escapes), so the JSON reply stays valid. */
+static void wpa_field(const char *raw, const char *key, char *out, size_t size) {
+    size_t n = strlen(key), i; const char *p = raw; out[0] = 0;
+    while (p && *p) {
+        if (!strncmp(p, key, n) && p[n] == '=') {
+            p += n + 1; for (i = 0; i + 1 < size && p[i] && p[i] != '\r' && p[i] != '\n'; i++) out[i] = ((unsigned char)p[i] < 32 || (unsigned char)p[i] > 126) ? '?' : p[i];
+            out[i] = 0; return;
+        }
+        p = strchr(p, '\n'); if (p) p++;
+    }
+}
+/* GET /api/v1/network/status (owner): the Wi-Fi network the hub is on right now, from wpa_supplicant's own status,
+   so the Wi-Fi form is not blind. "available" is false when wpa_cli is missing or reports nothing. */
+static void local_network_status(int fd) {
+    char raw[1024], ssid[48], state[32], ip[48]; cJSON *out = cJSON_CreateObject();
+    int ran = run_cmd(LOCAL_WPA_STATUS_CMD, raw, sizeof(raw)) == 0;
+    if (!ran) raw[0] = 0;
+    wpa_field(raw, "ssid", ssid, sizeof(ssid)); wpa_field(raw, "wpa_state", state, sizeof(state)); wpa_field(raw, "ip_address", ip, sizeof(ip));
+    cJSON_AddBoolToObject(out, "ok", 1); cJSON_AddBoolToObject(out, "available", ran && state[0]);
+    cJSON_AddStringToObject(out, "ssid", ssid); cJSON_AddStringToObject(out, "state", state); cJSON_AddStringToObject(out, "ip", ip);
+    lj_reply(fd, "200 OK", out); cJSON_Delete(out);
+}
 static void local_wifi(int fd, const struct request *r, const cJSON *body) {
     int lock = local_lock(); cJSON *reply = cJSON_CreateObject(); struct wifi_config config; char result[512];
     if (lock < 0) { local_error(fd, "409 Conflict", "Another network change is in progress."); goto done; }
     if (!strcmp(r->path, "/api/v1/network/confirm")) {
-        if (access(LOCAL_ROOT "/wifi.pending", F_OK) || run_cmd("wpa_cli -i ath0 status 2>/dev/null", result, sizeof(result)) || !strstr(result, "wpa_state=COMPLETED")) {
+        if (access(LOCAL_ROOT "/wifi.pending", F_OK) || run_cmd(LOCAL_WPA_STATUS_CMD, result, sizeof(result)) || !strstr(result, "wpa_state=COMPLETED")) {
             local_error(fd, "409 Conflict", "The new network is not connected yet."); goto done;
         }
         load_wifi(&config);
@@ -1024,6 +1050,7 @@ static int local_dispatch(int fd, const struct request *r) {
     else if (!strcmp(r->path, "/api/v1/updates/status") && get) local_update_status(fd);
     else if (!strncmp(r->path, "/api/v1/updates/", 16) && !get) local_updates(fd, r, body);
     else if (!strcmp(r->path, "/api/v1/integrations/mqtt")) local_mqtt(fd, r, body);
+    else if (!strcmp(r->path, "/api/v1/network/status") && get) local_network_status(fd);
     else if ((!strcmp(r->path, "/api/v1/network/wifi") || !strcmp(r->path, "/api/v1/network/confirm")) && !get) local_wifi(fd, r, body);
     else if (!strcmp(r->path, "/api/v1/maintenance/reboot") && !get) {
         out = lj_parse("{\"ok\":true}"); lj_reply(fd, "200 OK", out); cJSON_Delete(out);
