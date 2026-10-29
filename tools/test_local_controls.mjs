@@ -243,6 +243,16 @@ assert.deepEqual(meta('_Converted_/Pronto/S/Samsung/PN64D8000.ir'),{brand:'Samsu
 assert.deepEqual(meta('Fans/Generic_Fan_HS95104SK.ir'),{brand:'',model:'Generic Fan HS95104SK',deviceType:'Other',curated:true});
 console.log('Profile search by brand, model and type, path-derived details, ranking, receiver aliases and hidden controls passed');
 
+// The Wi-Fi line in Settings > Advanced.
+{
+  const code=source.slice(source.indexOf('function wifiStatusText('),source.indexOf('async function renderSettings('));
+  const context=vm.createContext({});vm.runInContext(code,context);
+  const text=net=>vm.runInContext(`wifiStatusText(${JSON.stringify(net)})`,context);
+  assert.equal(text({available:true,ssid:'Home WiFi',state:'COMPLETED',ip:'192.168.1.50'}),'Connected to Home WiFi (192.168.1.50).');
+  assert.equal(text({available:true,ssid:'Home WiFi',state:'ASSOCIATING',ip:''}),'Connected to Home WiFi, associating.');
+  assert.equal(text({available:false,ssid:'',state:'',ip:''}),'The hub did not report its network.');
+  assert.equal(text(null),'The hub did not report its network.');
+}
 // ---- Search sources: the built-in Flipper-IRDB plus repositories the user adds ----
 {
   const J=value=>JSON.parse(JSON.stringify(value));
