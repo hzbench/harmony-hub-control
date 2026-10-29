@@ -243,6 +243,160 @@ assert.deepEqual(meta('_Converted_/Pronto/S/Samsung/PN64D8000.ir'),{brand:'Samsu
 assert.deepEqual(meta('Fans/Generic_Fan_HS95104SK.ir'),{brand:'',model:'Generic Fan HS95104SK',deviceType:'Other',curated:true});
 console.log('Profile search by brand, model and type, path-derived details, ranking, receiver aliases and hidden controls passed');
 
+// ---- Search sources: the built-in Flipper-IRDB plus repositories the user adds ----
+{
+  const J=value=>JSON.parse(JSON.stringify(value));
+  const run=(code,context=remote)=>J(vm.runInContext(code,context));
+  const spec=input=>run(`parseSourceSpec(${JSON.stringify(input)})`);
+  // What may be added: owner/name (or a github.com link), an optional branch and folder, one of three layouts.
+  assert.deepEqual(spec({repo:'Someone/My-Remotes'}).source,{id:'someone/my-remotes||',name:'Someone/My-Remotes',repo:'Someone/My-Remotes',branch:'',folder:'',layout:'brand'});
+  assert.equal(spec({repo:'https://github.com/Someone/My-Remotes.git/'}).source.repo,'Someone/My-Remotes','a pasted link and a .git ending are accepted');
+  const full=spec({repo:'a/b',branch:'dev/v2',folder:'/Remotes/TVs/',layout:'category'}).source;
+  assert.deepEqual([full.branch,full.folder,full.layout,full.name],['dev/v2','Remotes/TVs','category','a/b / Remotes/TVs']);
+  assert.equal(spec({repo:'a/b',layout:'nonsense'}).source.layout,'brand','an unknown layout falls back to Brand/Model');
+  for(const bad of [{repo:''},{repo:'justaname'},{repo:'a/b/c'},{repo:'-a/b'},{repo:'a/..'},{repo:'a b/c'},{repo:'a/b',branch:'x..y'},{repo:'a/b',branch:'/x'},{repo:'a/b',branch:'x y'},{repo:'a/b',folder:'../etc'},{repo:'a/b',folder:'a/./b'},{repo:'a/b',folder:'a;b'}])
+    assert.equal(spec(bad).ok,false,'rejects '+JSON.stringify(bad));
+  assert.match(spec({repo:'nope'}).error,/owner\/name/);
+
+  // A source's own files: its folder, readable formats only, no tooling files; each remembers where it came from.
+  const src=spec({repo:'a/b',folder:'Remotes',layout:'category'}).source;
+  const tree=['Remotes/TVs/Sony/Bravia_X90.ir','Remotes/Audio/Bose/Solo_5.csv','Remotes/README.md','Remotes/Fans/fan.json','Remotes/package.json','Remotes/.github/x.json','Other/TVs/LG/LG_C1.ir','Remotes/notes.txt'].map(path=>({type:'blob',path}));
+  tree.push({type:'tree',path:'Remotes/TVs'});
+  const entries=run(`profileEntries(${JSON.stringify(src)},${JSON.stringify(tree)})`);
+  assert.deepEqual(entries.map(e=>e.path),['Remotes/TVs/Sony/Bravia_X90.ir','Remotes/Audio/Bose/Solo_5.csv','Remotes/Fans/fan.json'],'only readable formats under the folder');
+  assert.deepEqual(entries.map(e=>e.rel),['TVs/Sony/Bravia_X90.ir','Audio/Bose/Solo_5.csv','Fans/fan.json'],'details are read relative to the folder');
+  assert.deepEqual([entries[0].repo,entries[0].sourceName,entries[0].key],['a/b','a/b / Remotes','a/b/Remotes/TVs/Sony/Bravia_X90.ir']);
+  const builtin=run(`profileEntries(BUILTIN_SOURCE,${JSON.stringify([{type:'blob',path:'TVs/Vizio/Vizio.ir'},{type:'blob',path:'Notes/x.csv'}])})`);
+  assert.equal(builtin.length,1,'the built-in source still lists only .ir files');assert.equal(builtin[0].key,'TVs/Vizio/Vizio.ir','and keeps its plain path as the key, so "already tried" is unchanged');
+
+  // Brand, model and type from the folders, by the layout chosen for the source.
+  const m=(path,layout)=>run(`profileMeta(${JSON.stringify(path)},${JSON.stringify(layout)})`);
+  assert.deepEqual(m('Sony/Sony_Bravia_X90.ir','brand'),{brand:'Sony',model:'Bravia X90',deviceType:'',curated:true});
+  assert.deepEqual(m('TVs/Sony/Bravia_X90.ir','category'),{brand:'Sony',model:'Bravia X90',deviceType:'Television',curated:true});
+  assert.equal(m('Soundbars/Bose/Solo_5.csv','category').deviceType,'Audio');
+  assert.equal(m('Sony/Bravia_TV_X90.ir','brand').deviceType,'Television','a type word in the file name counts when the folders say nothing');
+  assert.deepEqual(m('Bravia_X90.ir','brand'),{brand:'',model:'Bravia X90',deviceType:'',curated:true},'a file with no folder has no brand and shows its path');
+  assert.deepEqual(m('TVs/Vizio/Vizio_D43-C1.ir','flipper'),meta('TVs/Vizio/Vizio_D43-C1.ir'),'the Flipper layout is unchanged');
+
+  // Searching merges the sources; the same profile in two sources is listed once, from the first.
+  const fromFlipper=run(`profileEntries(BUILTIN_SOURCE,${JSON.stringify(['TVs/Sony/Sony_Bravia_X90.ir','TVs/Sony/Sony_KD55.ir'].map(path=>({type:'blob',path})))})`);
+  const fromMine=run(`profileEntries(${JSON.stringify(src)},${JSON.stringify(['Remotes/TVs/Sony/Sony_Bravia_X90.ir','Remotes/TVs/Sony/Sony_A80J.ir'].map(path=>({type:'blob',path})))})`);
+  const merged=run(`mergeProfiles([${JSON.stringify(fromFlipper)},${JSON.stringify(fromMine)}])`);
+  assert.deepEqual(merged.map(e=>e.source+':'+e.path),['builtin:TVs/Sony/Sony_Bravia_X90.ir','builtin:TVs/Sony/Sony_KD55.ir',src.id+':Remotes/TVs/Sony/Sony_A80J.ir']);
+  assert.deepEqual(run(`mergeProfiles([${JSON.stringify(fromMine)}])`).length,2,'one source needs no merging');
+  const found=run(`findProfiles(${JSON.stringify(merged)},{brand:'Sony'})`);
+  assert.equal(found.length,3);assert.ok(found.every(f=>f.brand==='Sony'));
+  assert.equal(found.find(f=>f.path.endsWith('A80J.ir')).sourceName,'a/b / Remotes','each result says which source it is from');
+  assert.equal(found.find(f=>f.path.endsWith('A80J.ir')).model,'A80J');
+  assert.equal(run(`similarProfiles(${JSON.stringify(merged)},{brand:'Sony',model:'ZZ9',type:'',})`).length,3,'the closest-profiles fallback covers every source');
+
+  // Where a file is fetched from, and how it is read.
+  assert.equal(run(`rawUrl(${JSON.stringify(fromFlipper[0])})`),'https://raw.githubusercontent.com/Lucaslhm/Flipper-IRDB/main/TVs/Sony/Sony_Bravia_X90.ir');
+  assert.equal(run(`rawUrl({repo:'a/b',branch:'dev/v2',path:'My Remotes/TV #1.ir'})`),'https://raw.githubusercontent.com/a/b/dev%2Fv2/My%20Remotes/TV%20%231.ir');
+  assert.deepEqual(['x.ir','x.CSV','x.lircd','x.conf','x.json','x.girr'].map(f=>run(`profileHint(${JSON.stringify(f)})`)),['flipper','irdb','lirc','lirc','smartir','']);
+  assert.equal(run(`profileTitle('a/b/Vizio_D43.json')`),'Vizio D43');
+}
+
+// The loader: sources kept on the phone, read one at a time, and a source that fails does not stop the others.
+{
+  const J=value=>JSON.parse(JSON.stringify(value));
+  const pure=source.slice(source.indexOf('const profileNorm='),source.indexOf('let profileIndex,'));
+  const loader=source.slice(source.indexOf('let profileIndex,'),source.indexOf('function renderSearch('));
+  const make=(routes,stored={})=>{
+    const store=new Map(Object.entries(stored)),calls=[];
+    const context=vm.createContext({readLocal:(k,f='')=>store.get(k)||f,writeLocal:(k,v)=>store.set(k,v),AbortSignal,Error,JSON,
+      fetch:async url=>{calls.push(url.replace('https://api.github.com/',''));
+        const hit=Object.entries(routes).find(([key])=>url.endsWith(key));
+        if(!hit)return {ok:false,status:404,json:async()=>({})};
+        const [status,body]=typeof hit[1]==='function'?hit[1]():hit[1];
+        if(status==='offline')throw new TypeError('offline');
+        return {ok:status<300,status,json:async()=>body};}});
+    vm.runInContext(pure+loader,context);context.calls=calls;context.store=store;return context;
+  };
+  const tree=(...paths)=>[200,{tree:paths.map(path=>({type:'blob',path}))}];
+  const flipper=tree('TVs/Sony/Sony_X90.ir');
+  const listed=ctx=>J(vm.runInContext('profileSources().map(({id,enabled,builtin})=>({id,enabled,builtin:!!builtin}))',ctx));
+  let c=make({'repos/Lucaslhm/Flipper-IRDB/git/trees/main?recursive=1':flipper});
+  assert.deepEqual(listed(c),[{id:'builtin',enabled:true,builtin:true}],'a fresh phone has just the built-in source');
+  assert.equal((await vm.runInContext('loadProfileIndex()',c)).length,1);
+  await vm.runInContext('loadProfileIndex()',c);assert.equal(c.calls.length,1,'the second search reuses what was read');
+
+  const stored={'harmony-sources':JSON.stringify({builtinOff:false,custom:[{repo:'a/b',folder:'Remotes',layout:'category',enabled:true},{repo:'bad',enabled:true},{repo:'c/d',enabled:false}]})};
+  const routes={'repos/Lucaslhm/Flipper-IRDB/git/trees/main?recursive=1':flipper,'repos/a/b':[200,{default_branch:'trunk'}],'repos/a/b/git/trees/trunk?recursive=1':tree('Remotes/TVs/LG/LG_C1.ir','Remotes/README.md')};
+  c=make(routes,stored);
+  assert.deepEqual(listed(c).map(x=>x.id),['builtin','a/b||remotes','c/d||'],'an invalid stored source is dropped; a turned-off one stays in the list');
+  let index=await vm.runInContext('loadProfileIndex()',c);
+  assert.deepEqual(J(index).map(f=>f.sourceName),['Flipper-IRDB','a/b / Remotes'],'the sources are merged in order');
+  assert.deepEqual(c.calls,['repos/Lucaslhm/Flipper-IRDB/git/trees/main?recursive=1','repos/a/b','repos/a/b/git/trees/trunk?recursive=1'],'a repository added without a branch asks for its default; the turned-off one is not read');
+  assert.equal(index.length,2);assert.equal(vm.runInContext('profileProblems.length',c),0);
+
+  // A failing source is reported, the rest still search.
+  c=make({...routes,'repos/a/b':[404,{}]},stored);
+  index=await vm.runInContext('loadProfileIndex()',c);
+  assert.equal(index.length,1);assert.match(J(vm.runInContext('profileProblems',c))[0].message,/not found, or it is private/);
+  c=make({...routes,'repos/a/b/git/trees/trunk?recursive=1':[200,{truncated:true,tree:[]}]},stored);
+  await vm.runInContext('loadProfileIndex()',c);assert.match(J(vm.runInContext('profileProblems',c))[0].message,/too large to read completely/);
+  c=make({...routes,'repos/a/b':[403,{}]},stored);
+  await vm.runInContext('loadProfileIndex()',c);assert.match(J(vm.runInContext('profileProblems',c))[0].message,/limiting requests/);
+  c=make({...routes,'repos/a/b':['offline',{}]},stored);
+  await vm.runInContext('loadProfileIndex()',c);assert.match(J(vm.runInContext('profileProblems',c))[0].message,/could not be reached/);
+  // With only one source on, its own message is shown as before; with none on, the person is told what to do.
+  c=make({},{});await assert.rejects(()=>vm.runInContext('loadProfileIndex()',c),/Community search is unavailable/);
+  c=make({'repos/Lucaslhm/Flipper-IRDB/git/trees/main?recursive=1':[200,{truncated:true,tree:[]}]});await assert.rejects(()=>vm.runInContext('loadProfileIndex()',c),/Community index is incomplete/);
+  c=make(routes,{'harmony-sources':JSON.stringify({builtinOff:true,custom:[]})});await assert.rejects(()=>vm.runInContext('loadProfileIndex()',c),/turned off/);
+  c=make({},stored);await assert.rejects(()=>vm.runInContext('loadProfileIndex()',c),/No search source could be read/);
+
+  // Adding checks that the repository exists and has profiles; saving keeps the list on the phone.
+  c=make(routes);
+  const added=await vm.runInContext(`fetchSource(parseSourceSpec({repo:'a/b',folder:'Remotes',layout:'category'}).source)`,c);
+  assert.deepEqual([added.source.branch,added.entries.length],['trunk',1]);
+  vm.runInContext(`saveProfileSources([...profileSources(),{...parseSourceSpec({repo:'a/b',folder:'Remotes',layout:'category'}).source,enabled:true}])`,c);
+  assert.deepEqual(listed(c).map(x=>x.id),['builtin','a/b||remotes']);
+  vm.runInContext(`{const l=profileSources();l[0].enabled=false;saveProfileSources(l);}`,c);
+  assert.deepEqual(listed(c).map(x=>x.enabled),[false,true],'the built-in source can be turned off and the choice is kept');
+  assert.equal(JSON.parse(c.store.get('harmony-sources')).custom[0].branch,'','the default branch is looked up each time, not frozen');
+  await assert.rejects(()=>vm.runInContext(`fetchSource({repo:'x/y',branch:'main'})`,make({})),/branch was not found/);
+}
+
+// The Search sources panel in the wizard: list, turn on/off, remove, add (with the repository checked first).
+{
+  const pure=source.slice(source.indexOf('const profileNorm='),source.indexOf('let profileIndex,'));
+  const loader=source.slice(source.indexOf('let profileIndex,'),source.indexOf('function renderDraftLearn('));
+  const store=new Map(),notices=[],fields={};
+  const routes={'repos/o/r':[200,{default_branch:'main'}],'repos/o/r/git/trees/main?recursive=1':[200,{tree:[{type:'blob',path:'Sony/Bravia.ir'}]}],
+    'repos/Lucaslhm/Flipper-IRDB/git/trees/main?recursive=1':[200,{tree:[{type:'blob',path:'TVs/Sony/Sony_X90.ir'}]}],'repos/o/empty':[200,{default_branch:'main'}],'repos/o/empty/git/trees/main?recursive=1':[200,{tree:[{type:'blob',path:'README.md'}]}]};
+  const context=vm.createContext({state:{draft:null,editor:null},readLocal:(k,f='')=>store.get(k)||f,writeLocal:(k,v)=>store.set(k,v),AbortSignal,Error,JSON,escape:String,
+    field:(label,id)=>`<input id="${id}">`,setupProgress:()=>'',returnToDevice(){},window:{scrollTo(){}},
+    mount:html=>{context.html=html;},$:id=>fields[id]||(fields[id]={value:'',textContent:'',hidden:false,isConnected:true,focus(){}}),
+    busy:async(button,label,task)=>{try{await task();}catch(error){notices.push({m:error.message,e:true});}},notice:(m,e)=>notices.push({m,e:!!e}),
+    fetch:async url=>{const hit=Object.entries(routes).find(([key])=>url.endsWith(key));if(!hit)return {ok:false,status:404,json:async()=>({})};return {ok:true,status:hit[1][0],json:async()=>hit[1][1]};}});
+  vm.runInContext(pure+loader,context);
+  vm.runInContext('renderSearch()',context);
+  const body=context.$('sources-body');
+  assert.match(context.html,/<details id="sources" class="sources"><summary>Search sources<\/summary>/);
+  assert.match(body.innerHTML,/Flipper-IRDB<\/strong>/);assert.match(body.innerHTML,/data-source-on="0" checked/);assert.doesNotMatch(body.innerHTML,/data-source-remove/,'the built-in source cannot be removed');
+  assert.match(body.innerHTML,/belong to their owners/);assert.match(body.innerHTML,/id="source-form"/);
+  const submit=async (repo,extra={})=>{context.$('source-repo').value=repo;context.$('source-branch').value=extra.branch||'';context.$('source-folder').value=extra.folder||'';context.$('source-layout').value=extra.layout||'brand';
+    await body.onsubmit({preventDefault(){},submitter:{}});};
+  await submit('nonsense');assert.match(notices.at(-1).m,/owner\/name/);
+  await submit('o/missing');assert.match(notices.at(-1).m,/not found/);
+  await submit('o/empty');assert.match(notices.at(-1).m,/No profile files were found in that repository/);
+  assert.equal(store.has('harmony-sources'),false,'nothing is saved for a source that failed');
+  await submit('o/r');assert.match(notices.at(-1).m,/Added o\/r: 1 profile file\./);
+  assert.match(body.innerHTML,/o\/r<\/strong>/);assert.match(body.innerHTML,/data-source-remove="1"/);assert.match(body.innerHTML,/Brand\/Model/);
+  await submit('O/R');assert.match(notices.at(-1).m,/already in the list/,'the same repository is not added twice');
+  // Turn the built-in source off, then back on; remove the added one.
+  body.onchange({target:{closest:sel=>sel==='[data-source-on]'?{dataset:{sourceOn:'0'},checked:false}:null}});
+  assert.equal(JSON.parse(store.get('harmony-sources')).builtinOff,true);assert.doesNotMatch(body.innerHTML,/data-source-on="0" checked/);
+  body.onchange({target:{closest:sel=>sel==='[data-source-on]'?{dataset:{sourceOn:'0'},checked:true}:null}});assert.equal(JSON.parse(store.get('harmony-sources')).builtinOff,false);
+  body.onclick({target:{closest:sel=>sel==='[data-source-remove]'?{dataset:{sourceRemove:'1'}}:null}});
+  assert.deepEqual(JSON.parse(store.get('harmony-sources')).custom,[]);assert.doesNotMatch(body.innerHTML,/data-source-remove/);
+  // At the limit the form gives way to a note.
+  for(let i=1;i<=5;i++){routes[`repos/o/r${i}`]=[200,{default_branch:'main'}];routes[`repos/o/r${i}/git/trees/main?recursive=1`]=[200,{tree:[{type:'blob',path:'A/B.ir'}]}];await submit('o/r'+i);}
+  assert.doesNotMatch(body.innerHTML,/id="source-form"/);assert.match(body.innerHTML,/You can have 5 sources of your own/);
+}
+console.log('Search sources: spec checks, folder and format filtering, layouts, merging, duplicates, per-source failures and phone storage passed');
+
 // A Roku is a kind of device: Add device offers it next to Infrared and Bluetooth and hands over to the Roku screen.
 {
   const code=source.slice(source.indexOf('const ROKU_SCREEN'),source.indexOf('function profilePayload('));
