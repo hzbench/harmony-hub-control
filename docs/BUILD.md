@@ -138,8 +138,10 @@ compiler or the signing key on their own machine.
   software's `/go/` page, so most features arrive with a hub release. Setup > Software update needs
   app 0.2.0 or newer to choose the update file, and a hub that already has the update screen's
   `GET /api/v1/updates/status`; the first release with it is the first one made by this workflow.
-- **Key:** an Ed25519 key, off the hub. The private half is the repository secret
-  `HUB_RELEASE_KEY_PEM`; the public half (64 hex characters) is the repository variable
+- **Key:** an Ed25519 key, off the hub. The private half is the secret `HUB_RELEASE_KEY_PEM` of the
+  `release` **environment** (Settings > Environments > release), which requires the owner's approval
+  and only runs from `main`: the signing job waits for a click, for a release and for a hand-run dry run
+  alike. Keep it out of the repository-level secrets, where any workflow could read it. The public half (64 hex characters) is the repository variable
   `HUB_RELEASE_PUBLIC_KEY` and is what each hub must be given once, over owner SSH:
   `install_webui.py --release-public-key <file-with-the-public-key>`. The build fails if the
   secret's key is not the one that variable names. A secret can't be read back out of GitHub, so
