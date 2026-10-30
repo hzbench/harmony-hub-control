@@ -628,7 +628,15 @@ console.log('Hardware volume drives the open device remote, else the running act
   // A picture that fails to load is replaced by the channel's name (or removed from the picker).
   const onError=context.listeners.find(l=>l.type==='error'&&l.capture===true).fn;
   let replaced=null;
-  onError({target:{tagName:'IMG',classList:{contains:c=>c==='cell-icon'},dataset:{name:'Netflix'},replaceWith:x=>{replaced=x;}}});
+  // The hub may say "busy" or the Roku may be slow: the picture is asked for again, a moment apart, up to three times before the name takes over.
+  const later=[];context.setTimeout=fn=>{later.push(fn);return 0;};
+  const image={tagName:'IMG',classList:{contains:c=>c==='cell-icon'},dataset:{name:'Netflix'},isConnected:true,src:'',getAttribute:()=>image.src,replaceWith:x=>{replaced=x;}};
+  image.src='/api/v1/roku/icon?deviceId=roku_tv&id=12';
+  for(let round=1;round<=3;round++){
+    onError({target:image});assert.equal(replaced,null,'not yet: asking again');assert.equal(later.length,round);later[round-1]();
+    assert.equal(image.src,'/api/v1/roku/icon?deviceId=roku_tv&id=12&r='+round,'the same picture, with a changing note so it is really asked again');
+  }
+  onError({target:image});
   assert.deepEqual([replaced.tagName,replaced.className,replaced.textContent],['SPAN','cell-text','Netflix']);
   let removed=false;onError({target:{tagName:'IMG',classList:{contains:c=>c==='channel-icon'},remove(){removed=true;}}});assert.equal(removed,true);
   replaced=null;onError({target:{tagName:'IMG',classList:{contains:()=>false},replaceWith:x=>{replaced=x;}}});onError({target:{tagName:'DIV'}});assert.equal(replaced,null,'other images and elements are left alone');

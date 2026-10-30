@@ -433,7 +433,10 @@ def run():
                 def do_GET(self):
                     seen.append(("GET", self.path))
                     if self.path == "/query/apps": return self.reply(200, apps_xml[0])
-                    if self.path.startswith("/query/icon/"): return self.reply(*icons.get(self.path.rsplit("/", 1)[1], (404, b"")))
+                    if self.path.startswith("/query/icon/"):
+                        status, body, *delay = icons.get(self.path.rsplit("/", 1)[1], (404, b""))
+                        if delay: time.sleep(delay[0])
+                        return self.reply(status, body)
                     self.reply(200, b"<device-info><friendly-device-name>Fake Roku</friendly-device-name></device-info>" if self.path == "/query/device-info" else b"")
                 def do_POST(self):
                     seen.append(("POST", self.path))
@@ -591,7 +594,8 @@ def run():
             png = b"\x89PNG\r\n\x1a\n" + bytes(range(256)) + b"\x00\x00end"
             jpg = b"\xff\xd8\xff\xe0" + bytes(range(256)) + b"\x00tail"
             icons.update({"12": (200, png), "2285": (200, jpg), "13": (200, b"<html>not a picture</html>"), "14": (200, png + b"x" * 200000)})
-            favorites = [{"id": i, "name": n} for i, n in (("12", "Netflix"), ("2285", "Hulu"), ("13", "Fake"), ("14", "Huge"), ("15", "Offline"))]
+            favorites = [{"id": i, "name": n} for i, n in (("12", "Netflix"), ("2285", "Hulu"), ("13", "Fake"), ("14", "Huge"), ("15", "Offline"),
+                                                           ("31", "Dark"), ("41", "SlowA"), ("42", "SlowB"), ("43", "SlowC"), ("44", "SlowD"))]
             assert roku_config([dict(tv, channels=favorites), box]) == 200
             commands = {c["name"]: c for c in request("network/devices", cookie=cookie)[1]["devices"][0]["commands"]}
             assert commands["Netflix"]["channel"] == "12" and "channel" not in commands["Home"], "channel commands carry the id the page asks for"
@@ -611,12 +615,21 @@ def run():
             assert raw_get("/api/v1/roku/icon?deviceId=roku_tv&id=13", cookie)[0] == 404, "a reply that is not a picture is not kept or served"
             assert raw_get("/api/v1/roku/icon?deviceId=roku_tv&id=14", cookie)[0] == 404, "a picture over the size limit is refused"
             assert raw_get("/api/v1/roku/icon?deviceId=roku_tv&id=15", cookie)[0] == 404, "a Roku with no such icon and no kept copy"
-            assert sorted(x.name for x in icon_dir.iterdir()) == ["roku_tv-12.img", "roku_tv-2285.img"], "only good pictures are kept"
+            pictures = lambda: sorted(x.name for x in icon_dir.iterdir() if x.name.endswith(".img"))
+            assert pictures() == ["roku_tv-12.img", "roku_tv-2285.img"], "only good pictures are kept"
+            assert (icon_dir / "roku_tv-13.miss").exists() and (icon_dir / "roku_tv-14.miss").exists() and (icon_dir / "roku_tv-15.miss").exists(), "a channel with no usable picture is noted"
+            asked = lambda cid: len([x for x in seen if x[1] == f"/query/icon/{cid}"])
+            assert asked(15) == 1
+            assert raw_get("/api/v1/roku/icon?deviceId=roku_tv&id=15", cookie)[0] == 404 and asked(15) == 1, "...and the Roku is not asked again for ten minutes"
+            miss_old = time.time() - 700
+            os.utime(icon_dir / "roku_tv-15.miss", (miss_old, miss_old))
+            assert raw_get("/api/v1/roku/icon?deviceId=roku_tv&id=15", cookie)[0] == 404 and asked(15) == 2, "after that it is asked again"
             # A copy older than a week is fetched again, but a stale one still answers when the Roku does not.
             old = time.time() - 8 * 24 * 3600
             os.utime(icon_dir / "roku_tv-12.img", (old, old))
             assert raw_get("/api/v1/roku/icon?deviceId=roku_tv&id=12", cookie)[2] == png, "stale copy served while the Roku says no"
             png2 = b"\x89PNG\r\n\x1a\n" + b"\x00new picture"
+            (icon_dir / "roku_tv-12.miss").unlink()   # (the Roku's "no" a moment ago is a note too; it ages out after ten minutes)
             icons["12"] = (200, png2)
             assert raw_get("/api/v1/roku/icon?deviceId=roku_tv&id=12", cookie)[2] == png2 and (icon_dir / "roku_tv-12.img").read_bytes() == png2, "refreshed"
             # The kept pictures never grow without bound: the oldest go first.
@@ -624,9 +637,30 @@ def run():
                 path = icon_dir / f"filler-{i}.img"; path.write_bytes(png); os.utime(path, (old - i, old - i))
             icons["2285"] = (200, jpg); os.utime(icon_dir / "roku_tv-2285.img", (old, old))
             assert raw_get("/api/v1/roku/icon?deviceId=roku_tv&id=2285", cookie)[2] == jpg
-            kept = sorted(x.name for x in icon_dir.iterdir())
+            kept = pictures()
             assert len(kept) == 48 and "roku_tv-12.img" in kept and "roku_tv-2285.img" in kept, len(kept)
             assert "filler-0.img" in kept and "filler-59.img" not in kept and sum(n.startswith("filler-") for n in kept) == 46, "the oldest pictures were the ones removed"
+            # A Roku that is off: one failed try is remembered for a minute, so the hub's few worker processes are not tied up.
+            fake.shutdown(); fake.server_close()
+            assert raw_get("/api/v1/roku/icon?deviceId=roku_tv&id=31", cookie)[0] == 404 and (icon_dir / "roku_tv.down").exists()
+            fake = http.server.ThreadingHTTPServer(("127.0.0.1", roku_port), FakeRoku)
+            threading.Thread(target=fake.serve_forever, daemon=True).start()
+            icons["31"] = (200, png)
+            assert raw_get("/api/v1/roku/icon?deviceId=roku_tv&id=31", cookie)[0] == 404 and asked(31) == 0, "the Roku is left alone while it is noted as down"
+            down_old = time.time() - 120
+            os.utime(icon_dir / "roku_tv.down", (down_old, down_old))
+            assert raw_get("/api/v1/roku/icon?deviceId=roku_tv&id=31", cookie)[2] == png and not (icon_dir / "roku_tv.down").exists(), "after a minute it is tried again, and the note goes when it answers"
+            # At most two pictures are fetched at once; the others are told "busy" straight away, and succeed when asked again.
+            for cid in ("41", "42", "43", "44"): icons[cid] = (200, png, 1.2)
+            outcomes = []
+            def fetch(cid):
+                started = time.time(); status = raw_get(f"/api/v1/roku/icon?deviceId=roku_tv&id={cid}", cookie)[0]; outcomes.append((cid, status, time.time() - started))
+            workers = [threading.Thread(target=fetch, args=(cid,)) for cid in ("41", "42", "43", "44")]
+            [w.start() for w in workers]; [w.join() for w in workers]
+            assert sorted(o[1] for o in outcomes) == [200, 200, 503, 503], outcomes
+            assert all(o[2] < 0.8 for o in outcomes if o[1] == 503) and all(o[2] >= 1.0 for o in outcomes if o[1] == 200), outcomes
+            assert not list(icon_dir.glob("*-4?.miss")) and not (icon_dir / "roku_tv.down").exists(), "being busy is not a failure and leaves no note"
+            for cid in [o[0] for o in outcomes if o[1] == 503]: assert raw_get(f"/api/v1/roku/icon?deviceId=roku_tv&id={cid}", cookie)[2] == png, "asked again, it works"
             print("Roku icons: fetched once and kept, served as the right type, refused when not a picture or too big, refreshed after a week, bounded in number, and only for saved favorites passed")
             assert roku_config([]) == 200 and request("network/devices", cookie=cookie)[1]["devices"] == []
             fake.shutdown()
