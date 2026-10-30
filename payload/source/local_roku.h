@@ -390,28 +390,27 @@ static const char *roku_icon_type(const unsigned char *d, size_t n) {
     return NULL;
 }
 static void roku_icon_prune(void) {
-    struct item { time_t t; char name[96]; } list[ROKU_ICON_FILES + 16]; DIR *dir = opendir(ROKU_ICON_DIR); struct dirent *e; int n = 0;
+    struct item { time_t t; char name[96]; } list[ROKU_ICON_FILES + 16]; DIR *dir = opendir(ROKU_ICON_DIR); struct dirent *e; int n = 0, dfd;
     if (!dir) return;
+    dfd = dirfd(dir);   /* everything below works on names inside this directory, so a file swapped for another cannot be followed elsewhere */
     while (n < ROKU_ICON_FILES + 16 && (e = readdir(dir))) {
-        struct stat st; char path[320];
-        size_t len = strlen(e->d_name);
-        if (e->d_name[0] == '.' || len >= sizeof(list[0].name)) continue;
-        snprintf(path, sizeof(path), ROKU_ICON_DIR "/%s", e->d_name);
+        struct stat st; size_t len = strlen(e->d_name);
+        if (e->d_name[0] == '.' || len >= sizeof(list[0].name) || fstatat(dfd, e->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0 || !S_ISREG(st.st_mode)) continue;
         /* the small .miss and .down notes are not pictures: they do not count against the limit, and go when old */
-        if ((len > 5 && !strcmp(e->d_name + len - 5, ".miss")) || (len > 5 && !strcmp(e->d_name + len - 5, ".down"))) {
-            if (stat(path, &st) == 0 && time(NULL) - st.st_mtime > 3600) unlink(path);
+        if (len > 5 && (!strcmp(e->d_name + len - 5, ".miss") || !strcmp(e->d_name + len - 5, ".down"))) {
+            if (time(NULL) - st.st_mtime > 3600) unlinkat(dfd, e->d_name, 0);
             continue;
         }
         if (len < 5 || strcmp(e->d_name + len - 4, ".img")) continue;
-        if (stat(path, &st) == 0 && S_ISREG(st.st_mode)) { list[n].t = st.st_mtime; snprintf(list[n].name, sizeof(list[n].name), "%s", e->d_name); n++; }
+        list[n].t = st.st_mtime; snprintf(list[n].name, sizeof(list[n].name), "%s", e->d_name); n++;
     }
-    closedir(dir);
     while (n > ROKU_ICON_FILES) {
-        int oldest = 0, i; char path[320];
+        int oldest = 0, i;
         for (i = 1; i < n; i++) if (list[i].t < list[oldest].t) oldest = i;
-        snprintf(path, sizeof(path), ROKU_ICON_DIR "/%s", list[oldest].name); unlink(path);
+        unlinkat(dfd, list[oldest].name, 0);
         list[oldest] = list[--n];
     }
+    closedir(dir);
 }
 static int roku_icon_marked(const char *path, int seconds) {
     struct stat st; return stat(path, &st) == 0 && time(NULL) - st.st_mtime < seconds;
