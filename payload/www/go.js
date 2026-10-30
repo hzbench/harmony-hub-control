@@ -800,11 +800,20 @@ function bindCommands(root) {
 ['blur','pagehide'].forEach(name=>window.addEventListener(name,()=>stopHold(false)));
 document.addEventListener('visibilitychange',()=>{if(document.hidden)stopHold(false);});
 // A channel picture that cannot be loaded (the Roku is off and the hub has none kept) falls back to the channel's name.
-// An image's error event does not bubble, hence the capture; the page's security policy rules out an inline handler.
+// The hub fetches only a couple of pictures at a time and says "busy" to the rest, so a picture is asked for again a few
+// times, a moment apart, before giving up. An image's error event does not bubble, hence the capture; the page's security
+// policy rules out an inline handler.
+const ICON_RETRIES = 3, ICON_RETRY_MS = 1500;
 document.addEventListener('error',event=>{
   const image = event.target;
   if(image?.tagName!=='IMG')return;
   if(image.classList.contains('cell-icon')) {
+    const tries = Number(image.dataset.tries||0);
+    if(tries<ICON_RETRIES) {
+      image.dataset.tries = String(tries+1);
+      setTimeout(()=>{if(image.isConnected!==false)image.src = image.getAttribute('src').replace(/&r=\d+$/,'')+'&r='+(tries+1);},ICON_RETRY_MS);
+      return;
+    }
     const text = document.createElement('span');text.className = 'cell-text';text.textContent = image.dataset.name||'';image.replaceWith(text);
   } else if(image.classList.contains('channel-icon'))image.remove();
 },true);

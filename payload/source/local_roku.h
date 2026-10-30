@@ -115,7 +115,8 @@ static const cJSON *roku_find(const cJSON *config, const char *id) {
    not be reached, with the reason in `err`. `reply` receives the body. */
 /* One request to a Roku. The reply buffer gets the body only (headers removed), always NUL-terminated. With `body_len`
    the body is kept byte for byte (an icon has NUL bytes in it) and its length is returned there; a reply that does not
-   fit the buffer is then an error rather than a quietly cut-off body. Returns the HTTP status, or -1 with `err` set. */
+   fit the buffer gets the length (size_t)-1 rather than a quietly cut-off body. Returns the HTTP status, or -1 with `err`
+   set when the Roku could not be reached or did not answer properly. */
 static int roku_http_raw(const char *host, const char *method, const char *path, char *reply, size_t reply_size, char *err, size_t err_size, size_t *body_len) {
     struct sockaddr_in addr; char request[256]; size_t got = 0, sent = 0, length; int fd, status = -1; struct timeval tv;
     long long deadline; struct timespec now; int truncated = 0;
@@ -157,8 +158,8 @@ static int roku_http_raw(const char *host, const char *method, const char *path,
     }
     close(fd);
     if (got < 12 || strncmp(reply, "HTTP/", 5) != 0) { snprintf(err, err_size, "The Roku sent an unexpected reply."); return -1; }
-    if (body_len && truncated) { snprintf(err, err_size, "The Roku's reply was larger than expected."); return -1; }
     status = atoi(reply + 9);
+    if (body_len && truncated) { reply[0] = 0; *body_len = (size_t)-1; return status; }   /* too big for the buffer: the length says so */
     {   /* the body starts after the first blank line; search the bytes read, not a C string, so binary bodies survive */
         size_t head = 0, keep = 0; int found = 0;
         while (head + 4 <= got) { if (!memcmp(reply + head, "\r\n\r\n", 4)) { found = 1; break; } head++; }
@@ -374,6 +375,12 @@ static cJSON *execute_roku_type(const cJSON *body) {
 #define ROKU_ICON_MAX 98304
 #define ROKU_ICON_FILES 48
 #define ROKU_ICON_FRESH_SECONDS (7 * 24 * 3600)
+/* A Roku that is off or slow must not tie up the hub's few worker processes (there are 8 for everyone). So: at most
+   ROKU_ICON_FETCHERS pictures are fetched at once (the rest are told "busy" at once and the page asks again), a Roku that did not
+   answer is left alone for ROKU_ICON_DOWN_SECONDS, and a channel the Roku had no usable picture for for ROKU_ICON_MISS_SECONDS. */
+#define ROKU_ICON_FETCHERS 2
+#define ROKU_ICON_DOWN_SECONDS 60
+#define ROKU_ICON_MISS_SECONDS 600
 #ifndef ROKU_ICON_DIR
 #define ROKU_ICON_DIR LOCAL_ROOT "/roku-icons"
 #endif
@@ -387,8 +394,15 @@ static void roku_icon_prune(void) {
     if (!dir) return;
     while (n < ROKU_ICON_FILES + 16 && (e = readdir(dir))) {
         struct stat st; char path[320];
-        if (e->d_name[0] == '.' || strlen(e->d_name) >= sizeof(list[0].name)) continue;
+        size_t len = strlen(e->d_name);
+        if (e->d_name[0] == '.' || len >= sizeof(list[0].name)) continue;
         snprintf(path, sizeof(path), ROKU_ICON_DIR "/%s", e->d_name);
+        /* the small .miss and .down notes are not pictures: they do not count against the limit, and go when old */
+        if ((len > 5 && !strcmp(e->d_name + len - 5, ".miss")) || (len > 5 && !strcmp(e->d_name + len - 5, ".down"))) {
+            if (stat(path, &st) == 0 && time(NULL) - st.st_mtime > 3600) unlink(path);
+            continue;
+        }
+        if (len < 5 || strcmp(e->d_name + len - 4, ".img")) continue;
         if (stat(path, &st) == 0 && S_ISREG(st.st_mode)) { list[n].t = st.st_mtime; snprintf(list[n].name, sizeof(list[n].name), "%s", e->d_name); n++; }
     }
     closedir(dir);
@@ -399,8 +413,23 @@ static void roku_icon_prune(void) {
         list[oldest] = list[--n];
     }
 }
+static int roku_icon_marked(const char *path, int seconds) {
+    struct stat st; return stat(path, &st) == 0 && time(NULL) - st.st_mtime < seconds;
+}
+static void roku_icon_mark(const char *path) { mkdir(ROKU_ICON_DIR, 0755); write_file_atomic(path, "", 0); }
+/* One of ROKU_ICON_FETCHERS places to fetch from the Roku, taken without waiting; close() the descriptor to give it back
+   (also when the worker is killed). -1 when all are in use. */
+static int roku_icon_slot(void) {
+    int i; mkdir(ROKU_ICON_DIR, 0755);
+    for (i = 0; i < ROKU_ICON_FETCHERS; i++) {
+        char path[320]; int fd; snprintf(path, sizeof(path), ROKU_ICON_DIR "/.fetch%d", i);
+        fd = open(path, O_CREAT | O_RDWR, 0600);
+        if (fd >= 0) { if (flock(fd, LOCK_EX | LOCK_NB) == 0) return fd; close(fd); }
+    }
+    return -1;
+}
 static void local_roku_icon(int fd, const struct request *r) {
-    char device_id[80], channel[32], path[320], header[320]; cJSON *config; const cJSON *device, *c, *found = NULL;
+    char device_id[80], channel[32], path[320], miss[320], down[320], header[320]; cJSON *config; const cJSON *device, *c, *found = NULL;
     unsigned char *data = NULL; size_t n = 0; struct stat st; int fresh;
     query_value(r->path, "deviceId", device_id, sizeof(device_id)); query_value(r->path, "id", channel, sizeof(channel));
     if (!safe_run_id(device_id) || !roku_channel_id_ok(channel)) { local_error(fd, "400 Bad Request", "Invalid icon request."); return; }
@@ -408,19 +437,28 @@ static void local_roku_icon(int fd, const struct request *r) {
     if (device) cJSON_ArrayForEach(c, lj_get(device, "channels")) if (!strcmp(lj_str(c, "id"), channel)) found = c;
     if (!found) { cJSON_Delete(config); local_error(fd, "404 Not Found", "That is not a favorite channel."); return; }
     snprintf(path, sizeof(path), ROKU_ICON_DIR "/%s-%s.img", device_id, channel);
+    snprintf(miss, sizeof(miss), ROKU_ICON_DIR "/%s-%s.miss", device_id, channel); snprintf(down, sizeof(down), ROKU_ICON_DIR "/%s.down", device_id);
     data = (unsigned char *)read_file_alloc(path, ROKU_ICON_MAX, &n);
     if (data && !roku_icon_type(data, n)) { free(data); data = NULL; n = 0; }   /* a damaged copy is fetched again */
     fresh = data && stat(path, &st) == 0 && time(NULL) - st.st_mtime < ROKU_ICON_FRESH_SECONDS;
-    if (!fresh) {
-        char url[64], err[160]; size_t cap = ROKU_ICON_MAX + 4096, got = 0; char *reply = malloc(cap);
-        snprintf(url, sizeof(url), "/query/icon/%s", channel);
-        if (reply && roku_http_raw(lj_str(device, "host"), "GET", url, reply, cap, err, sizeof(err), &got) == 200 && got > 0 && got <= ROKU_ICON_MAX &&
-            roku_icon_type((unsigned char *)reply, got)) {
-            free(data); data = (unsigned char *)reply; reply = NULL; n = got;
-            mkdir(ROKU_ICON_DIR, 0755);
-            if (local_space(n + 4096) && write_file_atomic(path, (const char *)data, n) == 0) roku_icon_prune();
+    if (!fresh && !roku_icon_marked(miss, ROKU_ICON_MISS_SECONDS) && !roku_icon_marked(down, ROKU_ICON_DOWN_SECONDS)) {
+        int slot = roku_icon_slot();
+        if (slot < 0) {   /* all fetch places are busy: an old copy answers, otherwise "busy" at once and the page asks again */
+            if (!data) { cJSON_Delete(config); local_error(fd, "503 Service Unavailable", "The hub is fetching other icons. Try again."); return; }
+        } else {
+            char url[64], err[160]; size_t cap = ROKU_ICON_MAX + 4096, got = 0; char *reply = malloc(cap); int status = -1;
+            snprintf(url, sizeof(url), "/query/icon/%s", channel);
+            if (reply) status = roku_http_raw(lj_str(device, "host"), "GET", url, reply, cap, err, sizeof(err), &got);
+            if (status == 200 && got > 0 && got <= ROKU_ICON_MAX && roku_icon_type((unsigned char *)reply, got)) {
+                free(data); data = (unsigned char *)reply; reply = NULL; n = got;
+                mkdir(ROKU_ICON_DIR, 0755);
+                if (local_space(n + 4096) && write_file_atomic(path, (const char *)data, n) == 0) roku_icon_prune();
+                unlink(miss); unlink(down);
+            } else if (status < 0) roku_icon_mark(down);   /* the Roku did not answer: leave it alone for a minute */
+            else roku_icon_mark(miss);                      /* it answered without a usable picture: do not ask again soon */
+            free(reply);   /* an old copy, if any, is better than none when the Roku is off */
+            close(slot);
         }
-        free(reply);   /* an old copy, if any, is better than none when the Roku is off */
     }
     cJSON_Delete(config);
     if (!data) { local_error(fd, "404 Not Found", "The icon is not available."); return; }
