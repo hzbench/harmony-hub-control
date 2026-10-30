@@ -101,6 +101,10 @@ jobs:
     permissions:
       contents: write   # to create the release
     if: needs.plan.outputs.skip != 'true'
+    # This job signs with the release key, so it waits for the owner's approval in the 'release' environment (Settings >
+    # Environments), which is limited to main. A hand-run dry run signs too, so it waits as well. The key lives in that
+    # environment's secrets, not in the repository's, so no other job or workflow can read it.
+    environment: release
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
