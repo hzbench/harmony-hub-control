@@ -67,7 +67,7 @@ not require Logitech or an internet connection.
 The connection status appears above the broker settings; saving the form alone
 does not mean the broker accepted the connection.
 
-Discovery creates a hub with activity controls and diagnostics, plus a device
+Discovery creates a hub with activity controls and diagnostics (including Uptime and Wi-Fi Signal sensors fed by the heartbeat; they show unavailable if it stops for three polls), plus a device
 for each saved IR profile. Common command buttons are enabled; extra commands
 can be enabled from the MQTT device's entity list. Buttons do not pretend to
 know whether an IR-controlled device responded.

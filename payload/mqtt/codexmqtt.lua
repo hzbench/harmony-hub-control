@@ -232,6 +232,14 @@ local function discovery(cfg, inventory)
     add("sensor", ident .. "_" .. s[1], {name = s[2], state_topic = cfg.baseTopic .. "/state",
       value_template = "{{ value_json." .. s[3] .. " }}", icon = s[4], entity_category = "diagnostic"})
   end
+  -- Sensors fed by the heartbeat topic. They go unavailable if the heartbeat stops for three polls.
+  for _, s in ipairs({{"uptime", "Uptime", "uptime", "mdi:timer-outline", "duration", "s"},
+    {"wifi_signal", "Wi-Fi Signal", "wifiSignalDbm", "mdi:wifi", "signal_strength", "dBm"}}) do
+    add("sensor", ident .. "_" .. s[1], {name = s[2], state_topic = cfg.baseTopic .. "/heartbeat",
+      value_template = "{{ value_json." .. s[3] .. " | default('unknown') }}", icon = s[4],
+      device_class = s[5], unit_of_measurement = s[6], state_class = "measurement",
+      expire_after = (cfg.pollSeconds or 10) * 3, entity_category = "diagnostic"})
+  end
   local common = {power=true, powertoggle=true, poweron=true, poweroff=true, volumeup=true, volumedown=true,
     volup=true, voldown=true, mute=true, input=true, play=true, pause=true, stop=true, up=true, down=true,
     left=true, right=true, ok=true, select=true, home=true, back=true}
