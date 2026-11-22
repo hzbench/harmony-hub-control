@@ -78,7 +78,7 @@ for topic,raw in pairs(desired) do
   if p.name=="VolumeUp" then assert(p.enabled_by_default and p.device.via_device=="existing-hub") end
   if p.name=="A+B" then assert(not p.enabled_by_default) end
 end
-assert(count==10, "all command IDs must be collision-free")
+assert(count==12, "all command IDs must be collision-free")
 if arg[1] then
   local f=assert(realOpen(arg[1],"w")); f:write(json.encode(desired)); f:close()
 end

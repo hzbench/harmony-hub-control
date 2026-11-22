@@ -116,6 +116,11 @@ for id, expected in pairs(sensors) do
   end
   assert(found)
 end
+for id, key in pairs({uptime="uptime", wifi_signal="wifiSignalDbm"}) do
+  local p = assert(payloads["test_" .. id])
+  assert(p.state_topic == "hub/heartbeat" and p.availability_topic == "hub/status")
+  assert(p.value_template:find("value_json." .. key, 1, true) and p.expire_after == 30 and p.entity_category == "diagnostic")
+end
 print("MQTT disconnect, independent resource reload, and discovery checks passed")
 
 -- Sequence switching skips shared-device power toggles but still sends inputs.
