@@ -43,6 +43,8 @@ def main():
                 wait(lambda: state.exists() and json.loads(state.read_text())["state"] == "connected")
                 assert sub("test/hub/status") == "online"
                 assert not (root / "commands.jsonl").exists(), "retained command was replayed"
+                beat = json.loads(sub("test/hub/heartbeat"))
+                assert beat["time"] > 0 and beat["connected"] is True and beat["mqttClientId"] == "fixture"
                 for _ in range(3):
                     pub("test/hub/command", command)
                 commands = root / "commands.jsonl"

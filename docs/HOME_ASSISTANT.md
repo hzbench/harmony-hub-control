@@ -77,6 +77,7 @@ With the default topic prefix:
 | Topic | Purpose |
 | --- | --- |
 | `harmony/hub/status` | Retained `online` or `offline` availability |
+| `harmony/hub/heartbeat` | Not retained, every poll (10 s by default): `time`, `uptime` (s), `connected`, `wifiQuality`, `wifiSignalDbm`, `wifiInterface`. Wi-Fi fields are omitted if the hub does not report them |
 | `harmony/hub/state` | Inventory counts, hub details and estimated activity |
 | `harmony/hub/command` | Non-retained JSON: `{"deviceId":"98869917","command":"Vol_up"}` |
 | `harmony/hub/activity/set` | Local activity ID, displayed option, or `PowerOff` |
