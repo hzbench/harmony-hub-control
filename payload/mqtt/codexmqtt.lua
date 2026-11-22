@@ -174,6 +174,27 @@ local function findActivity(value)
   end
   return found
 end
+-- Wi-Fi quality from the kernel's /proc/net/wireless: link quality and signal level (dBm).
+-- Returns an empty table when the file or a number is missing, so the heartbeat never fails on it.
+local function wifiStats()
+  local raw = read("/proc/net/wireless")
+  if not raw then return {} end
+  for line in raw:gmatch("[^\n]+") do
+    local iface, link, level = line:match("^%s*([%w_.-]+):%s*%x+%s+(%-?[%d.]+)%s+(%-?[%d.]+)")
+    if iface then
+      link, level = tonumber(link), tonumber(level)
+      if level and level > 0 then level = level - 256 end -- some drivers report the dBm value unsigned
+      return {iface = iface, quality = link, signalDbm = level}
+    end
+  end
+  return {}
+end
+local function heartbeatPayload(cfg, ready)
+  local up = tonumber((read("/proc/uptime") or ""):match("^(%d+)"))
+  local wifi = wifiStats()
+  return json.encode({time = os.time(), uptime = up, connected = ready, wifiQuality = wifi.quality,
+    wifiSignalDbm = wifi.signalDbm, wifiInterface = wifi.iface, mqttClientId = cfg.clientId})
+end
 local function statePayload(cfg, inventory)
   local state = decode(read("/tmp/harmony-operations/activity-state.json")) or {}
   local id, label = state.activityId or "", ""
@@ -325,6 +346,8 @@ local function runConnection(sock, cfg)
     end
     if subscribed and (force or now - lastPoll >= cfg.pollSeconds) then
       if read(CONFIG) ~= cfg.raw then return true end
+      -- Not retained: a stale heartbeat must never look alive after the hub goes away.
+      publish(sock, cfg.baseTopic .. "/heartbeat", heartbeatPayload(cfg, ready), false)
       local inventory, why = localcore.request("/api/v1/devices")
       if inventory then
         local nextTopics = publishDiscovery(sock, cfg, inventory, previous, force, owner)
